@@ -133,10 +133,8 @@ func (s *Server) validateAlloc(tx *sql.Tx, uid int64, a allocIn, pending []alloc
 	if err != nil {
 		return "", nil, bad("%v", err)
 	}
-	reserved := map[int]bool{s.settings().Port: true}
-	for _, p := range n.Net.Reserved {
-		reserved[p] = true
-	}
+	rng, reserved := ports.MustSet(n.Ports.Range), ports.MustSet(n.Ports.Reserved)
+	panelPort := s.settings().Port
 	mine := map[int]bool{}
 	for _, p := range pending {
 		if p.NodeID != a.NodeID || p.ID != 0 && p.ID == a.ID {
@@ -149,7 +147,10 @@ func (s *Server) validateAlloc(tx *sql.Tx, uid int64, a allocIn, pending []alloc
 		}
 	}
 	for _, p := range list {
-		if reserved[p] {
+		if !rng.Contains(p) {
+			return "", nil, bad("端口 %d 不在 %s 的可分配范围 %s 内", p, n.Name, n.Ports.Range)
+		}
+		if reserved.Contains(p) || p == panelPort {
 			return "", nil, bad("端口 %d 是 %s 的保留端口", p, n.Name)
 		}
 		if mine[p] {

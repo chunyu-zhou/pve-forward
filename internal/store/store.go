@@ -13,6 +13,7 @@ import (
 
 	_ "modernc.org/sqlite"
 
+	"pveforward/internal/ports"
 	"pveforward/internal/proto"
 )
 
@@ -36,7 +37,7 @@ CREATE TABLE IF NOT EXISTS nodes(
   cred_id INTEGER REFERENCES credentials(id), host_key TEXT NOT NULL DEFAULT '',
   agent_secret_hash TEXT NOT NULL DEFAULT '', agent_version TEXT NOT NULL DEFAULT '',
   hostname TEXT NOT NULL DEFAULT '', pve_version TEXT NOT NULL DEFAULT '',
-  net_json TEXT NOT NULL DEFAULT '{}',
+  net_json TEXT NOT NULL DEFAULT '{}', ports_json TEXT NOT NULL DEFAULT '',
   state_version INTEGER NOT NULL DEFAULT 1, applied_version INTEGER NOT NULL DEFAULT 0, apply_error TEXT NOT NULL DEFAULT '',
   last_seen INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS join_tokens(token_hash TEXT PRIMARY KEY, node_id INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE, expires_at INTEGER NOT NULL);
@@ -86,7 +87,52 @@ func Open(dir string) (*DB, error) {
 	if _, err := db.Exec(schema); err != nil {
 		return nil, fmt.Errorf("初始化数据库失败: %w", err)
 	}
-	return &DB{db}, nil
+	d := &DB{db}
+	if err := d.migrate(); err != nil {
+		return nil, fmt.Errorf("升级数据库失败: %w", err)
+	}
+	return d, nil
+}
+
+// migrate 升级旧版本创建的数据库。
+func (d *DB) migrate() error {
+	// 节点端口策略（可分配范围、保留端口）：旧节点不限制范围，保留端口沿用 net_json 中的列表
+	var has int
+	if err := d.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('nodes') WHERE name='ports_json'`).Scan(&has); err != nil {
+		return err
+	}
+	if has == 0 {
+		if _, err := d.Exec(`ALTER TABLE nodes ADD COLUMN ports_json TEXT NOT NULL DEFAULT ''`); err != nil {
+			return err
+		}
+	}
+	rows, err := d.Query(`SELECT id, net_json FROM nodes WHERE ports_json=''`)
+	if err != nil {
+		return err
+	}
+	type old struct {
+		id  int64
+		net proto.NetConfig
+	}
+	var olds []old
+	for rows.Next() {
+		var o old
+		var netJSON string
+		if err := rows.Scan(&o.id, &netJSON); err != nil {
+			rows.Close()
+			return err
+		}
+		json.Unmarshal([]byte(netJSON), &o.net)
+		olds = append(olds, o)
+	}
+	rows.Close()
+	for _, o := range olds {
+		b, _ := json.Marshal(NodePorts{Range: "1-65535", Reserved: ports.FromList(o.net.Reserved).String()})
+		if _, err := d.Exec(`UPDATE nodes SET ports_json=? WHERE id=?`, string(b), o.id); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 var ErrNotFound = errors.New("记录不存在")
@@ -298,6 +344,7 @@ type Node struct {
 	Hostname        string          `json:"hostname"`
 	PVEVersion      string          `json:"pveVersion"`
 	Net             proto.NetConfig `json:"net"`
+	Ports           NodePorts       `json:"ports"`
 	StateVersion    int64           `json:"stateVersion"`
 	AppliedVersion  int64           `json:"appliedVersion"`
 	ApplyError      string          `json:"applyError"`
@@ -305,18 +352,31 @@ type Node struct {
 	CreatedAt       int64           `json:"createdAt"`
 }
 
-const nodeCols = `id,name,remark,mode,initialized,ssh_host,ssh_port,ssh_auth,ssh_user,ssh_secret_enc,ssh_pass_enc,cred_id,host_key,agent_secret_hash,agent_version,hostname,pve_version,net_json,state_version,applied_version,apply_error,last_seen,created_at`
+// NodePorts 为节点的端口策略：只能把可分配范围内、且不是保留端口的端口分配给用户。
+// 两者均为规范化的端口集合文本（见 ports.ParseSet），如 "10000-60000" 与 "22,8006,3000-3100"。
+type NodePorts struct {
+	Range    string `json:"range"`
+	Reserved string `json:"reserved"`
+}
+
+// Allowed 判断端口是否可以分配给用户。
+func (p NodePorts) Allowed(port int) bool {
+	return ports.MustSet(p.Range).Contains(port) && !ports.MustSet(p.Reserved).Contains(port)
+}
+
+const nodeCols = `id,name,remark,mode,initialized,ssh_host,ssh_port,ssh_auth,ssh_user,ssh_secret_enc,ssh_pass_enc,cred_id,host_key,agent_secret_hash,agent_version,hostname,pve_version,net_json,ports_json,state_version,applied_version,apply_error,last_seen,created_at`
 
 func scanNode(r interface{ Scan(...any) error }) (*Node, error) {
 	n := &Node{}
-	var netJSON string
+	var netJSON, portsJSON string
 	err := r.Scan(&n.ID, &n.Name, &n.Remark, &n.Mode, &n.Initialized, &n.SSHHost, &n.SSHPort, &n.SSHAuth, &n.SSHUser, &n.SSHSecretEnc, &n.SSHPassEnc,
-		&n.CredID, &n.HostKey, &n.AgentSecretHash, &n.AgentVersion, &n.Hostname, &n.PVEVersion, &netJSON, &n.StateVersion, &n.AppliedVersion, &n.ApplyError, &n.LastSeen, &n.CreatedAt)
+		&n.CredID, &n.HostKey, &n.AgentSecretHash, &n.AgentVersion, &n.Hostname, &n.PVEVersion, &netJSON, &portsJSON, &n.StateVersion, &n.AppliedVersion, &n.ApplyError, &n.LastSeen, &n.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	if err == nil {
 		json.Unmarshal([]byte(netJSON), &n.Net)
+		json.Unmarshal([]byte(portsJSON), &n.Ports)
 	}
 	return n, err
 }
@@ -344,10 +404,11 @@ func (d *DB) Nodes() ([]*Node, error) {
 
 func (d *DB) SaveNode(n *Node) error {
 	netJSON, _ := json.Marshal(n.Net)
+	portsJSON, _ := json.Marshal(n.Ports)
 	if n.ID == 0 {
-		r, err := d.Exec(`INSERT INTO nodes(name,remark,mode,initialized,ssh_host,ssh_port,ssh_auth,ssh_user,ssh_secret_enc,ssh_pass_enc,cred_id,host_key,agent_secret_hash,net_json,created_at)
-			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-			n.Name, n.Remark, n.Mode, n.Initialized, n.SSHHost, n.SSHPort, n.SSHAuth, n.SSHUser, n.SSHSecretEnc, n.SSHPassEnc, n.CredID, n.HostKey, n.AgentSecretHash, string(netJSON), now())
+		r, err := d.Exec(`INSERT INTO nodes(name,remark,mode,initialized,ssh_host,ssh_port,ssh_auth,ssh_user,ssh_secret_enc,ssh_pass_enc,cred_id,host_key,agent_secret_hash,net_json,ports_json,created_at)
+			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			n.Name, n.Remark, n.Mode, n.Initialized, n.SSHHost, n.SSHPort, n.SSHAuth, n.SSHUser, n.SSHSecretEnc, n.SSHPassEnc, n.CredID, n.HostKey, n.AgentSecretHash, string(netJSON), string(portsJSON), now())
 		if err != nil {
 			if strings.Contains(err.Error(), "UNIQUE") {
 				return errors.New("节点名称已存在")
@@ -357,8 +418,8 @@ func (d *DB) SaveNode(n *Node) error {
 		n.ID, _ = r.LastInsertId()
 		return nil
 	}
-	_, err := d.Exec(`UPDATE nodes SET name=?,remark=?,mode=?,initialized=?,ssh_host=?,ssh_port=?,ssh_auth=?,ssh_user=?,ssh_secret_enc=?,ssh_pass_enc=?,cred_id=?,host_key=?,agent_secret_hash=?,net_json=? WHERE id=?`,
-		n.Name, n.Remark, n.Mode, n.Initialized, n.SSHHost, n.SSHPort, n.SSHAuth, n.SSHUser, n.SSHSecretEnc, n.SSHPassEnc, n.CredID, n.HostKey, n.AgentSecretHash, string(netJSON), n.ID)
+	_, err := d.Exec(`UPDATE nodes SET name=?,remark=?,mode=?,initialized=?,ssh_host=?,ssh_port=?,ssh_auth=?,ssh_user=?,ssh_secret_enc=?,ssh_pass_enc=?,cred_id=?,host_key=?,agent_secret_hash=?,net_json=?,ports_json=? WHERE id=?`,
+		n.Name, n.Remark, n.Mode, n.Initialized, n.SSHHost, n.SSHPort, n.SSHAuth, n.SSHUser, n.SSHSecretEnc, n.SSHPassEnc, n.CredID, n.HostKey, n.AgentSecretHash, string(netJSON), string(portsJSON), n.ID)
 	if err != nil && strings.Contains(err.Error(), "UNIQUE") {
 		return errors.New("节点名称已存在")
 	}

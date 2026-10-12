@@ -6,7 +6,7 @@
       <a-col :xs="24" :md="7"><a-form-item label="分配方式">
         <a-radio-group v-model="f.kind" type="button"><a-radio value="single">单个</a-radio><a-radio value="multi">多个</a-radio><a-radio value="range">范围</a-radio></a-radio-group></a-form-item></a-col>
       <a-col :xs="24" :md="11"><a-form-item :label="{ single: '端口', multi: '端口列表', range: '端口范围' }[f.kind]" :validate-status="err ? 'error' : undefined"
-          :help="err || '同一节点内端口不可重复，不同节点可使用相同端口号'">
+          :help="err || policyText">
         <a-space wrap>
           <a-input-number v-if="f.kind === 'single'" v-model="f.single" model-event="input" :min="1" :max="65535" placeholder="例如 10022" style="width:200px" />
           <a-input-tag v-if="f.kind === 'multi'" v-model="f.multi" placeholder="输入后回车，可粘贴 8001,8002" style="width:300px" allow-clear :retain-input-value="false" />
@@ -36,7 +36,7 @@
 </template>
 
 <script setup>
-import { reactive, ref, watch } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import { api, allocKindName, expandAlloc } from '../api'
 
 const props = defineProps({ modelValue: Array, nodes: Array, userId: Number, usedPorts: Object, compact: Boolean })
@@ -47,6 +47,12 @@ const checking = ref(false)
 watch(() => props.nodes, n => { if (!f.nodeId && n?.length) f.nodeId = n[0].id }, { immediate: true })
 
 const nodeName = id => props.nodes.find(n => n.id === id)?.name || `节点 ${id}`
+// 所选节点的端口策略：只能分配可分配范围内、非保留的端口
+const policyText = computed(() => {
+  const p = props.nodes.find(n => n.id === f.nodeId)?.ports
+  if (!p) return '同一节点内端口不可重复，不同节点可使用相同端口号'
+  return `可分配范围 ${p.range}` + (p.reserved ? `，保留端口 ${p.reserved}` : '') + '；同一节点内端口不可重复'
+})
 const usedIn = a => { const u = new Set(props.usedPorts?.[a.nodeId] || []); return expandAlloc(a).filter(p => u.has(p)).length }
 
 async function add() {

@@ -99,7 +99,7 @@ func TestBootstrapEnvFirstStart(t *testing.T) {
 	if st.URL != "https://panel.example.com" || st.Port != 8443 || st.TLS != "proxy" || st.Site != "Test panel" {
 		t.Fatalf("unexpected settings: %+v", st)
 	}
-	if st.Interval != 60 || st.SessionDays != 7 || !reflect.DeepEqual(st.DefaultReserved, []int{22, 8006}) {
+	if st.Interval != 60 || st.SessionDays != 7 || st.DefaultReservedPorts != "22,8006" || st.DefaultPortRange != "10000-60000" {
 		t.Fatalf("lost default settings: %+v", st)
 	}
 	if s.agentURL() != env["PVE_FORWARD_PUBLIC_URL"] || s.listen != ":5000" {

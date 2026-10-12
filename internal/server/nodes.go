@@ -85,11 +85,13 @@ type nodeIn struct {
 	CredID        int64  `json:"credId"`
 	SaveCred      bool   `json:"saveCred"`
 	CredName      string `json:"credName"`
+	// 端口策略：可分配范围与保留端口（创建时不填则使用系统设置中的默认值）
+	PortRange     *string `json:"portRange"`
+	ReservedPorts *string `json:"reservedPorts"`
 	// 以下仅更新已初始化节点时使用
-	WANIP4   *string  `json:"wanIp4"`
-	WANIP6   *string  `json:"wanIp6"`
-	Reserved []int    `json:"reserved"`
-	DNS      []string `json:"dns"`
+	WANIP4 *string  `json:"wanIp4"`
+	WANIP6 *string  `json:"wanIp6"`
+	DNS    []string `json:"dns"`
 }
 
 var hostRe = regexp.MustCompile(`^[A-Za-z0-9.:-]{1,253}$`)
@@ -183,7 +185,20 @@ func (s *Server) createNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	n := &store.Node{Name: in.Name, Remark: in.Remark, SSHPort: 22, SSHUser: "root"}
-	n.Net.Reserved = s.settings().DefaultReserved
+	st := s.settings()
+	rng, reserved := st.DefaultPortRange, st.DefaultReservedPorts
+	if in.PortRange != nil {
+		rng = *in.PortRange
+	}
+	if in.ReservedPorts != nil {
+		reserved = *in.ReservedPorts
+	}
+	np, err := parseNodePorts(rng, reserved)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	n.Ports = np
 	if _, err := s.applyConn(n, &in); err != nil {
 		fail(w, err)
 		return
@@ -214,6 +229,24 @@ func (s *Server) updateNode(w http.ResponseWriter, r *http.Request) {
 		n.Name = strings.TrimSpace(in.Name)
 	}
 	n.Remark = in.Remark
+	if in.PortRange != nil || in.ReservedPorts != nil {
+		rng, reserved := n.Ports.Range, n.Ports.Reserved
+		if in.PortRange != nil {
+			rng = *in.PortRange
+		}
+		if in.ReservedPorts != nil {
+			reserved = *in.ReservedPorts
+		}
+		np, err := parseNodePorts(rng, reserved)
+		if err == nil {
+			err = s.checkNodePortsChange(n.ID, np)
+		}
+		if err != nil {
+			fail(w, err)
+			return
+		}
+		n.Ports = np
+	}
 	restart, err := s.applyConn(n, &in)
 	if err != nil {
 		fail(w, err)
@@ -226,9 +259,6 @@ func (s *Server) updateNode(w http.ResponseWriter, r *http.Request) {
 		}
 		if in.WANIP6 != nil {
 			n.Net.WANIP6 = strings.TrimSpace(*in.WANIP6)
-		}
-		if in.Reserved != nil {
-			n.Net.Reserved = in.Reserved
 		}
 		if in.DNS != nil {
 			n.Net.DNS = in.DNS
@@ -423,7 +453,6 @@ type initIn struct {
 	DNS         []string `json:"dns"`
 	IPv6        bool     `json:"ipv6"`
 	CIDR6       string   `json:"cidr6"`
-	Reserved    []int    `json:"reserved"`
 }
 
 var bridgeNameRe = regexp.MustCompile(`^vmbr\d{1,4}$`)
@@ -450,7 +479,7 @@ func (s *Server) buildNet(n *store.Node, in initIn, d *proto.Detect) (proto.NetC
 	if !p.Addr().IsPrivate() {
 		return nc, bad("内网网段应使用私有地址（10.0.0.0/8、172.16.0.0/12、192.168.0.0/16）")
 	}
-	nc = proto.NetConfig{WANIface: in.WANIface, WANIP4: in.WANIP4, WANIP6: in.WANIP6, CIDR4: p.String(), DNS: in.DNS, Reserved: in.Reserved}
+	nc = proto.NetConfig{WANIface: in.WANIface, WANIP4: in.WANIP4, WANIP6: in.WANIP6, CIDR4: p.String(), DNS: in.DNS}
 	// 与公网网口地址冲突检查
 	if d != nil {
 		for _, nic := range d.NICs {
@@ -542,9 +571,6 @@ func (s *Server) buildNet(n *store.Node, in initIn, d *proto.Detect) (proto.NetC
 		if _, err := netip.ParseAddr(strings.TrimSpace(dns)); err != nil {
 			return nc, bad("DNS 地址 %q 无效", dns)
 		}
-	}
-	if nc.Reserved == nil {
-		nc.Reserved = s.settings().DefaultReserved
 	}
 	return nc, nil
 }

@@ -266,8 +266,16 @@ func TestEndToEnd(t *testing.T) {
 		Node    store.Node  `json:"node"`
 		Install installInfo `json:"install"`
 	}
-	admin.do("POST", "/api/nodes", map[string]any{"name": "pve-e2e", "mode": "agent"}, 200, &created)
+	// 端口策略：可分配范围必填（为空用系统默认），保留端口支持单个与范围
+	admin.do("POST", "/api/nodes", map[string]any{"name": "pve-bad", "mode": "agent", "portRange": "30000-20000"}, 400, nil)
+	admin.do("POST", "/api/nodes", map[string]any{"name": "pve-bad", "mode": "agent", "portRange": " "}, 400, nil)
+	admin.do("POST", "/api/nodes", map[string]any{"name": "pve-bad", "mode": "agent", "portRange": "100-101", "reservedPorts": "100-101"}, 400, nil)
+	admin.do("POST", "/api/nodes", map[string]any{"name": "pve-e2e", "mode": "agent",
+		"portRange": "20000-29999", "reservedPorts": "22，20095-20099 8006"}, 200, &created)
 	nid := created.Node.ID
+	if np := created.Node.Ports; np.Range != "20000-29999" || np.Reserved != "22,8006,20095-20099" {
+		t.Fatalf("端口策略 %+v", np)
+	}
 	if !strings.Contains(created.Install.Command, "--token "+created.Install.Token) {
 		t.Fatalf("安装命令 %q", created.Install.Command)
 	}
@@ -298,7 +306,7 @@ func TestEndToEnd(t *testing.T) {
 		t.Fatalf("检测结果 %+v", det)
 	}
 	initReq := map[string]any{"wanIface": "enp3s0f1", "wanIp4": "203.0.113.10", "wanIp6": "2001:db8::10", "bridge": "vmbr1",
-		"cidr4": "203.0.113.0/24", "dhcp": true, "installDhcp": true, "ipv6": true, "reserved": []int{22, 8006}}
+		"cidr4": "203.0.113.0/24", "dhcp": true, "installDhcp": true, "ipv6": true}
 	admin.do("POST", fmt.Sprintf("/api/nodes/%d/init", nid), initReq, 400, nil) // 公网段不允许作为内网
 	initReq["cidr4"] = "10.0.0.0/24"
 	stream := admin.do("POST", fmt.Sprintf("/api/nodes/%d/init", nid), initReq, 200, nil)
@@ -332,7 +340,11 @@ func TestEndToEnd(t *testing.T) {
 		t.Fatalf("端口冲突提示 %s", body)
 	}
 	bob["allocations"] = []map[string]any{{"nodeId": nid, "kind": "single", "spec": "22"}}
-	if body := admin.do("POST", "/api/users", bob, 400, nil); !strings.Contains(body, "保留端口") {
+	if body := admin.do("POST", "/api/users", bob, 400, nil); !strings.Contains(body, "不在 pve-e2e 的可分配范围 20000-29999 内") {
+		t.Fatalf("可分配范围提示 %s", body)
+	}
+	bob["allocations"] = []map[string]any{{"nodeId": nid, "kind": "range", "spec": "20090-20096"}}
+	if body := admin.do("POST", "/api/users", bob, 400, nil); !strings.Contains(body, "端口 20095 是 pve-e2e 的保留端口") {
 		t.Fatalf("保留端口提示 %s", body)
 	}
 	bob["allocations"] = []map[string]any{{"nodeId": nid, "kind": "single", "spec": "21000"}}
@@ -342,6 +354,18 @@ func TestEndToEnd(t *testing.T) {
 	}
 	bob["vmIds"] = []int64{}
 	admin.do("POST", "/api/users", bob, 200, nil)
+	// 修改节点端口策略不能与已有分配冲突（alice 20000-20009，bob 21000）
+	if body := admin.do("PUT", fmt.Sprintf("/api/nodes/%d", nid), map[string]any{"mode": "agent", "reservedPorts": "20005-20006"}, 400, nil); !strings.Contains(body, "alice 的 20005") {
+		t.Fatalf("保留端口冲突提示 %s", body)
+	}
+	if body := admin.do("PUT", fmt.Sprintf("/api/nodes/%d", nid), map[string]any{"mode": "agent", "portRange": "20000-20500"}, 400, nil); !strings.Contains(body, "bob 的 21000") {
+		t.Fatalf("可分配范围冲突提示 %s", body)
+	}
+	var upd struct{ Node store.Node }
+	admin.do("PUT", fmt.Sprintf("/api/nodes/%d", nid), map[string]any{"mode": "agent", "portRange": "20000-25000", "reservedPorts": "22,8006,20095-20099,22000"}, 200, &upd)
+	if upd.Node.Ports.Range != "20000-25000" || upd.Node.Ports.Reserved != "22,8006,20095-20099,22000" {
+		t.Fatalf("修改端口策略 %+v", upd.Node.Ports)
+	}
 	admin.do("GET", "/api/vms", nil, 200, &vms)
 	if vms[0].IPv4 != "10.0.0.10" || vms[0].Owner != "alice" || !strings.HasSuffix(vms[0].IPv6, "::10") {
 		t.Fatalf("自动分配 IP %+v", vms[0])

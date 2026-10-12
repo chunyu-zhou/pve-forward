@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"pveforward/internal/ports"
 	"pveforward/internal/store"
 )
 
@@ -214,10 +215,8 @@ func (s *Server) validateRule(owner *store.User, old *store.Rule, in *ruleIn) er
 	if !mine[in.Port] {
 		return bad("端口 %d 未分配给用户 %s", in.Port, owner.Username)
 	}
-	for _, p := range n.Net.Reserved {
-		if p == in.Port {
-			return bad("端口 %d 是保留端口", in.Port)
-		}
+	if ports.MustSet(n.Ports.Reserved).Contains(in.Port) {
+		return bad("端口 %d 是保留端口", in.Port)
 	}
 	samePort := old != nil && old.NodeID == in.NodeID && old.Port == in.Port
 	if !samePort {
@@ -358,10 +357,7 @@ func (s *Server) ruleOptions(w http.ResponseWriter, r *http.Request) {
 				busy[p] = true
 			}
 		}
-		reserved := map[int]bool{}
-		for _, p := range n.Net.Reserved {
-			reserved[p] = true
-		}
+		reserved := ports.MustSet(n.Ports.Reserved)
 		free := []int{}
 		nUsed, nBusy := 0, 0
 		for p := range mine {
@@ -372,7 +368,7 @@ func (s *Server) ruleOptions(w http.ResponseWriter, r *http.Request) {
 				nUsed++
 			case busy[p]:
 				nBusy++
-			case reserved[p]:
+			case reserved.Contains(p):
 			default:
 				free = append(free, p)
 			}

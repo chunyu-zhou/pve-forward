@@ -13,6 +13,16 @@
               <a-col :xs="24" :md="8"><a-form-item label="主机"><a-input :model-value="`${n.hostname || '-'} · PVE ${n.pveVersion || '-'}`" disabled /></a-form-item></a-col>
             </a-row>
           </a-card>
+          <a-card class="general-card"><template #title>端口</template>
+            <template #extra><span class="muted">已分配给用户的端口必须仍在可分配范围内且不是保留端口，否则无法保存</span></template>
+            <a-row :gutter="80">
+              <a-col :xs="24" :md="12"><a-form-item label="可分配端口" required :validate-status="portHint.error ? 'error' : undefined"
+                :help="portHint.error || `只有此范围内的端口能分配给用户，当前可分配 ${portHint.count} 个；支持多段，如 10000-20000,30000-40000`">
+                <a-input v-model="f.portRange" placeholder="10000-60000" /></a-form-item></a-col>
+              <a-col :xs="24" :md="12"><a-form-item label="保留端口" extra="不会分配给用户，支持单个与范围，如 22,8006,3000-3100">
+                <a-input v-model="f.reservedPorts" placeholder="22,8006" allow-clear /></a-form-item></a-col>
+            </a-row>
+          </a-card>
           <a-card class="general-card"><template #title>连接方式</template>
             <a-form-item label="方式"><a-radio-group v-model="f.mode" type="button"><a-radio value="agent">Agent（WSS）</a-radio><a-radio value="ssh">SSH</a-radio></a-radio-group>
               <template #extra>{{ f.mode !== n.mode ? (f.mode === 'agent' ? '保存后请在节点上执行安装命令' : '保存后需测试连接并确认主机指纹') : '' }}</template></a-form-item>
@@ -28,7 +38,6 @@
               <a-col :xs="24" :md="8"><a-form-item label="公网 IPv4" extra="仅用于展示规则入口"><a-input v-model="f.wanIp4" /></a-form-item></a-col>
               <a-col :xs="24" :md="8"><a-form-item label="公网 IPv6"><a-input v-model="f.wanIp6" :disabled="!n.net.cidr6" :placeholder="n.net.cidr6 ? '' : '未启用 IPv6'" /></a-form-item></a-col>
             </a-row>
-            <a-row :gutter="80"><a-col :xs="24" :md="8"><a-form-item label="保留端口" extra="不可分配给用户"><a-input-tag v-model="f.reserved" /></a-form-item></a-col></a-row>
           </a-card>
           <a-card class="general-card"><template #title>内网与 DHCP</template>
             <a-descriptions :column="{ xs: 1, md: 3 }" :data="[
@@ -46,10 +55,10 @@
 </template>
 
 <script setup>
-import { inject, onMounted, reactive, ref } from 'vue'
+import { computed, inject, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { Message } from '@arco-design/web-vue'
-import { api, nodeBadge, fmtAgo } from '../api'
+import { api, nodeBadge, fmtAgo, portPolicyHint } from '../api'
 import SSHFields from '../components/SSHFields.vue'
 
 const props = defineProps({ id: String })
@@ -59,6 +68,7 @@ const n = ref(null)
 const creds = ref([])
 const saving = ref(false)
 const f = reactive({})
+const portHint = computed(() => portPolicyHint(f.portRange, f.reservedPorts))
 
 onMounted(async () => {
   const [d, c] = await Promise.all([api.get(`/api/nodes/${props.id}`), api.get('/api/credentials')])
@@ -67,14 +77,15 @@ onMounted(async () => {
   const x = d.node
   Object.assign(f, { name: x.name, remark: x.remark, mode: x.mode, sshHost: x.sshHost, sshPort: x.sshPort || 22, sshAuth: x.sshAuth || 'password', sshUser: x.sshUser || 'root',
     sshPassword: '', sshKey: '', sshPassphrase: '', credId: x.credId || undefined, wanIp4: x.net.wanIp4, wanIp6: x.net.wanIp6,
-    reserved: (x.net.reserved || []).map(String), dns: x.net.dns || [] })
+    portRange: x.ports.range, reservedPorts: x.ports.reserved, dns: x.net.dns || [] })
 })
 
 async function save() {
+  if (portHint.value.error) { Message.warning(portHint.value.error); return }
   saving.value = true
   try {
     const modeChanged = f.mode !== n.value.mode
-    await api.put(`/api/nodes/${props.id}`, { ...f, reserved: f.reserved.map(Number).filter(p => p > 0 && p < 65536) })
+    await api.put(`/api/nodes/${props.id}`, { ...f })
     Message.success('已保存')
     router.push(modeChanged ? `/nodes/${props.id}/setup` : '/nodes')
   } finally { saving.value = false }

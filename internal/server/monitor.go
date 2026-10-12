@@ -481,6 +481,13 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 	if st.SessionDays <= 0 {
 		st.SessionDays = 7
 	}
+	if np, err := parseNodePorts(st.DefaultPortRange, st.DefaultReservedPorts); err != nil {
+		jsonErr(w, http.StatusBadRequest, "新节点默认端口："+err.Error())
+		return
+	} else {
+		st.DefaultPortRange, st.DefaultReservedPorts = np.Range, np.Reserved
+	}
+	st.DefaultReserved = nil
 	mirror, ok := validMirror(st.UpdateMirror)
 	if !ok {
 		jsonErr(w, http.StatusBadRequest, "下载加速前缀需为 https:// 开头的地址")

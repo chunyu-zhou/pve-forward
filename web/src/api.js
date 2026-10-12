@@ -156,3 +156,33 @@ export function expandAlloc(a) {
   }
   return a.spec.split(',').map(Number)
 }
+
+// 解析端口集合文本，如 "22,8006,3000-3100"；返回合并后的区间，格式错误时抛出异常
+export function parsePortSet(spec) {
+  const spans = []
+  for (const t of String(spec || '').split(/[,，、\s]+/).filter(Boolean)) {
+    const m = /^(\d+)(?:-(\d+))?$/.exec(t)
+    const a = m && Number(m[1]), b = m && Number(m[2] ?? m[1])
+    if (!m || a < 1 || b > 65535 || a > b) throw new Error(`“${t}” 不是有效的端口或范围`)
+    spans.push([a, b])
+  }
+  spans.sort((x, y) => x[0] - y[0])
+  const merged = []
+  for (const s of spans) {
+    const last = merged[merged.length - 1]
+    if (last && s[0] <= last[1] + 1) last[1] = Math.max(last[1], s[1])
+    else merged.push([...s])
+  }
+  return merged
+}
+
+// 节点端口策略说明：可分配范围中去掉保留端口后的数量；格式错误时返回错误信息
+export function portPolicyHint(range, reserved) {
+  try {
+    const r = parsePortSet(range), x = parsePortSet(reserved)
+    if (!r.length) return { error: '请填写可分配端口范围' }
+    let n = 0
+    for (const [a, b] of r) for (let p = a; p <= b; p++) if (!x.some(([c, d]) => p >= c && p <= d)) n++
+    return n ? { count: n } : { error: '可分配范围内的端口都被保留了' }
+  } catch (e) { return { error: e.message } }
+}

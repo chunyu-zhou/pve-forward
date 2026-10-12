@@ -17,6 +17,11 @@
           <a-form-item label="节点名称" required :validate-status="err.name ? 'error' : undefined" :help="err.name || '用于界面展示，例如 pve-hk'">
             <a-input v-model="f.name" placeholder="pve-xx" :max-length="40" /></a-form-item>
           <a-form-item label="备注"><a-input v-model="f.remark" placeholder="地域、机房等，选填" /></a-form-item>
+          <a-form-item label="可分配端口" required :validate-status="portHint.error ? 'error' : undefined"
+            :help="portHint.error || `只有此范围内的端口能分配给用户，当前可分配 ${portHint.count} 个；支持多段，如 10000-20000,30000-40000`">
+            <a-input v-model="f.portRange" placeholder="10000-60000" /></a-form-item>
+          <a-form-item label="保留端口" extra="不会分配给用户，支持单个与范围，如 22,8006,3000-3100">
+            <a-input v-model="f.reservedPorts" placeholder="22,8006" allow-clear /></a-form-item>
           <a-form-item label="连接方式">
             <a-radio-group v-model="f.mode" direction="vertical" style="width:100%">
               <a-radio value="agent" class="nic-radio"><div class="nic-item"><b>Agent（WSS）</b><a-tag size="small" color="green">推荐</a-tag>
@@ -86,8 +91,6 @@
           </a-form-item>
           <a-form-item label="公网 IPv4" extra="在规则入口中展示；若为内网地址（云厂商 NAT），已改用出口探测结果"><a-input v-model="net.wanIp4" /></a-form-item>
           <a-form-item label="公网 IPv6" extra="留空则该节点不启用 IPv6 转发"><a-input v-model="net.wanIp6" allow-clear /></a-form-item>
-          <a-form-item label="保留端口" extra="SSH、PVE Web 等端口不可分配给用户">
-            <a-input-tag v-model="reservedText" placeholder="输入端口后回车" /></a-form-item>
           <a-form-item><a-space><a-button type="secondary" @click="step = 2">上一步</a-button><a-button type="primary" @click="step = 4">下一步</a-button></a-space></a-form-item>
         </a-form>
 
@@ -161,7 +164,7 @@
 <script setup>
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { api, copyText, fmtTime, streamNDJSON } from '../api'
+import { api, copyText, fmtTime, portPolicyHint, streamNDJSON } from '../api'
 import SSHFields from '../components/SSHFields.vue'
 
 const props = defineProps({ id: String })
@@ -171,7 +174,7 @@ const busy = ref(false)
 const err = reactive({})
 const creds = ref([])
 const nodeId = ref(props.id ? Number(props.id) : 0)
-const f = reactive({ name: '', remark: '', mode: 'agent', sshHost: '', sshPort: 22, sshAuth: 'password', sshUser: 'root', sshPassword: '', sshKey: '', sshPassphrase: '', credId: undefined, saveCred: false, credName: '' })
+const f = reactive({ name: '', remark: '', portRange: '', reservedPorts: '', mode: 'agent', sshHost: '', sshPort: 22, sshAuth: 'password', sshUser: 'root', sshPassword: '', sshKey: '', sshPassphrase: '', credId: undefined, saveCred: false, credName: '' })
 const install = reactive({ command: '', expiresAt: 0 })
 const sshRes = ref({})
 const detect = ref(null)
@@ -179,7 +182,7 @@ const waited = ref(0)
 let timer
 
 const net = reactive({ wanIface: '', wanIp4: '', wanIp6: '', cidr4: '', addrMode: 'append', dhcp: true, dns: ['223.5.5.5', '1.1.1.1'] })
-const reservedText = ref(['22', '8006'])
+const portHint = computed(() => portPolicyHint(f.portRange, f.reservedPorts))
 const bridgeChoice = ref('')
 const newBridge = ref('vmbr9')
 const ipv6Mode = ref('ula')
@@ -191,11 +194,15 @@ const progress = ref([])
 
 onMounted(async () => {
   creds.value = await api.get('/api/credentials')
-  if (!nodeId.value) return
+  if (!nodeId.value) {
+    const d = await api.get('/api/settings')
+    Object.assign(f, { portRange: d.settings.defaultPortRange, reservedPorts: d.settings.defaultReservedPorts })
+    return
+  }
   // 继续接入已存在的节点
   const d = await api.get(`/api/nodes/${nodeId.value}`)
   const n = d.node
-  Object.assign(f, { name: n.name, remark: n.remark, mode: n.mode, sshHost: n.sshHost, sshPort: n.sshPort, sshAuth: n.sshAuth || 'password', sshUser: n.sshUser, credId: n.credId || undefined })
+  Object.assign(f, { name: n.name, remark: n.remark, portRange: n.ports.range, reservedPorts: n.ports.reserved, mode: n.mode, sshHost: n.sshHost, sshPort: n.sshPort, sshAuth: n.sshAuth || 'password', sshUser: n.sshUser, credId: n.credId || undefined })
   step.value = 2
   if (n.mode === 'ssh') await runSSHTest()
   else if (['pending', 'online'].includes(n.status)) await runDetect()
@@ -204,12 +211,13 @@ onMounted(async () => {
 onUnmounted(() => clearInterval(timer))
 
 const clear = () => Object.keys(err).forEach(k => delete err[k])
-const connBody = () => ({ name: f.name.trim(), remark: f.remark, mode: f.mode, sshHost: f.sshHost, sshPort: f.sshPort, sshAuth: f.sshAuth, sshUser: f.sshUser,
+const connBody = () => ({ name: f.name.trim(), remark: f.remark, portRange: f.portRange, reservedPorts: f.reservedPorts, mode: f.mode, sshHost: f.sshHost, sshPort: f.sshPort, sshAuth: f.sshAuth, sshUser: f.sshUser,
   sshPassword: f.sshPassword, sshKey: f.sshKey, sshPassphrase: f.sshPassphrase, credId: f.credId, saveCred: f.saveCred, credName: f.credName })
 
 async function createNode() {
   clear()
   if (!f.name.trim()) err.name = '请输入节点名称'
+  if (portHint.value.error) return
   if (f.mode === 'ssh') {
     if (!f.sshHost.trim()) err.host = '请输入 SSH 地址'
     if (f.sshAuth === 'cred' && !f.credId) err.cred = '请选择凭证'
@@ -318,7 +326,7 @@ function onBridgeChange() { net.cidr4 = bridgeCidrs.value.length ? netOf(bridgeC
 const initBody = () => ({
   wanIface: net.wanIface, wanIp4: net.wanIp4.trim(), wanIp6: net.wanIp6.trim(), bridge: bridgeChoice.value === '__new' ? newBridge.value : bridgeChoice.value,
   newBridge: bridgeChoice.value === '__new', cidr4: net.cidr4.trim(), addrMode: net.addrMode, dhcp: net.dhcp, installDhcp: net.dhcp && !detect.value.dhcp,
-  dns: net.dns, ipv6: ipv6Mode.value === 'ula' && !!net.wanIp6, reserved: reservedText.value.map(Number).filter(p => p > 0 && p < 65536),
+  dns: net.dns, ipv6: ipv6Mode.value === 'ula' && !!net.wanIp6,
 })
 
 async function preview() {
@@ -344,7 +352,8 @@ const summary = computed(() => {
     { label: 'DHCP', value: p.dhcp === 'managed' ? `dnsmasq · ${range(p.cidr4, 100, 250)}` : p.dhcp === 'external' ? `沿用 ${detect.value.dhcp}` : '不启用' },
     { label: '虚拟机分配池', value: range(p.cidr4, 10, 99) },
     { label: 'IPv6', value: p.cidr6 ? `${p.cidr6} + NAT` : '不启用' },
-    { label: '保留端口', value: p.reserved.join(', ') },
+    { label: '可分配端口', value: `${f.portRange}（共 ${portHint.value.count} 个）` },
+    { label: '保留端口', value: f.reservedPorts || '无' },
   ]
 })
 

@@ -33,6 +33,7 @@ import (
 
 	"pveforward"
 	"pveforward/internal/manager"
+	"pveforward/internal/ports"
 	"pveforward/internal/secret"
 	"pveforward/internal/store"
 )
@@ -66,28 +67,34 @@ func New(db *store.DB, box *secret.Box, mgr *manager.Manager, dataDir string, we
 // ---------------- 设置 ----------------
 
 type Settings struct {
-	Site            string `json:"site"`
-	URL             string `json:"url"` // 控制端访问地址（不含端口），Agent 用它连接
-	Port            int    `json:"port"`
-	TLS             string `json:"tls"` // self | acme | proxy
-	Interval        int    `json:"interval"`
-	OfflineAfter    int    `json:"offlineAfter"`
-	DefaultReserved []int  `json:"defaultReserved"`
-	SessionDays     int    `json:"sessionDays"`
-	LockAttempts    int    `json:"lockAttempts"`
-	DiskBusyUtil    int    `json:"diskBusyUtil"`
-	DiskSatUtil     int    `json:"diskSatUtil"`
-	DiskBusyAwait   int    `json:"diskBusyAwait"`
-	DiskSatAwait    int    `json:"diskSatAwait"`
-	UpdateCheck     bool   `json:"updateCheck"`  // 每小时检测新版本
-	UpdateMirror    string `json:"updateMirror"` // 访问 GitHub 的加速前缀（可选）
+	Site                 string `json:"site"`
+	URL                  string `json:"url"` // 控制端访问地址（不含端口），Agent 用它连接
+	Port                 int    `json:"port"`
+	TLS                  string `json:"tls"` // self | acme | proxy
+	Interval             int    `json:"interval"`
+	OfflineAfter         int    `json:"offlineAfter"`
+	DefaultPortRange     string `json:"defaultPortRange"`          // 新节点默认可分配端口范围
+	DefaultReservedPorts string `json:"defaultReservedPorts"`      // 新节点默认保留端口
+	DefaultReserved      []int  `json:"defaultReserved,omitempty"` // 旧版本的保留端口列表，读取时转换
+	SessionDays          int    `json:"sessionDays"`
+	LockAttempts         int    `json:"lockAttempts"`
+	DiskBusyUtil         int    `json:"diskBusyUtil"`
+	DiskSatUtil          int    `json:"diskSatUtil"`
+	DiskBusyAwait        int    `json:"diskBusyAwait"`
+	DiskSatAwait         int    `json:"diskSatAwait"`
+	UpdateCheck          bool   `json:"updateCheck"`  // 每小时检测新版本
+	UpdateMirror         string `json:"updateMirror"` // 访问 GitHub 的加速前缀（可选）
 }
 
 func (s *Server) settings() Settings {
-	st := Settings{Site: "PVE Forward", Port: 5601, TLS: "self", Interval: 60, OfflineAfter: 180, DefaultReserved: []int{22, 8006},
+	st := Settings{Site: "PVE Forward", Port: 5601, TLS: "self", Interval: 60, OfflineAfter: 180, DefaultPortRange: "10000-60000", DefaultReservedPorts: "22,8006",
 		SessionDays: 7, LockAttempts: 5, DiskBusyUtil: 70, DiskSatUtil: 90, DiskBusyAwait: 20, DiskSatAwait: 40,
 		UpdateCheck: true}
 	s.db.SettingJSON("settings", &st)
+	if st.DefaultReserved != nil && !strings.Contains(s.db.Setting("settings", ""), `"defaultReservedPorts"`) {
+		st.DefaultReservedPorts = ports.FromList(st.DefaultReserved).String()
+	}
+	st.DefaultReserved = nil
 	return st
 }
 
