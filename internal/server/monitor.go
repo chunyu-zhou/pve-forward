@@ -140,6 +140,9 @@ func (s *Server) monitorData(sc monScope) map[string]any {
 
 func (s *Server) monitor(w http.ResponseWriter, r *http.Request) {
 	u := currentUser(r)
+	if rf := queryInt(r, "refresh"); rf > 0 {
+		s.mgr.Live(time.Duration(rf) * time.Second)
+	}
 	sc := monScope{showOwner: true, showIP: true, showNodes: u.Role == "admin"}
 	if u.Role != "admin" {
 		sc.vmFilter = func(v *store.VM) bool { return v.UserID != nil && *v.UserID == u.ID }
@@ -265,6 +268,7 @@ func (s *Server) publicStatus(w http.ResponseWriter, r *http.Request) {
 	for _, id := range c.Nodes {
 		nodes[id] = true
 	}
+	s.mgr.Live(time.Duration(max(c.Refresh, 5)) * time.Second)
 	d := s.monitorData(monScope{nodes: nodes, vmFilter: s.publicVMFilter(c), showOwner: c.ShowOwner, showIP: c.ShowIP, showNodes: c.ShowNodes})
 	if !c.ShowNodes {
 		// 不展示节点卡片时仍需节点名用于分组

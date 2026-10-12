@@ -185,9 +185,6 @@ func (s *Server) writeUser(id int64, in *userIn) ([]int64, error) {
 	if in.MaxRules < 0 || in.QuotaGB < 0 {
 		return nil, bad("配额不能为负数")
 	}
-	if in.MaxRules == 0 {
-		in.MaxRules = 10
-	}
 	tx, err := s.db.Begin()
 	if err != nil {
 		return nil, err

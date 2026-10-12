@@ -73,19 +73,24 @@ export async function streamNDJSON(url, body, onLine) {
 
 // ---------------- 格式化 ----------------
 
-export function fmtBytes(b, digits = 1) {
-  b = Number(b) || 0
-  const u = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']
+// 数值最多保留 digits 位小数（默认两位），去掉末尾多余的 0
+export const num = (n, digits = 2) => Number((Number(n) || 0).toFixed(Math.min(digits, 2)))
+
+// 字节数：最低以 KB 显示，最多两位小数
+export function bytesParts(b, digits = 2) {
+  b = (Number(b) || 0) / 1024
+  const u = ['KB', 'MB', 'GB', 'TB', 'PB']
   let i = 0
   while (b >= 1024 && i < u.length - 1) { b /= 1024; i++ }
-  return (i === 0 ? b : b.toFixed(digits)) + ' ' + u[i]
+  return [num(b, digits), u[i]]
 }
+export const fmtBytes = (b, digits = 2) => bytesParts(b, digits).join(' ')
 
 export const fmtRate = b => fmtBytes(b) + '/s'
 
 export function fmtK(n) {
   n = Number(n) || 0
-  return n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(Math.round(n))
+  return n >= 1000 ? num(n / 1000) + 'k' : String(num(n))
 }
 
 export function fmtUptime(s) {

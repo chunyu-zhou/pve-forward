@@ -16,7 +16,6 @@
           <a-form-item label="密码" required :validate-status="err.pwd ? 'error' : undefined" :help="err.pwd">
             <a-input-password v-model="f.password" placeholder="至少 8 位" /></a-form-item>
           <a-form-item label="流量上限" extra="所有节点合计，留空或 0 为不限"><a-input-number v-model="f.quotaGb" placeholder="不限" :min="0"><template #append>GB</template></a-input-number></a-form-item>
-          <a-form-item label="规则上限"><a-input-number v-model="f.maxRules" :min="1"><template #append>条</template></a-input-number></a-form-item>
           <a-form-item label="状态"><a-radio-group v-model="f.enabled"><a-radio :value="true">启用</a-radio><a-radio :value="false">禁用</a-radio></a-radio-group></a-form-item>
           <a-form-item label="备注"><a-textarea v-model="f.remark" placeholder="选填" :max-length="100" show-word-limit /></a-form-item>
           <a-form-item><a-button type="primary" @click="next">下一步</a-button></a-form-item>
@@ -24,7 +23,7 @@
 
         <div v-else-if="step === 2" class="step-form" style="width:900px;max-width:100%">
           <a-alert v-if="!nodes.length" type="warning" style="margin-bottom:16px">还没有已初始化的节点，请先在「PVE 节点 → 添加节点」中接入并初始化节点</a-alert>
-          <a-form :model="{}" layout="vertical"><AllocEditor v-model="f.allocations" :nodes="nodes" /></a-form>
+          <a-form :model="{}" layout="vertical"><AllocEditor ref="allocRef" v-model="f.allocations" :nodes="nodes" /></a-form>
           <div v-if="err.ports" style="color:rgb(var(--red-6));margin-top:8px">{{ err.ports }}</div>
           <div style="text-align:center;margin-top:32px"><a-space><a-button type="secondary" @click="step--">上一步</a-button><a-button type="primary" @click="next">下一步</a-button></a-space></div>
         </div>
@@ -60,7 +59,8 @@ const err = reactive({})
 const saving = ref(false)
 const nodes = ref([])
 const vms = ref([])
-const fresh = () => ({ username: '', password: '', quotaGb: undefined, maxRules: 10, enabled: true, remark: '', allocations: [], vmIds: [] })
+const allocRef = ref(null)
+const fresh = () => ({ username: '', password: '', quotaGb: undefined, maxRules: 0, enabled: true, remark: '', allocations: [], vmIds: [] })
 const f = reactive(fresh())
 
 async function loadVMs() { vms.value = await api.get('/api/vms') }
@@ -81,7 +81,10 @@ async function next() {
     }
     if (f.password.length < 8) err.pwd = '密码至少 8 位'
   }
-  if (step.value === 2 && !f.allocations.length) err.ports = '至少分配 1 个端口'
+  if (step.value === 2) {
+    if (!(await allocRef.value.flush())) return
+    if (!f.allocations.length) err.ports = '至少分配 1 个端口'
+  }
   if (!Object.keys(err).length) step.value++
 }
 async function submit() {
@@ -97,7 +100,7 @@ function restart() { Object.assign(f, fresh()); step.value = 1 }
 const nodeName = id => nodes.value.find(n => n.id === id)?.name
 const summary = computed(() => [
   { label: '用户名', value: f.username }, { label: '状态', value: f.enabled ? '启用' : '禁用' },
-  { label: '流量上限', value: f.quotaGb ? f.quotaGb + ' GB' : '不限' }, { label: '规则上限', value: f.maxRules + ' 条' },
+  { label: '流量上限', value: f.quotaGb ? f.quotaGb + ' GB' : '不限' }, { label: '端口数量', value: f.allocations.reduce((s, a) => s + a.count, 0) + ' 个' },
   { label: '端口', value: f.allocations.map(a => `${nodeName(a.nodeId)}：${a.spec}`).join('；') },
   { label: '虚拟机', value: vms.value.filter(v => f.vmIds.includes(v.id)).map(v => `${v.nodeName}/${v.vmid} ${v.name}（${v.ipv4 || '-'}）`).join('，') || '未分配' },
 ])

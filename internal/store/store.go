@@ -132,6 +132,13 @@ func (d *DB) migrate() error {
 			return err
 		}
 	}
+	// 取消“规则上限”：每个分配的端口可建一条规则，不再单独限制数量
+	if d.Setting("migrated_max_rules", "") == "" {
+		if _, err := d.Exec(`UPDATE users SET max_rules=0`); err != nil {
+			return err
+		}
+		d.SetSetting("migrated_max_rules", "1")
+	}
 	return nil
 }
 

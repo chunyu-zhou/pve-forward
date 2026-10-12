@@ -1,19 +1,11 @@
 <template>
   <div>
     <a-row :gutter="24" align="start">
-      <a-col :xs="24" :md="6"><a-form-item label="节点" :label-col-flex="compact ? '60px' : undefined">
+      <a-col :xs="24" :md="7"><a-form-item label="节点" :label-col-flex="compact ? '60px' : undefined">
         <a-select v-model="f.nodeId" :options="nodes.map(n => ({ label: n.name, value: n.id }))" placeholder="选择节点" /></a-form-item></a-col>
-      <a-col :xs="24" :md="7"><a-form-item label="分配方式">
-        <a-radio-group v-model="f.kind" type="button"><a-radio value="single">单个</a-radio><a-radio value="multi">多个</a-radio><a-radio value="range">范围</a-radio></a-radio-group></a-form-item></a-col>
-      <a-col :xs="24" :md="11"><a-form-item :label="{ single: '端口', multi: '端口列表', range: '端口范围' }[f.kind]" :validate-status="err ? 'error' : undefined"
-          :help="err || policyText">
-        <a-space wrap>
-          <a-input-number v-if="f.kind === 'single'" v-model="f.single" model-event="input" :min="1" :max="65535" placeholder="例如 10022" style="width:200px" />
-          <a-input-tag v-if="f.kind === 'multi'" v-model="f.multi" placeholder="输入后回车，可粘贴 8001,8002" style="width:300px" allow-clear :retain-input-value="false" />
-          <template v-if="f.kind === 'range'">
-            <a-input-number v-model="f.from" model-event="input" :min="1" :max="65535" placeholder="起始端口" style="width:130px" /><span>~</span>
-            <a-input-number v-model="f.to" model-event="input" :min="1" :max="65535" placeholder="结束端口" style="width:130px" />
-          </template>
+      <a-col :xs="24" :md="17"><a-form-item label="端口" :validate-status="err ? 'error' : undefined" :help="err || policyText">
+        <a-space style="width:100%" fill>
+          <a-input v-model="f.text" placeholder="直接输入，如 20000-20009,21000,21005" allow-clear style="width:380px;max-width:100%" @press-enter="add" />
           <a-button type="primary" :loading="checking" @click="add"><template #icon><icon-plus /></template>添加</a-button>
         </a-space>
       </a-form-item></a-col>
@@ -41,7 +33,7 @@ import { api, allocKindName, expandAlloc } from '../api'
 
 const props = defineProps({ modelValue: Array, nodes: Array, userId: Number, usedPorts: Object, compact: Boolean })
 const emit = defineEmits(['update:modelValue'])
-const f = reactive({ nodeId: undefined, kind: 'range', single: undefined, multi: [], from: undefined, to: undefined })
+const f = reactive({ nodeId: undefined, text: '' })
 const err = ref('')
 const checking = ref(false)
 watch(() => props.nodes, n => { if (!f.nodeId && n?.length) f.nodeId = n[0].id }, { immediate: true })
@@ -55,16 +47,40 @@ const policyText = computed(() => {
 })
 const usedIn = a => { const u = new Set(props.usedPorts?.[a.nodeId] || []); return expandAlloc(a).filter(p => u.has(p)).length }
 
+// 把输入拆成分配记录：每个范围一条，单个端口合并为一条
+function split(text) {
+  const tokens = text.split(/[,，、\s]+/).filter(Boolean)
+  const singles = [], out = []
+  for (const t of tokens) {
+    if (/^\d+$/.test(t)) singles.push(t)
+    else if (/^\d+-\d+$/.test(t)) out.push({ kind: 'range', spec: t })
+    else throw new Error(`“${t}” 不是有效的端口或范围`)
+  }
+  if (singles.length) out.unshift({ kind: singles.length === 1 ? 'single' : 'multi', spec: singles.join(',') })
+  return out
+}
+
+// 添加输入框中的端口；返回是否成功
 async function add() {
   err.value = ''
-  if (!f.nodeId) { err.value = '请选择节点'; return }
-  const spec = f.kind === 'single' ? String(f.single ?? '') : f.kind === 'multi' ? f.multi.join(',') : `${f.from ?? ''}-${f.to ?? ''}`
+  if (!f.nodeId) { err.value = '请选择节点'; return false }
+  let parts
+  try { parts = split(f.text) } catch (e) { err.value = e.message; return false }
+  if (!parts.length) { err.value = '请输入端口，如 20000-20009,21000'; return false }
   checking.value = true
   try {
-    const r = await api.post('/api/users/check-alloc', { userId: props.userId || 0, alloc: { nodeId: f.nodeId, kind: f.kind, spec }, pending: props.modelValue }, { silent: true })
-    emit('update:modelValue', [...props.modelValue, { _k: Math.random(), nodeId: f.nodeId, kind: f.kind, spec: r.spec, count: r.count }])
-    Object.assign(f, { single: undefined, multi: [], from: undefined, to: undefined })
-  } catch (e) { err.value = e.message } finally { checking.value = false }
+    const added = []
+    for (const p of parts) {
+      const r = await api.post('/api/users/check-alloc', { userId: props.userId || 0, alloc: { nodeId: f.nodeId, ...p }, pending: [...props.modelValue, ...added] }, { silent: true })
+      added.push({ _k: Math.random(), nodeId: f.nodeId, kind: p.kind, spec: r.spec, count: r.count })
+    }
+    emit('update:modelValue', [...props.modelValue, ...added])
+    f.text = ''
+    return true
+  } catch (e) { err.value = e.message; return false } finally { checking.value = false }
 }
+
+// 下一步 / 保存前调用：输入框中还有未添加的端口时自动添加
+defineExpose({ flush: async () => !f.text.trim() || add() })
 function removeAt(i) { const a = [...props.modelValue]; a.splice(i, 1); emit('update:modelValue', a) }
 </script>

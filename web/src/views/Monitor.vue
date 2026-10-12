@@ -28,7 +28,7 @@
     <a-card class="general-card" :body-style="{ padding: '20px' }" style="margin-bottom:16px">
       <a-grid :cols="{ xs: 2, md: summary.length }" :col-gap="16" :row-gap="16">
         <a-grid-item v-for="s in summary" :key="s.title" class="mon-sum">
-          <a-statistic :title="s.title" :value="s.value" :precision="s.precision || 0" :value-style="{ color: s.color, fontWeight: 500 }">
+          <a-statistic :title="s.title" :value="num(s.value)" :precision="decimals(num(s.value))" :value-style="{ color: s.color, fontWeight: 500 }">
             <template #suffix><span class="unit">{{ s.unit }}</span></template></a-statistic>
           <div class="muted">{{ s.sub }}</div>
         </a-grid-item>
@@ -45,7 +45,7 @@
             <div class="mon-metric">
               <span class="lbl">CPU</span>
               <a-progress :percent="n.metrics.cpu / 100" :color="lvl(n.metrics.cpu)" :show-text="false" />
-              <span class="val">{{ n.metrics.cpu }}%<span class="muted"> · {{ n.metrics.cores }} 核</span></span>
+              <span class="val">{{ num(n.metrics.cpu) }}%<span class="muted"> · {{ n.metrics.cores }} 核</span></span>
               <Spark class="spark" :series="[{ values: hist('n' + n.id, 'cpu'), color: lvl(n.metrics.cpu) }]" :max="100" />
             </div>
             <div class="mon-metric">
@@ -63,7 +63,7 @@
             <div class="mon-metric">
               <a-tooltip content="CPU 等待磁盘 IO 的时间占比"><span class="lbl" style="cursor:help">IO 等待</span></a-tooltip>
               <a-progress :percent="Math.min(n.metrics.iowait * 4, 100) / 100" :color="iowaitColor(n.metrics.iowait)" :show-text="false" />
-              <span class="val">{{ n.metrics.iowait }}%</span>
+              <span class="val">{{ num(n.metrics.iowait) }}%</span>
               <Spark class="spark" :series="[{ values: hist('n' + n.id, 'iow'), color: iowaitColor(n.metrics.iowait) }]" :max="25" />
             </div>
             <div v-if="n.disks.length" class="disk-list">
@@ -71,12 +71,12 @@
                 <div class="disk-l1">
                   <a-tooltip :content="`${d.model || d.dev} · 读 ${fmtRate(d.rBps)} 写 ${fmtRate(d.wBps)}`">
                     <span class="dev"><span class="mono">{{ d.dev }}</span> <a-tag size="small">{{ d.kind }}</a-tag></span></a-tooltip>
-                  <a-tag size="small" :color="busy(d.util, d.await).tag">{{ busy(d.util, d.await).text }} {{ d.util }}%</a-tag>
+                  <a-tag size="small" :color="busy(d.util, d.await).tag">{{ busy(d.util, d.await).text }} {{ num(d.util) }}%</a-tag>
                 </div>
                 <div class="disk-l2">
                   <a-progress :percent="Math.min(d.util, 100) / 100" :color="busy(d.util, d.await).color" :show-text="false" size="small" />
                   <span class="mono muted">{{ fmtK(d.rIops + d.wIops) }} IOPS</span>
-                  <span class="mono" :style="{ color: d.await >= th.busyAwait ? busy(0, d.await).color : 'var(--color-text-3)' }">{{ d.await }} ms</span>
+                  <span class="mono" :style="{ color: d.await >= th.busyAwait ? busy(0, d.await).color : 'var(--color-text-3)' }">{{ num(d.await) }} ms</span>
                 </div>
               </div>
             </div>
@@ -96,7 +96,8 @@
       <template #extra>
         <a-space v-if="!pub">
           <span class="muted">更新于 {{ updatedText }}</span>
-          <a-select v-model="refresh" size="small" style="width:130px" :options="[{ label: '自动刷新 10s', value: 10 }, { label: '自动刷新 30s', value: 30 }, { label: '自动刷新 60s', value: 60 }, { label: '暂停刷新', value: 0 }]" />
+          <a-badge v-if="refresh === 3" status="processing" text="实时" />
+          <a-select v-model="refresh" size="small" style="width:130px" :options="[{ label: '实时刷新（3 秒）', value: 3 }, { label: '自动刷新 10s', value: 10 }, { label: '自动刷新 30s', value: 30 }, { label: '自动刷新 60s', value: 60 }, { label: '暂停刷新', value: 0 }]" />
         </a-space>
       </template>
       <a-row justify="space-between" align="center" style="margin-bottom:16px" :gutter="8">
@@ -114,7 +115,7 @@
       </a-row>
       <a-table row-key="key" :data="rows" :columns="columns" :pagination="false" :bordered="false" :loading="loading && !data.updated"
                v-model:expanded-keys="expanded" :indent-size="0" :span-method="span" :row-class="r => (r.group ? 'grp-row' : 'mon-row')"
-               :scroll="{ x: columns.reduce((t, c) => t + c.width, 0) }" @row-click="r => !r.group && (!pub || page.showDetail) && openVM(r)">
+               :scroll="pub ? undefined : { x: columns.reduce((t, c) => t + c.width, 0) }" :class="{ 'pub-table': pub }" @row-click="r => !r.group && (!pub || page.showDetail) && openVM(r)">
         <template #name="{ record }">
           <div v-if="record.group" class="grp">
             <icon-cloud /><span class="nm">{{ record.node.name }}</span>
@@ -126,12 +127,12 @@
         <template #type="{ record }"><a-tag size="small" :color="record.type === 'qemu' ? 'arcoblue' : 'cyan'">{{ record.type === 'qemu' ? 'VM' : 'CT' }}</a-tag></template>
         <template #owner="{ record }"><a-tag v-if="record.shared" size="small" color="arcoblue">公共</a-tag><span v-else-if="record.owner">{{ record.owner }}</span><span v-else class="muted">-</span></template>
         <template #uptime="{ record }"><span :class="{ muted: record.status !== 'running' }">{{ record.status === 'running' ? fmtUptime(record.uptime) : '-' }}</span></template>
-        <template #cpu="{ record }"><MonCell :on="record.status === 'running'" :mode="mode" :pct="record.cpu" :text="record.cpu + '%'" :sub="record.cores + ' 核'" :history="hist('v' + record.id, 'cpu')" /></template>
+        <template #cpu="{ record }"><MonCell :on="record.status === 'running'" :mode="mode" :pct="record.cpu" :text="num(record.cpu) + '%'" :sub="record.cores + ' 核'" :history="hist('v' + record.id, 'cpu')" /></template>
         <template #mem="{ record }"><MonCell :on="record.status === 'running'" :mode="mode" :pct="pct(record.memUsed, record.memTotal)" :text="pct(record.memUsed, record.memTotal) + '%'" :sub="fmtBytes(record.memUsed) + ' / ' + fmtBytes(record.memTotal, 0)" :history="hist('v' + record.id, 'mem')" /></template>
         <template #disk="{ record }"><MonCell v-if="record.diskTotal && record.type === 'lxc' && record.status !== 'offline'" :on="true" mode="bars" :pct="pct(record.diskUsed, record.diskTotal)" :text="pct(record.diskUsed, record.diskTotal) + '%'" :sub="fmtBytes(record.diskUsed) + ' / ' + fmtBytes(record.diskTotal, 0)" />
           <span v-else-if="record.diskTotal" class="muted">{{ fmtBytes(record.diskTotal, 0) }}</span><span v-else class="muted">-</span></template>
         <template #io="{ record }"><div v-if="record.status === 'running'" class="updown">
-          <a-tooltip :content="`读 ${fmtRate(record.diskR)} · 写 ${fmtRate(record.diskW)}；IO 压力 ${record.ioPressure}%`">
+          <a-tooltip :content="`读 ${fmtRate(record.diskR)} · 写 ${fmtRate(record.diskW)}；IO 压力 ${num(record.ioPressure)}%`">
             <div><a-tag size="small" :color="vmBusy(record).tag">{{ vmBusy(record).text }}</a-tag> <span class="mono">{{ fmtK(record.iops) }} IOPS</span></div></a-tooltip>
           <div class="muted">读 {{ fmtRate(record.diskR) }}</div></div><span v-else class="muted">-</span></template>
         <template #net="{ record }"><div v-if="record.status === 'running'" class="updown"><div class="d"><icon-arrow-down /> {{ fmtRate(record.netIn) }}</div><div class="u"><icon-arrow-up /> {{ fmtRate(record.netOut) }}</div></div><span v-else class="muted">-</span></template>
@@ -164,7 +165,7 @@
 
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { api, isAdmin, nodeBadge, fmtBytes, fmtRate, fmtK, fmtUptime, fmtAgo, pct, lvl } from '../api'
+import { api, isAdmin, nodeBadge, fmtBytes, fmtRate, fmtK, fmtUptime, fmtAgo, pct, lvl, num, bytesParts } from '../api'
 import Spark from '../components/Spark.vue'
 import MonCell from '../components/MonCell.vue'
 
@@ -179,7 +180,7 @@ const gate = ref('')
 const gateTitle = ref('状态页')
 const pwd = ref('')
 const pwdErr = ref('')
-const refresh = ref(30)
+const refresh = ref(Number(localStorage.getItem('pf-monitor-refresh') ?? 30))
 const kw = ref('')
 const nodeFilter = ref(0)
 const typeFilter = ref('')
@@ -220,7 +221,8 @@ async function load() {
       document.title = d.page.title
       refresh.value = d.page.refresh
     } else {
-      d = await api.get('/api/monitor', { silent: true })
+      // 刷新间隔告诉控制端：页面打开期间节点按该间隔采集，数据才会随之更新
+      d = await api.get(`/api/monitor?refresh=${refresh.value}`, { silent: true })
     }
     data.value = d
     for (const n of d.nodes) if (n.metrics) {
@@ -240,7 +242,7 @@ async function unlock() {
 
 let timer
 function schedule() { clearInterval(timer); if (refresh.value > 0) timer = setInterval(load, refresh.value * 1000) }
-watch(refresh, schedule)
+watch(refresh, v => { if (!pub.value) localStorage.setItem('pf-monitor-refresh', v); schedule(); if (v) load() })
 onMounted(async () => { await load(); schedule() })
 onUnmounted(() => clearInterval(timer))
 
@@ -269,23 +271,24 @@ const summary = computed(() => {
   const run = vms.filter(v => v.status === 'running')
   const on = data.value.nodes.filter(n => n.status === 'online' && n.metrics)
   if (data.value.nodes.length) {
-    const avg = on.length ? Math.round(on.reduce((s, n) => s + n.metrics.cpu, 0) / on.length) : 0
+    const avg = on.length ? num(on.reduce((s, n) => s + n.metrics.cpu, 0) / on.length) : 0
     const mu = on.reduce((s, n) => s + n.metrics.memUsed, 0), mt = on.reduce((s, n) => s + n.metrics.memTotal, 0)
+    const [muV, muU] = bytesParts(mu)
     const disks = on.flatMap(n => n.disks)
     const busyDisks = disks.filter(d => ['繁忙', '饱和'].includes(busy(d.util, d.await).text))
     return [
       { title: '在线节点', value: on.length, unit: '/ ' + data.value.nodes.length, sub: '离线 ' + data.value.nodes.filter(n => n.status !== 'online').length, color: 'rgb(var(--green-6))' },
       { title: '运行中', value: run.length, unit: '/ ' + vms.length + ' 台', sub: `VM ${run.filter(v => v.type === 'qemu').length} · CT ${run.filter(v => v.type === 'lxc').length}` },
       { title: '平均 CPU', value: avg, unit: '%', sub: '在线节点平均', color: lvl(avg) },
-      { title: '内存使用', value: Number((mu / 2 ** 30).toFixed(0)), unit: '/ ' + Math.round(mt / 2 ** 30) + ' GB', sub: pct(mu, mt) + '%', color: lvl(pct(mu, mt)) },
-      { title: '磁盘繁忙', value: busyDisks.length, unit: '/ ' + disks.length + ' 块', sub: '最高 IO 等待 ' + Math.max(0, ...on.map(n => n.metrics.iowait)) + '%', color: busyDisks.length ? '#ff7d00' : undefined },
+      { title: '内存使用', value: muV, unit: muU + ' / ' + fmtBytes(mt), sub: pct(mu, mt) + '%', color: lvl(pct(mu, mt)) },
+      { title: '磁盘繁忙', value: busyDisks.length, unit: '/ ' + disks.length + ' 块', sub: '最高 IO 等待 ' + num(Math.max(0, ...on.map(n => n.metrics.iowait))) + '%', color: busyDisks.length ? '#ff7d00' : undefined },
     ]
   }
   return [
     { title: '虚拟机', value: vms.length, unit: '台', sub: '运行中 ' + run.length },
-    { title: 'CPU 合计', value: run.reduce((s, v) => s + (v.cpu * v.cores) / 100, 0), precision: 1, unit: '核', sub: '共 ' + vms.reduce((s, v) => s + v.cores, 0) + ' 核' },
-    { title: '内存', value: Number((run.reduce((s, v) => s + v.memUsed, 0) / 2 ** 30).toFixed(1)), precision: 1, unit: 'GB', sub: '共 ' + fmtBytes(vms.reduce((s, v) => s + v.memTotal, 0), 0) },
-    { title: '网络出向', value: Number((run.reduce((s, v) => s + v.netOut, 0) / 2 ** 20).toFixed(1)), precision: 1, unit: 'MB/s', sub: '入向 ' + fmtRate(run.reduce((s, v) => s + v.netIn, 0)) },
+    { title: 'CPU 合计', value: run.reduce((s, v) => s + (v.cpu * v.cores) / 100, 0), unit: '核', sub: '共 ' + vms.reduce((s, v) => s + v.cores, 0) + ' 核' },
+    { title: '内存', value: bytesParts(run.reduce((s, v) => s + v.memUsed, 0))[0], unit: bytesParts(run.reduce((s, v) => s + v.memUsed, 0))[1], sub: '共 ' + fmtBytes(vms.reduce((s, v) => s + v.memTotal, 0)) },
+    { title: '网络出向', value: bytesParts(run.reduce((s, v) => s + v.netOut, 0))[0], unit: bytesParts(run.reduce((s, v) => s + v.netOut, 0))[1] + '/s', sub: '入向 ' + fmtRate(run.reduce((s, v) => s + v.netIn, 0)) },
     { title: '磁盘繁忙', value: run.filter(v => ['繁忙', '饱和'].includes(vmBusy(v).text)).length, unit: '台', sub: '按 IO 压力判断', color: '#ff7d00' },
   ]
 })
@@ -302,7 +305,8 @@ const rows = computed(() => {
 })
 const showOwner = computed(() => !pub.value ? admin.value : page.value.showOwner)
 const showIp = computed(() => !pub.value || page.value.showIp)
-const columns = computed(() => [
+const columns = computed(() => (pub.value ? allColumns.value.map(({ width, ...c }) => c) : allColumns.value))
+const allColumns = computed(() => [
   { title: '名称', slotName: 'name', width: 200, dataIndex: 'name', sortable: { sortDirections: ['ascend', 'descend'] } },
   { title: '类型', slotName: 'type', width: 64 },
   ...(showOwner.value ? [{ title: '归属', slotName: 'owner', width: 90 }] : []),
@@ -314,6 +318,8 @@ const columns = computed(() => [
   { title: '网络', slotName: 'net', width: 120 },
   ...(showIp.value ? [{ title: 'IP', slotName: 'ip', width: 150 }] : []),
 ])
+// a-statistic 需要指定小数位数：按数值实际的小数位（最多两位）显示
+const decimals = v => Math.min((String(v).split('.')[1] || '').length, 2)
 const span = ({ record, columnIndex }) => (record.group ? (columnIndex === 0 ? { rowspan: 1, colspan: columns.value.length } : { rowspan: 0, colspan: 0 }) : undefined)
 
 // ---- 详情抽屉 ----
@@ -341,7 +347,7 @@ const vmRows = computed(() => {
   ]
   if (showOwner.value) r.push({ label: '归属', value: v.shared ? '公共' : v.owner || '-' })
   if (showIp.value) r.push({ label: 'IP', value: [v.ipv4, v.ipv6].filter(Boolean).join(' / ') || '-' })
-  if (v.status === 'running') r.push({ label: '磁盘 IO', value: `${vmBusy(v).text} · ${fmtK(v.iops)} IOPS · 压力 ${v.ioPressure}%` })
+  if (v.status === 'running') r.push({ label: '磁盘 IO', value: `${vmBusy(v).text} · ${fmtK(v.iops)} IOPS · 压力 ${num(v.ioPressure)}%` })
   return r
 })
 const col = k => rrd.value.map(p => p[k] || 0)

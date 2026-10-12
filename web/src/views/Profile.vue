@@ -6,7 +6,7 @@
           { label: '用户名', value: u.username }, { label: '角色', value: u.role === 'admin' ? '管理员' : '普通用户' },
           { label: '状态', value: !u.enabled ? '已禁用' : u.quotaBytes && u.usedBytes >= u.quotaBytes ? '流量超限' : '正常' },
           { label: '流量', value: `${fmtBytes(u.usedBytes)} / ${u.quotaBytes ? fmtBytes(u.quotaBytes) : '不限'}` },
-          { label: '规则', value: `${info.rules} / ${u.role === 'admin' || !u.maxRules ? '不限' : u.maxRules}` },
+          { label: '规则', value: `${info.rules} 条` },
           { label: '创建时间', value: fmtTime(u.createdAt) } ]" />
       </a-card>
       <a-card class="general-card" title="修改密码">

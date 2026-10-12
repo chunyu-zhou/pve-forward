@@ -114,7 +114,7 @@
               <a-progress :percent="g.total ? g.used / g.total : 0" :show-text="false" size="small" />
             </div>
             <template v-if="me">
-              <div class="status-item"><span class="muted" style="font-size:13px">规则</span><span>{{ me.rules }} / {{ me.user.maxRules || '不限' }}</span></div>
+              <div class="status-item"><span class="muted" style="font-size:13px">规则</span><span>{{ me.rules }} 条</span></div>
               <div class="status-item"><span class="muted" style="font-size:13px">流量</span><span>{{ fmtBytes(me.user.usedBytes) }} / {{ me.user.quotaBytes ? fmtBytes(me.user.quotaBytes) : '不限' }}</span></div>
               <div class="status-item"><span class="muted" style="font-size:13px">虚拟机</span><span>{{ me.vms }} 台</span></div>
             </template>

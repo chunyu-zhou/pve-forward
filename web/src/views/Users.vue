@@ -44,7 +44,7 @@
           <a-table-column title="虚拟机" :width="260"><template #cell="{ record }">
             <div v-for="v in vmsOf(record)" :key="v.id" style="line-height:1.9"><span class="muted">{{ v.nodeName }}/</span><span class="mono">{{ v.vmid }}</span> {{ v.name }} <span class="muted mono">{{ v.ipv4 }}</span></div>
             <span v-if="!record.vmIds.length" class="muted">未分配</span></template></a-table-column>
-          <a-table-column title="规则" :width="120"><template #cell="{ record }">{{ record.rules }} / {{ record.maxRules || '不限' }}
+          <a-table-column title="规则" :width="120"><template #cell="{ record }">{{ record.rules }}
             <a-tag v-if="record.errRules" size="small" color="red" style="margin-left:4px">异常 {{ record.errRules }}</a-tag></template></a-table-column>
           <a-table-column title="流量" :width="170"><template #cell="{ record }">{{ fmtBytes(record.usedBytes) }} / {{ record.quotaBytes ? fmtBytes(record.quotaBytes) : '不限' }}
             <a-progress v-if="record.quotaBytes" :percent="Math.min(record.usedBytes / record.quotaBytes, 1)" :show-text="false" size="small" :color="lvl(pct(record.usedBytes, record.quotaBytes))" /></template></a-table-column>

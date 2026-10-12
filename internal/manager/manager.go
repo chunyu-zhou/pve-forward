@@ -64,11 +64,14 @@ type Manager struct {
 
 	Interval func() time.Duration
 	root     context.Context
-	wg       sync.WaitGroup // 节点循环
+
+	liveMu sync.Mutex
+	live   map[time.Duration]time.Time // 监控页请求的采集间隔 → 有效期
+	wg     sync.WaitGroup              // 节点循环
 }
 
 func New(db *store.DB, box *secret.Box) *Manager {
-	return &Manager{db: db, box: box, nodes: map[int64]*runtime{}, overQuota: map[int64]bool{},
+	return &Manager{db: db, box: box, nodes: map[int64]*runtime{}, overQuota: map[int64]bool{}, live: map[time.Duration]time.Time{},
 		Interval: func() time.Duration { return 60 * time.Second }}
 }
 
@@ -162,6 +165,44 @@ func (m *Manager) RemoveNode(id int64) {
 }
 
 // Kick 让节点尽快执行一轮下发与采集。
+// Live 由监控页在刷新时调用：在接下来一段时间内按 every 采集（不低于 3 秒），
+// 页面关闭后自动恢复为系统设置中的采集间隔。
+func (m *Manager) Live(every time.Duration) {
+	every = max(every, 3*time.Second)
+	before := m.interval()
+	m.liveMu.Lock()
+	m.live[every] = time.Now().Add(max(15*time.Second, 3*every))
+	m.liveMu.Unlock()
+	if m.interval() < before {
+		// 间隔变短：立即唤醒各节点，不必等到下一次常规采集
+		m.mu.Lock()
+		ids := make([]int64, 0, len(m.nodes))
+		for id := range m.nodes {
+			ids = append(ids, id)
+		}
+		m.mu.Unlock()
+		for _, id := range ids {
+			m.Kick(id)
+		}
+	}
+}
+
+// interval 返回当前的采集间隔：系统设置的间隔，或监控页正在请求的更短间隔。
+func (m *Manager) interval() time.Duration {
+	iv := m.Interval()
+	now := time.Now()
+	m.liveMu.Lock()
+	defer m.liveMu.Unlock()
+	for every, until := range m.live {
+		if now.After(until) {
+			delete(m.live, every)
+		} else if every < iv {
+			iv = every
+		}
+	}
+	return iv
+}
+
 func (m *Manager) Kick(id int64) {
 	if r := m.rt(id); r != nil {
 		select {
@@ -346,13 +387,13 @@ func (m *Manager) SSHConfig(n *store.Node) (sshx.Config, error) {
 func (m *Manager) loop(ctx context.Context, r *runtime) {
 	backoff := 5 * time.Second
 	for {
-		wait := m.Interval()
+		wait := m.interval()
 		if err := m.tick(ctx, r); err != nil {
 			if ctx.Err() != nil {
 				return
 			}
 			wait = backoff
-			if backoff < m.Interval() {
+			if backoff < m.interval() {
 				backoff *= 2
 			}
 		} else {

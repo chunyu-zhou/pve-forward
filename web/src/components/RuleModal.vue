@@ -7,15 +7,15 @@
       </a-form-item>
       <a-form-item label="节点" required :extra="opts.nodes.length ? '仅列出该用户分配了端口的节点' : '该用户还没有被分配任何节点的端口'">
         <a-select v-model="f.nodeId" placeholder="请选择节点" @change="onNodeChange">
-          <a-option v-for="n in opts.nodes" :key="n.id" :value="n.id" :disabled="n.status !== 'online'">
+          <a-option v-for="n in opts.nodes" :key="n.id" :value="n.id">
             {{ n.name }}<span class="muted">（{{ n.wanIp4 }}{{ n.status !== 'online' ? '，离线' : '' }}）</span></a-option>
         </a-select>
       </a-form-item>
       <a-form-item label="监听端口" required
-        :extra="f.nodeId ? `只能从管理员分配的端口中选择。可选 ${opts.ports.length} 个；已排除规则已使用 ${opts.usedCount} 个、宿主机占用 ${opts.busyCount} 个` : '请先选择节点'">
-        <a-select v-model="f.port" placeholder="请选择端口" :disabled="!f.nodeId" :virtual-list-props="opts.ports.length > 200 ? { height: 240 } : undefined">
-          <a-option v-for="p in opts.ports" :key="p" :value="p" :label="String(p)" />
-          <template #empty><div style="padding:12px;text-align:center" class="muted">没有可用端口，请联系管理员分配</div></template>
+        :extra="f.nodeId ? portExtra : '请先选择节点'">
+        <a-select v-model="f.port" placeholder="请选择或输入端口搜索" :disabled="!f.nodeId" allow-search :options="portOptions"
+                  :virtual-list-props="portOptions.length > 200 ? { height: 240 } : undefined">
+          <template #empty><div style="padding:12px;text-align:center" class="muted">{{ emptyReason }}</div></template>
         </a-select>
       </a-form-item>
       <a-form-item label="协议" required>
@@ -58,7 +58,15 @@ const admin = computed(isAdmin)
 const users = ref([])
 const userList = computed(() => (admin.value ? users.value : [session.user]))
 const f = reactive({})
-const opts = reactive({ nodes: [], ports: [], vms: [], usedCount: 0, busyCount: 0 })
+const opts = reactive({ nodes: [], ports: [], vms: [], total: 0, usedCount: 0, busyCount: 0, reservedCount: 0 })
+// 端口较多时必须通过 options 传入，虚拟列表才能正常渲染
+const portOptions = computed(() => opts.ports.map(p => ({ label: String(p), value: p })))
+const portExtra = computed(() => {
+  const ex = [opts.usedCount && `规则已使用 ${opts.usedCount} 个`, opts.busyCount && `宿主机占用 ${opts.busyCount} 个`, opts.reservedCount && `保留 ${opts.reservedCount} 个`].filter(Boolean)
+  return `只能从分配的 ${opts.total} 个端口中选择，当前可选 ${opts.ports.length} 个` + (ex.length ? `（已排除${ex.join('、')}）` : '') +
+    (node.value && node.value.status !== 'online' ? '。节点当前离线，规则会在节点恢复后下发' : '')
+})
+const emptyReason = computed(() => (!opts.total ? '该节点上还没有分配端口，请联系管理员分配' : '已分配的端口都已被使用或占用，请联系管理员分配更多端口'))
 const saving = ref(false)
 
 const node = computed(() => opts.nodes.find(n => n.id === f.nodeId))
@@ -86,8 +94,10 @@ async function loadOpts(withNode = true) {
   opts.nodes = d.nodes || []
   opts.ports = d.ports || []
   opts.vms = d.vms || []
+  opts.total = d.total || 0
   opts.usedCount = d.usedCount || 0
   opts.busyCount = d.busyCount || 0
+  opts.reservedCount = d.reservedCount || 0
 }
 
 watch(() => props.visible, async v => {
@@ -98,11 +108,11 @@ watch(() => props.visible, async v => {
     ? { userId: r.userId, nodeId: r.nodeId, port: r.port, proto: r.proto, ipVer: r.ipVer, vmId: r.vmId, targetPort: r.targetPort, remark: r.remark }
     : { userId: admin.value ? props.userId || users.value[0]?.id : session.user.id, nodeId: undefined, port: undefined, proto: 'tcp', ipVer: 'v4', vmId: undefined, targetPort: undefined, remark: '' })
   await loadOpts(false)
-  if (!f.nodeId) f.nodeId = opts.nodes.find(n => n.status === 'online')?.id
+  if (!f.nodeId) f.nodeId = (opts.nodes.find(n => n.status === 'online') || opts.nodes[0])?.id
   if (f.nodeId) await loadOpts()
 }, { immediate: true })
 
-async function onUserChange() { f.nodeId = undefined; f.port = undefined; f.vmId = undefined; await loadOpts(false); f.nodeId = opts.nodes.find(n => n.status === 'online')?.id; if (f.nodeId) await loadOpts() }
+async function onUserChange() { f.nodeId = undefined; f.port = undefined; f.vmId = undefined; await loadOpts(false); f.nodeId = (opts.nodes.find(n => n.status === 'online') || opts.nodes[0])?.id; if (f.nodeId) await loadOpts() }
 async function onNodeChange() { f.port = undefined; f.vmId = undefined; await loadOpts(); if (!node.value?.v6) f.ipVer = 'v4' }
 function onVMChange() {
   if (!v6Allowed.value) f.ipVer = 'v4'

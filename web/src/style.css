@@ -111,6 +111,9 @@ body { font-family: Inter, -apple-system, BlinkMacSystemFont, "PingFang SC", "Mi
 .pub-page { max-width: 1440px; margin: 0 auto; padding-top: 20px; }
 .pub-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; padding: 16px 20px; background: var(--color-bg-2); border-radius: 4px; flex-wrap: wrap; gap: 12px; }
 .pub-title { font-size: 18px; font-weight: 500; color: var(--color-text-1); }
+/* 公开页表格：不出现横向滚动条，单元格可换行 */
+.pub-table .arco-table-td .arco-table-cell { white-space: normal; }
+.pub-table .mon-cell .arco-progress { min-width: 48px; }
 .pub-gate { min-height: 100vh; display: flex; align-items: center; justify-content: center; }
 
 /* 控制端初始化 */

@@ -213,7 +213,7 @@ const quotaRows = computed(() => {
     const total = list.reduce((s, a) => s + a.count, 0)
     rows.push({ label: (m.nodeNames[nid] || '节点') + ' 端口', value: `${list.map(a => a.spec).join(' · ')}（已用 ${(m.usedPorts[nid] || []).length}/${total}）` })
   }
-  rows.push({ label: '规则', value: `${m.rules} / ${m.user.maxRules || '不限'}` })
+  rows.push({ label: '规则', value: `${m.rules} 条` })
   rows.push({ label: '我的虚拟机', value: `${m.vms} 台` })
   rows.push({ label: '流量', value: `${fmtBytes(m.user.usedBytes)} / ${m.user.quotaBytes ? fmtBytes(m.user.quotaBytes) : '不限'}` })
   return rows

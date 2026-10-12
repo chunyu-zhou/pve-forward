@@ -375,8 +375,10 @@ func (s *Server) ruleOptions(w http.ResponseWriter, r *http.Request) {
 		}
 		sort.Ints(free)
 		res["ports"] = free
+		res["total"] = len(mine)
 		res["usedCount"] = nUsed
 		res["busyCount"] = nBusy
+		res["reservedCount"] = len(mine) - len(free) - nUsed - nBusy
 		type vmOpt struct {
 			ID     int64  `json:"id"`
 			VMID   int    `json:"vmid"`
