@@ -186,7 +186,7 @@ func permissionHint(dataDir string, err error) error {
 		return err
 	}
 	return fmt.Errorf("%w\n数据目录 %s 没有读写权限（当前 UID %d）。Docker 部署请使用最新镜像并删除 compose 中的 cap_drop: ALL；"+
-		"宿主机目录也可以手动执行 chown -R 10001:10001 <宿主机目录>；启用 SELinux 的主机请在挂载后加 :z", err, dataDir, os.Getuid())
+		"群晖等 NAS 可在 environment 中用 PUID / PGID 指定对该目录有读写权限的用户；启用 SELinux 的主机请在挂载后加 :z", err, dataDir, os.Getuid())
 }
 
 // Open the key before creating a database: an existing database without its

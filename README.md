@@ -140,7 +140,19 @@ docker compose logs --tail=100 controller
 
 ### 持久化、安全与升级
 
-命名卷 `controller-data` 挂载整个 `/var/lib/pve-forward`，保存 SQLite/WAL、主密钥及证书。容器以 root 启动后，自动把数据目录的所有者改为 UID/GID `10001:10001` 并降为该用户运行，不需要 `privileged`、宿主网络或 `NET_ADMIN`。也可以挂载宿主机目录（如 `/opt/pve-forward/data:/var/lib/pve-forward`），所有者会被自动修正。**不要在 compose 中设置 `cap_drop: ALL`**，否则无法修正所有者和降权；启用 SELinux 的主机挂载宿主机目录时需加 `:z`。旧数据库必须和原 `master.key` 一起迁移。不要单独挂载 `data.db`，不要用 `docker compose down -v` 升级（这会删除数据卷）。
+命名卷 `controller-data` 挂载整个 `/var/lib/pve-forward`，保存 SQLite/WAL、主密钥及证书。容器以 root 启动后，自动把数据目录的所有者改为 UID/GID `10001:10001` 并降为该用户运行，不需要 `privileged`、宿主网络或 `NET_ADMIN`。也可以挂载宿主机目录（如 `/opt/pve-forward/data:/var/lib/pve-forward`），所有者会被自动修正。**不要在 compose 中设置 `cap_drop: ALL`**，否则无法修正所有者和降权；启用 SELinux 的主机挂载宿主机目录时需加 `:z`。
+
+**群晖 NAS 等带 ACL 的共享文件夹**：如果数据目录放在 `/volume1/docker/...` 下仍提示 `permission denied`，在 environment 中用 `PUID` / `PGID` 指定以 DSM 用户运行（在群晖 SSH 中执行 `id 用户名` 查看，例如 `uid=1026 gid=100`）：
+
+```yaml
+    environment:
+      PUID: "1026"
+      PGID: "100"
+      PVE_FORWARD_ADMIN_USER: "admin"
+      PVE_FORWARD_ADMIN_PASSWORD: "ChangeMe-2026"
+    volumes:
+      - /volume1/docker/PveForward/data:/var/lib/pve-forward
+```旧数据库必须和原 `master.key` 一起迁移。不要单独挂载 `data.db`，不要用 `docker compose down -v` 升级（这会删除数据卷）。
 
 支持直接给容器传入 `PVE_FORWARD_ADMIN_PASSWORD_FILE=/run/secrets/admin_password` 读取 Docker secret；使用此方式时从 Compose environment 删除 `PVE_FORWARD_ADMIN_PASSWORD`，同时配置 secrets 挂载。不要同时设置两种密码来源。Docker 环境变量可被有 Docker 管理权限的人查看，secret 方式更适合正式部署。
 
@@ -149,6 +161,7 @@ docker compose logs --tail=100 controller
 | `PVE_FORWARD_TLS` | 可选，`self`（默认，自签名 HTTPS）/ `proxy`（HTTP，由反向代理提供 HTTPS）/ `acme`，每次启动生效 |
 | `PVE_FORWARD_PUBLIC_URL` | 可选，首次初始化时直接指定访问地址（如 `https://panel.example.com:8443`）；不设置则在管理员首次登录时自动记录 |
 | `PVE_FORWARD_LISTEN` | 镜像内已固定为 `:5601`，一般不需要设置 |
+| `PUID` / `PGID` | 可选，容器内运行用户，默认 `10001` / `10001`；数据目录所有者会被改为它 |
 | `PVE_FORWARD_ADMIN_USER` | 首次管理员用户名 |
 | `PVE_FORWARD_ADMIN_PASSWORD` | 首次管理员密码，与 PASSWORD_FILE 二选一 |
 | `PVE_FORWARD_ADMIN_PASSWORD_FILE` | 首次管理员密码文件路径 |

@@ -47,6 +47,24 @@ func TestChownTree(t *testing.T) {
 	}
 }
 
+func TestRunAs(t *testing.T) {
+	env := func(m map[string]string) func(string) string { return func(k string) string { return m[k] } }
+	if u, g, err := runAs(env(nil)); err != nil || u != 10001 || g != 10001 {
+		t.Fatalf("默认 %d:%d %v", u, g, err)
+	}
+	if u, g, err := runAs(env(map[string]string{"PUID": "1026", "PGID": "100"})); err != nil || u != 1026 || g != 100 {
+		t.Fatalf("PUID/PGID %d:%d %v", u, g, err)
+	}
+	if u, _, err := runAs(env(map[string]string{"PUID": "0"})); err != nil || u != 0 {
+		t.Fatalf("PUID=0 %d %v", u, err)
+	}
+	for _, bad := range []string{"abc", "-1", "1.5", "99999999999"} {
+		if _, _, err := runAs(env(map[string]string{"PUID": bad})); err == nil {
+			t.Errorf("PUID=%q 应报错", bad)
+		}
+	}
+}
+
 // 非 Docker 或非 root 启动时不做任何事。
 func TestDropPrivilegesNoop(t *testing.T) {
 	t.Setenv("PVE_FORWARD_RUNTIME", "")
