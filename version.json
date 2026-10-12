@@ -1,5 +1,5 @@
 {
-  "version": "1.0.0",
+  "version": "1.0.1",
   "date": "2026-10-12",
-  "notes": "首个预览版：多节点端口转发、资源监控、Docker 部署与在线更新。"
+  "notes": "更新内容：\n- 群晖等共享文件夹无法修改所有者时，改为以数据目录所有者运行\n- 代码更新后自动递增版本号并写回 version.json\n- Docker 支持 PUID / PGID 指定运行用户（群晖等 NAS 共享文件夹）\n- 修复 Docker 数据目录 permission denied\n- Docker 部署简化：默认端口 5601，访问地址首次登录自动记录\n- README：新增无需 .env 的 docker compose 部署方案"
 }
