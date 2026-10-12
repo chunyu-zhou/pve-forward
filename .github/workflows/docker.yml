@@ -56,32 +56,63 @@ jobs:
       go-version: ${{ steps.go-version.outputs.version }}
       version: ${{ steps.app-version.outputs.version }}
       new-release: ${{ steps.app-version.outputs.new-release }}
+      auto: ${{ steps.app-version.outputs.auto }}
+      version-json: ${{ steps.app-version.outputs.version-json }}
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      # version.json 是控制台检测新版本的唯一来源；该版本尚无 Release 时本次运行会发布它
-      - name: Read version.json
+          fetch-depth: 0 # 生成更新说明需要上一个版本标签以来的提交
+      # version.json 是控制台检测新版本的唯一来源。决定本次发布的版本：
+      #   - version.json 中的版本尚未发布（手动改了版本号）→ 发布该版本；
+      #   - 已发布且本次是默认分支上的代码更新 → 自动把修订号 +1，更新说明取自提交信息；
+      #   - Pull request 不发布。
+      # 新版本号写入工作区的 version.json（编译时嵌入程序），发布后由 release 任务写回仓库。
+      - name: Decide version
         id: app-version
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          CAN_RELEASE: ${{ github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
         run: |
+          set -euo pipefail
+          valid() { [[ "$1" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$ ]]; }
+          released() { gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/v$1" >/dev/null 2>&1; }
           version=$(jq -er '.version' version.json)
           version=${version#v}
-          if ! [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$ ]]; then
+          if ! valid "$version"; then
             printf '::error file=version.json::版本号 %s 无效，应为 主.次.修订[-预发布]\n' "$version"
             exit 1
           fi
-          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/v${version}" >/dev/null 2>&1; then
-            new_release=false
-            printf '版本 v%s 已发布；本次只更新镜像 latest。修改 version.json 中的版本号才会发布新版本。\n' "$version"
-          else
+          new_release=false
+          auto=false
+          if ! released "$version"; then
             new_release=true
-            printf '版本 v%s 尚未发布，验证通过后将创建 Release。\n' "$version"
+            printf 'version.json 中的 v%s 尚未发布，验证通过后发布。\n' "$version"
+          elif [[ "$CAN_RELEASE" == true ]]; then
+            base=${version%%-*}
+            IFS=. read -r major minor patch <<< "$base"
+            if [[ "$version" == *-* ]]; then next=$base; else next="$major.$minor.$((patch + 1))"; fi
+            while released "$next"; do
+              IFS=. read -r major minor patch <<< "$next"
+              next="$major.$minor.$((patch + 1))"
+            done
+            notes=$(git log --no-merges --format='- %s' "v${version}..HEAD" 2>/dev/null | grep -v '\[skip ci\]' | head -n 30 || true)
+            if [[ -z "$notes" ]]; then notes="- $(git log -1 --format=%s)"; fi
+            jq --arg v "$next" --arg d "$(TZ=Asia/Shanghai date +%F)" --arg n "$(printf '更新内容：\n%s' "$notes")" \
+              '.version = $v | .date = $d | .notes = $n' version.json > "$RUNNER_TEMP/version.json"
+            mv "$RUNNER_TEMP/version.json" version.json
+            printf '程序代码有更新，自动发布 v%s（上一版本 v%s）。\n' "$next" "$version"
+            version=$next
+            new_release=true
+            auto=true
+          else
+            printf 'v%s 已发布；本次不发布新版本。\n' "$version"
           fi
-          printf 'version=%s\nnew-release=%s\n' "$version" "$new_release" >> "$GITHUB_OUTPUT"
+          printf 'version=%s\nnew-release=%s\nauto=%s\n' "$version" "$new_release" "$auto" >> "$GITHUB_OUTPUT"
+          printf 'version-json=%s\n' "$(jq -c . version.json)" >> "$GITHUB_OUTPUT"
+          jq . version.json
       - name: Set up Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
@@ -280,6 +311,10 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+      - name: Apply version.json
+        env:
+          VERSION_JSON: ${{ needs.verify.outputs.version-json }}
+        run: printf '%s\n' "$VERSION_JSON" | jq . > version.json
       - name: Image metadata
         id: meta
         uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
@@ -338,6 +373,10 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+      - name: Apply version.json
+        env:
+          VERSION_JSON: ${{ needs.verify.outputs.version-json }}
+        run: printf '%s\n' "$VERSION_JSON" | jq . > version.json
       - name: Set up Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
@@ -384,3 +423,37 @@ jobs:
             "$pkg/pve-forward-agent-linux-amd64" "$pkg/pve-forward-agent-linux-arm64" \
             "$pkg/install.sh" "$pkg/README.md" "$pkg/BUILD-INFO.txt" "$pkg/SHA256SUMS" \
             "release/pve-forward-${VERSION}.tar.gz" "release/pve-forward-${VERSION}.tar.gz.sha256"
+      # 自动加版本时把新的 version.json 写回仓库，控制台读取它检测新版本。
+      # 使用 GITHUB_TOKEN 推送的提交不会再次触发工作流。
+      - name: Write version.json back to repository
+        if: needs.verify.outputs.auto == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.verify.outputs.version }}
+          VERSION_JSON: ${{ needs.verify.outputs.version-json }}
+          BRANCH: ${{ github.event.repository.default_branch }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          for attempt in 1 2 3 4 5; do
+            git fetch --quiet "$remote" "$BRANCH"
+            git checkout --quiet --force -B version-bump FETCH_HEAD
+            current=$(jq -r '.version' version.json)
+            current=${current#v}
+            if [[ "$current" == "$VERSION" || "$(printf '%s\n%s\n' "$current" "$VERSION" | sort -V | tail -n 1)" != "$VERSION" ]]; then
+              printf '仓库中的 version.json 已是 v%s，无需写回。\n' "$current"
+              exit 0
+            fi
+            printf '%s\n' "$VERSION_JSON" | jq . > version.json
+            git commit --quiet -am "chore: 发布 v${VERSION} [skip ci]"
+            if git push --quiet "$remote" "HEAD:refs/heads/${BRANCH}"; then
+              printf '已写回 version.json：v%s\n' "$VERSION"
+              exit 0
+            fi
+            sleep $((attempt * 5))
+          done
+          echo '::error::写回 version.json 失败'
+          exit 1
