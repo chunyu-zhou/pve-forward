@@ -18,7 +18,74 @@
 
 首次推送后，到仓库 Actions 查看执行结果。**配置文件存在不等于镜像已发布；必须等 GitHub 构建成功后再部署。** 若希望任何服务器匿名拉取，在 GitHub Packages 中把该包设为 Public（仓库公开不一定自动使包公开）；保留私有时，部署机需用具备 `read:packages` 的凭据登录 GHCR。`latest` 镜像不会自动更新正在运行的容器。
 
-### 配置端口、管理员账号和密码
+### 方案一：参数直接写在 compose 文件中（无需 .env）
+
+在服务器上新建部署目录（如 `/opt/pve-forward`），创建 `docker-compose.yml`，把下面的端口、地址、账号和密码改成自己的值：
+
+```yaml
+services:
+  controller:
+    image: ghcr.io/chunyu-zhou/pve-forward:latest
+    container_name: pve-forward
+    restart: unless-stopped
+    ports:
+      - "8443:5000"                 # 宿主机端口:容器端口，只改冒号左边
+    environment:
+      PVE_FORWARD_LISTEN: ":5000"   # 容器内监听端口，保持不变
+      PVE_FORWARD_TLS: "self"       # self 自签名 HTTPS；放在反向代理后改为 proxy
+      PVE_FORWARD_PUBLIC_URL: "https://203.0.113.10:8443"  # 浏览器和 PVE 节点访问控制端的地址，端口与上面左边一致
+      PVE_FORWARD_ADMIN_USER: "admin"
+      PVE_FORWARD_ADMIN_PASSWORD: "ChangeMe-2026"          # 8-72 位；密码中的 $ 要写成 $$
+      PVE_FORWARD_SITE: "PVE Forward"
+    volumes:
+      - pve-forward-data:/var/lib/pve-forward
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    stop_grace_period: 30s
+
+volumes:
+  pve-forward-data:
+```
+
+启动：
+
+```bash
+cd /opt/pve-forward
+```
+
+```bash
+chmod 600 docker-compose.yml
+```
+
+```bash
+docker compose up -d
+```
+
+```bash
+docker compose logs --tail=100 controller
+```
+
+然后用浏览器打开 `PVE_FORWARD_PUBLIC_URL` 的地址，用上面的管理员账号登录。说明：
+
+- 文件中写有管理员密码，已用 `chmod 600` 限制只有 root 可读；不要把这个文件提交到 Git。
+- **账号、密码、站点名称和公网地址只在第一次启动（数据卷为空）时生效**。之后修改这些值不会改变已有账号，请在控制台“个人中心”改密码、在“系统设置”改访问地址。首次启动成功后，可以把 `PVE_FORWARD_ADMIN_PASSWORD` 这一行删掉，再执行一次 `docker compose up -d`。
+- `ports` 和 `PVE_FORWARD_TLS` 每次启动都生效；修改端口时请同时在“系统设置”中改访问地址的端口，否则节点 Agent 会连接旧端口。
+- 镜像只在 GitHub 构建，这里只会拉取，不会在服务器上构建。之后更新镜像：
+
+  ```bash
+  docker compose pull
+  ```
+
+  ```bash
+  docker compose up -d
+  ```
+
+### 方案二：使用 .env 配置
 
 只需将 [compose.yaml](compose.yaml) 和 [.env.example](.env.example) 放在部署目录。Compose 中没有 `build:`，不会进行本地构建。
 
