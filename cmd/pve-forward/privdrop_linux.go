@@ -18,8 +18,10 @@ const dockerUID, dockerGID = 10001, 10001
 
 // runAs 返回运行用户：默认 10001:10001，可用 PUID / PGID 指定
 // （如群晖 NAS 上填写 DSM 用户的 UID/GID，使数据目录对该用户可读写）。PUID=0 表示以 root 运行。
-func runAs(getenv func(string) string) (uid, gid int, err error) {
+// explicit 表示是否通过 PUID 明确指定。
+func runAs(getenv func(string) string) (uid, gid int, explicit bool, err error) {
 	uid, gid = dockerUID, dockerGID
+	explicit = getenv("PUID") != ""
 	parse := func(name string, def int) (int, error) {
 		v := getenv(name)
 		if v == "" {
@@ -47,7 +49,7 @@ func dropPrivileges(dataDir string) error {
 	if os.Getenv("PVE_FORWARD_RUNTIME") != "docker" || os.Getuid() != 0 {
 		return nil
 	}
-	uid, gid, err := runAs(os.Getenv)
+	uid, gid, explicit, err := runAs(os.Getenv)
 	if err != nil {
 		return err
 	}
@@ -59,7 +61,20 @@ func dropPrivileges(dataDir string) error {
 	}
 	n, err := chownTree(dataDir, uid, gid, os.Lchown)
 	if err != nil {
-		return fmt.Errorf("无法把数据目录 %s 的所有者改为 %d:%d：%w。如果 docker compose 中设置了 cap_drop: ALL，请删除这两行后重新启动", dataDir, uid, gid, err)
+		if explicit || !errors.Is(err, fs.ErrPermission) {
+			return fmt.Errorf("无法把数据目录 %s 的所有者改为 %d:%d：%w。请删除 docker compose 中的 cap_drop: ALL，"+
+				"或用 PUID / PGID 指定数据目录的所有者（在宿主机上执行 ls -ln 查看）", dataDir, uid, gid, err)
+		}
+		// 群晖等 NAS 的共享文件夹不允许修改所有者：改为以数据目录当前的所有者运行
+		ouid, ogid, serr := ownerOf(dataDir)
+		if serr != nil {
+			return serr
+		}
+		log.Printf("无法修改数据目录 %s 的所有者（%v），改为以目录所有者 %d:%d 运行", dataDir, err, ouid, ogid)
+		if ouid == 0 {
+			return nil
+		}
+		uid, gid, n = ouid, ogid, 0
 	}
 	if n > 0 {
 		log.Printf("已将数据目录 %s 中 %d 个文件的所有者改为 %d:%d", dataDir, n, uid, gid)
@@ -67,16 +82,32 @@ func dropPrivileges(dataDir string) error {
 	if err := os.Chmod(dataDir, 0o700); err != nil {
 		return err
 	}
+	dropErr := func(err error) error {
+		return fmt.Errorf("降为 %d:%d 运行失败：%w。请删除 docker compose 中的 cap_drop: ALL 后重新启动", uid, gid, err)
+	}
 	if err := syscall.Setgroups([]int{}); err != nil {
-		return fmt.Errorf("降权失败：%w", err)
+		return dropErr(err)
 	}
 	if err := syscall.Setgid(gid); err != nil {
-		return fmt.Errorf("降权失败：%w", err)
+		return dropErr(err)
 	}
 	if err := syscall.Setuid(uid); err != nil {
-		return fmt.Errorf("降权失败：%w", err)
+		return dropErr(err)
 	}
 	return nil
+}
+
+// ownerOf 返回文件的所有者。
+func ownerOf(path string) (uid, gid int, err error) {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return 0, 0, err
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0, 0, fmt.Errorf("无法读取 %s 的所有者", path)
+	}
+	return int(st.Uid), int(st.Gid), nil
 }
 
 // chownTree 把 root 下所有者不是 uid:gid 的文件改过来（不跟随符号链接），返回修改的数量。

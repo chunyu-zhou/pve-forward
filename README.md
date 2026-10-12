@@ -142,7 +142,7 @@ docker compose logs --tail=100 controller
 
 命名卷 `controller-data` 挂载整个 `/var/lib/pve-forward`，保存 SQLite/WAL、主密钥及证书。容器以 root 启动后，自动把数据目录的所有者改为 UID/GID `10001:10001` 并降为该用户运行，不需要 `privileged`、宿主网络或 `NET_ADMIN`。也可以挂载宿主机目录（如 `/opt/pve-forward/data:/var/lib/pve-forward`），所有者会被自动修正。**不要在 compose 中设置 `cap_drop: ALL`**，否则无法修正所有者和降权；启用 SELinux 的主机挂载宿主机目录时需加 `:z`。
 
-**群晖 NAS 等带 ACL 的共享文件夹**：如果数据目录放在 `/volume1/docker/...` 下仍提示 `permission denied`，在 environment 中用 `PUID` / `PGID` 指定以 DSM 用户运行（在群晖 SSH 中执行 `id 用户名` 查看，例如 `uid=1026 gid=100`）：
+**群晖 NAS 等共享文件夹**：这类目录不允许修改所有者，控制端会自动改为以数据目录当前的所有者运行，一般无需额外配置（日志中会出现“改为以目录所有者 … 运行”）。如需指定用户，可在 environment 中用 `PUID` / `PGID` 设置为数据目录的所有者（在群晖 SSH 中执行 `ls -ln /volume1/docker/PveForward` 查看数字，例如 `1026 100`）：
 
 ```yaml
     environment:

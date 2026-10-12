@@ -276,7 +276,20 @@ jobs:
           docker exec "$container" pve-forward reset-password "$username" "$replacement" >/dev/null
           test -z "$(sudo find "$hostdir" ! -uid 10001)"
           login "$replacement"
-          printf 'HTTPS bootstrap, login, persistent user/key, host-directory ownership and amd64/arm64 downloads passed.\n'
+          # 不允许修改所有者的目录（模拟群晖共享文件夹：去掉 CHOWN 能力）：以目录所有者运行
+          docker rm -f "$container" >/dev/null
+          nasdir="$work/nasdata"
+          mkdir -m 700 "$nasdir"
+          docker run -d --name "$container" \
+            --read-only --tmpfs /tmp:rw,noexec,nosuid,size=64m --security-opt=no-new-privileges --cap-drop=CHOWN \
+            -p 127.0.0.1:15000:5601 -v "$nasdir:/var/lib/pve-forward" \
+            -e PVE_FORWARD_ADMIN_USER="$username" -e PVE_FORWARD_ADMIN_PASSWORD="$password" \
+            pve-forward:smoke >/dev/null
+          ready
+          login "$password"
+          test "$(docker exec "$container" awk '/^Uid:/ { print $2 }' /proc/1/status)" = "$(id -u)"
+          test "$(stat -c '%u' "$nasdir/master.key")" = "$(id -u)"
+          printf 'HTTPS bootstrap, login, persistent user/key, host-directory ownership, owner fallback and amd64/arm64 downloads passed.\n'
       - name: Set up QEMU for target runtime package installation
         uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
         with:
