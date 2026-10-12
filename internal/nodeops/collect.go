@@ -85,7 +85,7 @@ echo '##cgio'
 for d in /sys/fs/cgroup/qemu.slice/*.scope /sys/fs/cgroup/lxc/*; do [ -f "$d/io.stat" ] || continue; echo "#$(basename "$d" .scope)"; cat "$d/io.stat"; grep '^some' "$d/io.pressure" 2>/dev/null; done
 echo '##nft'; nft -j list table inet ` + TableName + ` 2>/dev/null
 echo '##listen'; ss -Hlntu 2>/dev/null | awk '{print $5}'
-echo '##conntrack'; conntrack -L 2>/dev/null | awk '{d="";for(i=1;i<=NF;i++){if($i~/^dport=/){d=substr($i,7);break}} if(d!="")c[d]++} END{for(k in c)print k,c[k]}'
+echo '##conntrack'; conntrack -L -n 2>/dev/null | awk '$1=="tcp" && $4!="ESTABLISHED"{next} {d="";for(i=1;i<=NF;i++){if($i~/^dport=/){d=substr($i,7);break}} if(d!="")c[d]++} END{for(k in c)print k,c[k]}'
 ` + vmip + `echo '##health'
 ` + health.String() + `wait
 `

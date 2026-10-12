@@ -474,6 +474,20 @@ func TestEndToEnd(t *testing.T) {
 	}
 	waitFor(t, "公共规则下发", func() bool { return strings.Contains(fake.nft(), "tcp dport 22 counter dnat ip to 10.0.0.57:22") })
 	admin.do("DELETE", fmt.Sprintf("/api/rules/%d", pubR.ID), nil, 200, nil)
+	// 虚拟机转发流量趋势：管理员与归属用户可看，其他用户不可看
+	var vt struct {
+		Series []map[string]int64 `json:"series"`
+		Step   int64              `json:"step"`
+	}
+	admin.do("GET", fmt.Sprintf("/api/monitor/traffic?vm=%d&range=7d&tz=480", vmWeb), nil, 200, &vt)
+	if len(vt.Series) != 7 || vt.Step != 86400 {
+		t.Fatalf("流量趋势 %+v", vt)
+	}
+	ua.do("GET", fmt.Sprintf("/api/monitor/traffic?vm=%d", vmWeb), nil, 200, &vt)
+	if len(vt.Series) != 24 || vt.Step != 3600 {
+		t.Fatalf("流量趋势 %+v", vt)
+	}
+	ub.do("GET", fmt.Sprintf("/api/monitor/traffic?vm=%d", vmWeb), nil, 404, nil)
 	waitFor(t, "公共规则删除下发", func() bool { return !strings.Contains(fake.nft(), "dport 22 ") })
 	waitFor(t, "节点状态已同步", func() bool { n, _ := db.Node(nid); return n.AppliedVersion == n.StateVersion })
 	ub.do("DELETE", fmt.Sprintf("/api/rules/%d", rules[0].ID), nil, 404, nil)

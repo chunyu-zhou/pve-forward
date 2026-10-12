@@ -296,6 +296,7 @@ func (s *Server) routes() http.Handler {
 	user("GET /api/dashboard", s.dashboard)
 	user("GET /api/monitor", s.monitor)
 	user("GET /api/monitor/rrd", s.monitorRRD)
+	user("GET /api/monitor/traffic", s.monitorTraffic)
 	user("GET /api/rules", s.listRules)
 	user("POST /api/rules", s.saveRule)
 	user("PUT /api/rules/{id}", s.saveRule)

@@ -26,19 +26,7 @@
             </a-space>
           </template>
           <div class="chart-legend"><span><i style="background:#165dff"></i>上行（客户端 → 虚拟机）</span><span><i style="background:#ff7d00"></i>下行（虚拟机 → 客户端）</span></div>
-          <svg :viewBox="`0 0 ${C.W} ${C.H}`" style="width:100%;height:280px;display:block" preserveAspectRatio="none">
-            <defs>
-              <linearGradient id="gIn" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#165dff" stop-opacity=".18" /><stop offset="100%" stop-color="#165dff" stop-opacity="0" /></linearGradient>
-              <linearGradient id="gOut" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#ff7d00" stop-opacity=".14" /><stop offset="100%" stop-color="#ff7d00" stop-opacity="0" /></linearGradient>
-            </defs>
-            <g v-for="t in chart.ticks" :key="t.y">
-              <line :x1="C.L" :x2="C.W - C.R" :y1="t.y" :y2="t.y" stroke="#e5e6eb" stroke-dasharray="3 3" />
-              <text :x="C.L - 8" :y="t.y + 4" text-anchor="end" font-size="11" fill="#86909c">{{ t.label }}</text>
-            </g>
-            <text v-for="x in chart.xs" :key="x.label + x.x" :x="x.x" :y="C.H - 6" text-anchor="middle" font-size="11" fill="#86909c">{{ x.label }}</text>
-            <path :d="chart.upArea" fill="url(#gIn)" /><path :d="chart.downArea" fill="url(#gOut)" />
-            <path :d="chart.upLine" fill="none" stroke="#165dff" stroke-width="2" /><path :d="chart.downLine" fill="none" stroke="#ff7d00" stroke-width="2" />
-          </svg>
+          <TrafficChart :series="dash.series || []" :step="dash.step || 3600" />
         </a-card>
       </div>
       <a-grid :cols="24" :col-gap="16" :row-gap="16" style="margin-top: 16px">
@@ -141,6 +129,7 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { api, session, isAdmin, nodeBadge, fmtBytes, fmtAgo, fmtTime, pct, protoName, ipverName } from '../api'
 import RuleModal from '../components/RuleModal.vue'
+import TrafficChart from '../components/TrafficChart.vue'
 
 const router = useRouter()
 const admin = computed(isAdmin)
@@ -155,7 +144,7 @@ const rankProto = ref('')
 const pieBy = ref('node')
 const ruleModal = ref(false)
 
-async function loadDash() { dash.value = await api.get(`/api/dashboard?range=${range.value}&node=${chartNode.value}`) }
+async function loadDash() { dash.value = await api.get(`/api/dashboard?range=${range.value}&node=${chartNode.value}&tz=${-new Date().getTimezoneOffset()}`) }
 async function load() {
   const tasks = [loadDash(), api.get('/api/rules').then(r => (rules.value = r))]
   if (admin.value) tasks.push(api.get('/api/nodes').then(d => (nodes.value = d.nodes)), api.get('/api/users').then(u => (users.value = u)))
@@ -186,28 +175,6 @@ const stats = computed(() => {
     { title: '我的端口', value: ports, unit: '个', sub: `已使用 ${rs.length}`, icon: 'icon-tag', color: 'rgb(var(--arcoblue-6))' },
     ruleStat, traffic, total,
   ]
-})
-
-// 流量趋势
-const C = { W: 800, H: 280, L: 64, R: 12, T: 12, B: 28 }
-const chart = computed(() => {
-  const s = dash.value.series || []
-  const n = Math.max(s.length, 2)
-  const up = s.map(p => p.up), down = s.map(p => p.down)
-  const max = Math.max(1024, ...up, ...down) * 1.1
-  const x = i => C.L + (i * (C.W - C.L - C.R)) / (n - 1)
-  const y = v => C.H - C.B - (v / max) * (C.H - C.T - C.B)
-  const line = vs => vs.map((v, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)} ${y(v).toFixed(1)}`).join(' ') || ''
-  const area = vs => (vs.length ? line(vs) + ` L${x(vs.length - 1)} ${C.H - C.B} L${x(0)} ${C.H - C.B} Z` : '')
-  const every = range.value === '24h' ? 3 : 1
-  return {
-    upLine: line(up), downLine: line(down), upArea: area(up), downArea: area(down),
-    ticks: [0, 1, 2, 3, 4].map(k => ({ y: y((max * k) / 4), label: fmtBytes((max * k) / 4, 0) })),
-    xs: s.map((p, i) => ({ i, p })).filter(({ i }) => i % every === 0 || i === s.length - 1).map(({ i, p }) => {
-      const d = new Date(p.t * 1000)
-      return { x: x(i), label: range.value === '24h' ? String(d.getHours()).padStart(2, '0') + ':00' : `${d.getMonth() + 1}-${String(d.getDate()).padStart(2, '0')}` }
-    }),
-  }
 })
 
 const ranking = computed(() => (dash.value.ranking || []).map(r => ({ ...r, rule: rules.value.find(x => x.id === r.ruleId) }))

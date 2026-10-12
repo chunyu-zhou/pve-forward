@@ -47,16 +47,16 @@
           <template #title><a-space><span>{{ n.name }}</span><a-badge :status="nodeBadge[n.status]?.badge" :text="nodeBadge[n.status]?.text" /></a-space></template>
           <template #extra><span class="muted">{{ n.status === 'online' && n.metrics ? '运行 ' + fmtUptime(n.metrics.uptime) : '最后心跳 ' + fmtAgo(n.lastSeen) }}</span></template>
           <template v-if="n.status === 'online' && n.metrics">
-            <div class="mon-metric">
+            <div class="mon-metric two">
               <span class="lbl">CPU</span>
               <a-progress :percent="n.metrics.cpu / 100" :color="lvl(n.metrics.cpu)" :show-text="false" />
-              <span class="val">{{ num(n.metrics.cpu) }}%<span class="muted"> · {{ n.metrics.cores }} 核</span></span>
+              <span class="val"><span>{{ num(n.metrics.cpu) }}%</span><span class="muted">{{ n.metrics.cores }} 核</span></span>
               <Spark class="spark" :series="[{ values: hist('n' + n.id, 'cpu'), color: lvl(n.metrics.cpu) }]" :max="100" />
             </div>
-            <div class="mon-metric">
+            <div class="mon-metric two">
               <span class="lbl">内存</span>
               <a-progress :percent="pct(n.metrics.memUsed, n.metrics.memTotal) / 100" :color="lvl(pct(n.metrics.memUsed, n.metrics.memTotal))" :show-text="false" />
-              <span class="val">{{ fmtBytes(n.metrics.memUsed, 0) }} / {{ fmtBytes(n.metrics.memTotal, 0) }}</span>
+              <span class="val"><span>{{ pct(n.metrics.memUsed, n.metrics.memTotal) }}%</span><span class="muted">{{ fmtBytes(n.metrics.memUsed, 0) }} / {{ fmtBytes(n.metrics.memTotal, 0) }}</span></span>
               <Spark class="spark" :series="[{ values: hist('n' + n.id, 'mem'), color: lvl(pct(n.metrics.memUsed, n.metrics.memTotal)) }]" :max="100" />
             </div>
             <div class="mon-metric">
@@ -86,7 +86,8 @@
               </div>
             </div>
             <div class="mon-foot">
-              <span>负载 <b class="mono">{{ n.metrics.load[0].toFixed(2) }}</b></span>
+              <span>负载 <b class="mono">{{ num(n.metrics.load[0]) }}</b></span>
+              <span>连接 <b class="mono">{{ n.conns }}</b></span>
               <span><icon-arrow-down style="color:rgb(var(--green-6))" /> {{ fmtRate(n.metrics.netIn) }} <icon-arrow-up style="color:rgb(var(--orange-6))" /> {{ fmtRate(n.metrics.netOut) }}</span>
               <span>虚拟机 <b>{{ data.vms.filter(v => v.nodeId === n.id && v.status === 'running').length }}</b>/{{ data.vms.filter(v => v.nodeId === n.id).length }}</span>
             </div>
@@ -114,6 +115,7 @@
           </div><span v-else class="muted">-</span>
         </template>
         <template #nnet="{ record: n }"><div v-if="n.status === 'online' && n.metrics" class="updown"><div class="d"><icon-arrow-down /> {{ fmtRate(n.metrics.netIn) }}</div><div class="u"><icon-arrow-up /> {{ fmtRate(n.metrics.netOut) }}</div></div><span v-else class="muted">-</span></template>
+        <template #nconns="{ record: n }"><span v-if="n.status === 'online' && n.metrics" class="mono">{{ n.conns }}</span><span v-else class="muted">-</span></template>
         <template #nload="{ record: n }"><span v-if="n.status === 'online' && n.metrics" class="mono">{{ num(n.metrics.load[0]) }}</span><span v-else class="muted">-</span></template>
         <template #nvms="{ record: n }"><span><b>{{ data.vms.filter(v => v.nodeId === n.id && v.status === 'running').length }}</b> / {{ data.vms.filter(v => v.nodeId === n.id).length }}</span></template>
       </a-table>
@@ -172,30 +174,48 @@
           </a-tooltip>
         </div></template>
         <template #net="{ record }"><div v-if="record.status === 'running'" class="updown"><div class="d"><icon-arrow-down /> {{ fmtRate(record.netIn) }}</div><div class="u"><icon-arrow-up /> {{ fmtRate(record.netOut) }}</div></div><span v-else class="muted">-</span></template>
+        <template #fwd="{ record }"><a-tooltip content="近 24 小时经转发规则的流量：上传为客户端 → 虚拟机，下载为虚拟机 → 客户端">
+          <div class="updown"><div class="u"><icon-upload /> {{ fmtBytes(record.up24) }}</div><div class="d"><icon-download /> {{ fmtBytes(record.down24) }}</div></div></a-tooltip></template>
+        <template #conns="{ record }"><a-tooltip v-if="record.status === 'running'" content="经转发规则访问该虚拟机的当前连接数">
+          <span class="mono" :class="{ muted: !record.conns }">{{ record.conns }}</span></a-tooltip><span v-else class="muted">-</span></template>
         <template #ip="{ record }"><div class="lines"><div class="mono">{{ record.ipv4 || '-' }}</div><div v-if="record.ipv6" class="mono muted">{{ record.ipv6 }}</div></div></template>
         <template #empty><a-empty :description="data.updated ? '没有虚拟机' : '加载中…'" /></template>
       </a-table>
     </a-card>
 
-    <a-drawer v-model:visible="drawer" :width="720" :footer="false" unmount-on-close>
+    <a-modal v-model:visible="drawer" width="90vw" :footer="false" unmount-on-close class="vm-detail-modal" :body-style="{ height: 'calc(90vh - 96px)', overflow: 'auto' }">
       <template #title><a-space><span class="circle" :class="{ pass: vm.status === 'running' }"></span>{{ vm.name }} <span class="muted mono">{{ vm.nodeName }}/{{ vm.vmid }}</span></a-space></template>
-      <a-descriptions :column="{ xs: 1, md: 3 }" size="small" :data="vmRows" />
+      <a-descriptions :column="{ xs: 1, md: 3, xl: 4 }" size="small" :data="vmRows" />
+      <template v-if="showTraffic">
+        <a-divider />
+        <a-row justify="space-between" align="center" style="margin-bottom:8px">
+          <b>转发流量趋势</b>
+          <a-space :size="16">
+            <span class="muted">合计 <icon-upload /> 上传 {{ fmtBytes(vmTraffic.up) }} · <icon-download /> 下载 {{ fmtBytes(vmTraffic.down) }}</span>
+            <a-radio-group v-model="trafficRange" type="button" size="small" @change="loadTraffic"><a-radio value="24h">近 24 小时</a-radio><a-radio value="7d">近 7 天</a-radio></a-radio-group>
+          </a-space>
+        </a-row>
+        <div class="chart-legend"><span><i style="background:#165dff"></i>上传（客户端 → 虚拟机）</span><span><i style="background:#ff7d00"></i>下载（虚拟机 → 客户端）</span></div>
+        <a-spin :loading="trafficLoading" style="width:100%">
+          <TrafficChart :series="vmTraffic.series" :step="vmTraffic.step" :height="260" />
+        </a-spin>
+      </template>
       <a-divider />
-      <a-row justify="space-between" style="margin-bottom:12px"><b>历史趋势</b>
+      <a-row justify="space-between" style="margin-bottom:12px"><b>资源历史</b>
         <a-radio-group v-model="tf" type="button" size="small" @change="loadRRD"><a-radio value="hour">1 小时</a-radio><a-radio value="day">24 小时</a-radio><a-radio value="week">7 天</a-radio></a-radio-group></a-row>
       <a-spin :loading="rrdLoading" style="width:100%">
         <a-alert v-if="rrdErr" type="warning" style="margin-bottom:12px">{{ rrdErr }}</a-alert>
-        <a-grid :cols="{ xs: 1, md: 2 }" :col-gap="12" :row-gap="12">
+        <a-grid :cols="{ xs: 1, md: 2, xl: 4 }" :col-gap="12" :row-gap="12">
           <a-grid-item v-for="c in charts" :key="c.title">
             <div class="mini-chart">
               <div class="mc-head"><span>{{ c.title }}</span><b style="font-weight:500">{{ c.now }}</b></div>
-              <Spark :series="c.series" :w="300" :h="90" width="100%" fill :max="c.max" />
+              <Spark :series="c.series" :w="300" :h="110" width="100%" fill :max="c.max" />
               <div class="muted" style="display:flex;justify-content:space-between"><span>{{ { hour: '1 小时前', day: '24 小时前', week: '7 天前' }[tf] }}</span><span>{{ c.legend }}</span><span>现在</span></div>
             </div>
           </a-grid-item>
         </a-grid>
       </a-spin>
-    </a-drawer>
+    </a-modal>
   </div>
 </template>
 
@@ -204,6 +224,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { api, isAdmin, nodeBadge, fmtBytes, fmtRate, fmtK, fmtUptime, fmtAgo, pct, lvl, num, bytesParts } from '../api'
 import Spark from '../components/Spark.vue'
 import MonCell from '../components/MonCell.vue'
+import TrafficChart from '../components/TrafficChart.vue'
 
 const props = defineProps({ slug: String })
 const pub = computed(() => !!props.slug)
@@ -228,6 +249,7 @@ const nodeColumns = computed(() => {
     { title: '存储', slotName: 'nstore', width: 210 },
     { title: '磁盘', slotName: 'ndisks', width: 320 },
     { title: '网络', slotName: 'nnet', width: 120 },
+    { title: '连接', slotName: 'nconns', width: 64 },
     { title: '负载', slotName: 'nload', width: 70 },
     { title: '虚拟机', slotName: 'nvms', width: 80 },
   ]
@@ -333,6 +355,7 @@ const summary = computed(() => {
       { title: '运行中', value: run.length, unit: '/ ' + vms.length + ' 台', sub: `VM ${run.filter(v => v.type === 'qemu').length} · CT ${run.filter(v => v.type === 'lxc').length}` },
       { title: '平均 CPU', value: avg, unit: '%', sub: '在线节点平均', color: lvl(avg) },
       { title: '内存使用', value: muV, unit: muU + ' / ' + fmtBytes(mt), sub: pct(mu, mt) + '%', color: lvl(pct(mu, mt)) },
+      { title: '当前连接', value: on.reduce((t, n) => t + (n.conns || 0), 0), unit: '个', sub: '经转发规则的连接', color: 'rgb(var(--arcoblue-6))' },
       { title: '磁盘繁忙', value: busyDisks.length, unit: '/ ' + disks.length + ' 块', sub: '最高 IO 等待 ' + num(Math.max(0, ...on.map(n => n.metrics.iowait))) + '%', color: busyDisks.length ? '#ff7d00' : undefined },
     ]
   }
@@ -341,6 +364,7 @@ const summary = computed(() => {
     { title: 'CPU 合计', value: run.reduce((s, v) => s + (v.cpu * v.cores) / 100, 0), unit: '核', sub: '共 ' + vms.reduce((s, v) => s + v.cores, 0) + ' 核' },
     { title: '内存', value: bytesParts(run.reduce((s, v) => s + v.memUsed, 0))[0], unit: bytesParts(run.reduce((s, v) => s + v.memUsed, 0))[1], sub: '共 ' + fmtBytes(vms.reduce((s, v) => s + v.memTotal, 0)) },
     { title: '网络出向', value: bytesParts(run.reduce((s, v) => s + v.netOut, 0))[0], unit: bytesParts(run.reduce((s, v) => s + v.netOut, 0))[1] + '/s', sub: '入向 ' + fmtRate(run.reduce((s, v) => s + v.netIn, 0)) },
+    { title: '当前连接', value: run.reduce((t, v) => t + (v.conns || 0), 0), unit: '个', sub: '经转发规则的连接', color: 'rgb(var(--arcoblue-6))' },
     { title: '磁盘繁忙', value: run.filter(v => ['繁忙', '饱和'].includes(vmBusy(v).text)).length, unit: '台', sub: '按 IO 压力判断', color: '#ff7d00' },
   ]
 })
@@ -367,6 +391,8 @@ const allColumns = computed(() => [
   { title: '内存', slotName: 'mem', width: 210, dataIndex: 'memUsed', sortable: { sortDirections: ['descend', 'ascend'] } },
   { title: '磁盘 / IO', slotName: 'disk', width: 340, dataIndex: 'iops', sortable: { sortDirections: ['descend', 'ascend'] } },
   { title: '网络', slotName: 'net', width: 120 },
+  ...(showTraffic.value ? [{ title: '转发流量（24h）', slotName: 'fwd', width: 140, dataIndex: 'down24', sortable: { sortDirections: ['descend', 'ascend'] } }] : []),
+  { title: '连接', slotName: 'conns', width: 72, dataIndex: 'conns', sortable: { sortDirections: ['descend', 'ascend'] } },
   ...(showIp.value ? [{ title: 'IP', slotName: 'ip', width: 150 }] : []),
 ])
 // a-statistic 需要指定小数位数：按数值实际的小数位（最多两位）显示
@@ -380,7 +406,18 @@ const tf = ref('hour')
 const rrd = ref([])
 const rrdLoading = ref(false)
 const rrdErr = ref('')
-function openVM(v) { vm.value = v; drawer.value = true; loadRRD() }
+function openVM(v) { vm.value = v; drawer.value = true; loadRRD(); if (showTraffic.value) loadTraffic() }
+// 转发流量（登录用户可见，公开页不显示）
+const showTraffic = computed(() => !pub.value)
+const trafficRange = ref('24h')
+const trafficLoading = ref(false)
+const vmTraffic = ref({ series: [], step: 3600, up: 0, down: 0 })
+async function loadTraffic() {
+  trafficLoading.value = true
+  try {
+    vmTraffic.value = await api.get(`/api/monitor/traffic?vm=${vm.value.id}&range=${trafficRange.value}&tz=${-new Date().getTimezoneOffset()}`, { silent: true })
+  } catch { vmTraffic.value = { series: [], step: 3600, up: 0, down: 0 } } finally { trafficLoading.value = false }
+}
 async function loadRRD() {
   rrdLoading.value = true
   rrdErr.value = ''
@@ -399,6 +436,8 @@ const vmRows = computed(() => {
   if (showOwner.value) r.push({ label: '归属', value: v.shared ? '公共' : v.owner || '-' })
   if (showIp.value) r.push({ label: 'IP', value: [v.ipv4, v.ipv6].filter(Boolean).join(' / ') || '-' })
   if (v.status === 'running') r.push({ label: '磁盘 IO', value: `${vmBusy(v).text} · ${fmtK(v.iops)} IOPS · 压力 ${num(v.ioPressure)}%` })
+  if (v.status === 'running') r.push({ label: '当前连接', value: `${v.conns || 0} 个` })
+  if (showTraffic.value) r.push({ label: '近 24 小时转发', value: `上传 ${fmtBytes(v.up24)} · 下载 ${fmtBytes(v.down24)}` })
   return r
 })
 const col = k => rrd.value.map(p => p[k] || 0)

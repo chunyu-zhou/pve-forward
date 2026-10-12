@@ -24,6 +24,7 @@ type monNode struct {
 	LastSeen int64               `json:"lastSeen"`
 	Metrics  *proto.NodeMetrics  `json:"metrics"`
 	Disks    []proto.DiskMetrics `json:"disks"`
+	Conns    int                 `json:"conns"` // 经转发规则的当前连接数
 }
 
 type monVM struct {
@@ -57,6 +58,10 @@ type monVMMetrics struct {
 	DiskW      float64 `json:"diskW"`
 	IOPS       float64 `json:"iops"`
 	IOPressure float64 `json:"ioPressure"`
+	Conns      int     `json:"conns"` // 指向该虚拟机的转发规则的当前连接数
+	// 近 24 小时经转发规则的流量：上传为客户端 → 虚拟机，下载为虚拟机 → 客户端（公开页为 -1，不显示）
+	Up24   int64 `json:"up24"`
+	Down24 int64 `json:"down24"`
 }
 
 type monScope struct {
@@ -65,6 +70,8 @@ type monScope struct {
 	showOwner bool
 	showIP    bool
 	showNodes bool
+	traffic   bool  // 显示转发流量（登录用户）
+	userID    int64 // 非 0 时只统计该用户的规则
 }
 
 func (s *Server) monitorData(sc monScope) map[string]any {
@@ -96,6 +103,36 @@ func (s *Server) monitorData(sc monScope) map[string]any {
 		}
 		outNodes = append(outNodes, mn)
 	}
+	nodeConns, vmConns := map[int64]int{}, map[int64]int{}
+	if rules, err := s.db.Rules(0, 0); err == nil {
+		for _, rl := range rules {
+			if st, ok := statuses[rl.NodeID]; ok && st.State == "online" && st.Report != nil {
+				c := st.Report.Conns[rl.ID]
+				nodeConns[rl.NodeID] += c
+				vmConns[rl.VMID] += c
+			}
+		}
+	}
+	for i := range outNodes {
+		outNodes[i].Conns = nodeConns[outNodes[i].ID]
+	}
+	vmTraffic := map[int64][2]int64{}
+	if sc.traffic {
+		q := `SELECT r.vm_id, SUM(t.bytes_up), SUM(t.bytes_down) FROM traffic t JOIN rules r ON r.id=t.rule_id WHERE t.hour>=?`
+		args := []any{time.Now().Add(-24 * time.Hour).Unix()}
+		if sc.userID > 0 {
+			q += ` AND r.user_id=?`
+			args = append(args, sc.userID)
+		}
+		if rows, err := s.db.Query(q+` GROUP BY r.vm_id`, args...); err == nil {
+			for rows.Next() {
+				var id, up, down int64
+				rows.Scan(&id, &up, &down)
+				vmTraffic[id] = [2]int64{up, down}
+			}
+			rows.Close()
+		}
+	}
 	vms, _ := s.db.VMs(0)
 	outVMs := []monVM{}
 	for _, v := range vms {
@@ -119,6 +156,7 @@ func (s *Server) monitorData(sc monScope) map[string]any {
 						o.CPU, o.MemUsed, o.DiskUsed, o.Uptime = x.CPU, x.MemUsed, x.DiskUsed, x.Uptime
 						o.NetIn, o.NetOut, o.DiskR, o.DiskW = x.NetIn, x.NetOut, x.DiskR, x.DiskW
 						o.IOPS, o.IOPressure = x.IOPS, x.IOPressure
+						o.Conns = vmConns[v.ID]
 						if x.Status != "" {
 							o.Status = x.Status
 						}
@@ -129,6 +167,11 @@ func (s *Server) monitorData(sc monScope) map[string]any {
 		}
 		if st.State != "online" {
 			o.Status = "offline"
+		}
+		if sc.traffic {
+			o.Up24, o.Down24 = vmTraffic[v.ID][0], vmTraffic[v.ID][1]
+		} else {
+			o.Up24, o.Down24 = -1, -1
 		}
 		outVMs = append(outVMs, o)
 	}
@@ -143,8 +186,9 @@ func (s *Server) monitor(w http.ResponseWriter, r *http.Request) {
 	if rf := queryInt(r, "refresh"); rf > 0 {
 		s.mgr.Live(time.Duration(rf) * time.Second)
 	}
-	sc := monScope{showOwner: true, showIP: true, showNodes: u.Role == "admin"}
+	sc := monScope{showOwner: true, showIP: true, showNodes: u.Role == "admin", traffic: true}
 	if u.Role != "admin" {
+		sc.userID = u.ID
 		sc.vmFilter = func(v *store.VM) bool { return v.UserID != nil && *v.UserID == u.ID }
 	}
 	writeJSON(w, s.monitorData(sc))
@@ -306,15 +350,20 @@ func (s *Server) publicRRD(w http.ResponseWriter, r *http.Request) {
 
 // ---------------- 仪表盘 ----------------
 
-func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
-	u := currentUser(r)
-	admin := u.Role == "admin"
+// clientNow 返回按浏览器时区（tz 为相对 UTC 的分钟数）表示的当前时间。
+// 控制端在 Docker 中通常为 UTC，直接用服务器时区会让“今天”从北京时间 8 点开始。
+func clientNow(r *http.Request) time.Time {
 	now := time.Now()
-	midnight := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()).Unix()
+	if tz := queryInt(r, "tz"); tz >= -14*60 && tz <= 14*60 && r.URL.Query().Has("tz") {
+		now = now.In(time.FixedZone("client", int(tz)*60))
+	}
+	return now
+}
 
-	// 流量序列：近 24 小时按小时、近 7 天按天
-	tf := r.URL.Query().Get("range")
-	nodeID := queryInt(r, "node")
+// trafficSeries 按小时（近 24 小时）或按天（近 7 天，tf=7d）汇总流量。
+// q 为 SELECT hour, SUM(up), SUM(down) ... WHERE hour>=? ...（不含 GROUP BY），args 为 since 之后的参数。
+func (s *Server) trafficSeries(now time.Time, tf, q string, args ...any) ([]map[string]int64, int64) {
+	midnight := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()).Unix()
 	var since int64
 	step := int64(3600)
 	n := 24
@@ -324,8 +373,64 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 	} else {
 		since = now.Truncate(time.Hour).Unix() - 23*3600
 	}
+	series := make([]map[string]int64, n)
+	for i := range series {
+		series[i] = map[string]int64{"t": since + int64(i)*step, "up": 0, "down": 0}
+	}
+	rows, err := s.db.Query(q+` GROUP BY 1`, append([]any{since}, args...)...)
+	if err != nil {
+		return series, step
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var h, up, down int64
+		rows.Scan(&h, &up, &down)
+		i := int((h - since) / step)
+		if tf == "7d" {
+			day := time.Unix(h, 0).In(now.Location())
+			i = int((time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, now.Location()).Unix() - since) / step)
+		}
+		if i >= 0 && i < n {
+			series[i]["up"] += up
+			series[i]["down"] += down
+		}
+	}
+	return series, step
+}
+
+// monitorTraffic 返回某台虚拟机经转发规则的流量趋势（上传 / 下载）。
+func (s *Server) monitorTraffic(w http.ResponseWriter, r *http.Request) {
+	u := currentUser(r)
+	v, err := s.db.VM(queryInt(r, "vm"))
+	if err != nil || (u.Role != "admin" && (v.UserID == nil || *v.UserID != u.ID)) {
+		jsonErr(w, http.StatusNotFound, "虚拟机不存在")
+		return
+	}
+	q := `SELECT t.hour, SUM(t.bytes_up), SUM(t.bytes_down) FROM traffic t JOIN rules r ON r.id=t.rule_id WHERE t.hour>=? AND r.vm_id=?`
+	args := []any{v.ID}
+	if u.Role != "admin" {
+		q += ` AND r.user_id=?` // 公共虚拟机上只统计自己的规则
+		args = append(args, u.ID)
+	}
+	series, step := s.trafficSeries(clientNow(r), r.URL.Query().Get("range"), q, args...)
+	var up, down int64
+	for _, p := range series {
+		up, down = up+p["up"], down+p["down"]
+	}
+	writeJSON(w, map[string]any{"series": series, "step": step, "up": up, "down": down})
+}
+
+func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
+	u := currentUser(r)
+	admin := u.Role == "admin"
+	now := clientNow(r)
+	midnight := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()).Unix()
+
+	// 流量序列：近 24 小时按小时、近 7 天按天
+	tf := r.URL.Query().Get("range")
+	nodeID := queryInt(r, "node")
 	var q string
-	args := []any{since}
+	var args []any
 	if admin {
 		q = `SELECT hour, SUM(bytes_up), SUM(bytes_down) FROM node_traffic WHERE hour>=?`
 		if nodeID > 0 {
@@ -340,27 +445,7 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 			args = append(args, nodeID)
 		}
 	}
-	series := make([]map[string]int64, n)
-	for i := range series {
-		series[i] = map[string]int64{"t": since + int64(i)*step, "up": 0, "down": 0}
-	}
-	rows, err := s.db.Query(q+` GROUP BY 1`, args...)
-	if err == nil {
-		for rows.Next() {
-			var h, up, down int64
-			rows.Scan(&h, &up, &down)
-			i := int((h - since) / step)
-			if tf == "7d" {
-				day := time.Unix(h, 0)
-				i = int((time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, now.Location()).Unix() - since) / step)
-			}
-			if i >= 0 && i < n {
-				series[i]["up"] += up
-				series[i]["down"] += down
-			}
-		}
-		rows.Close()
-	}
+	series, step := s.trafficSeries(now, tf, q, args...)
 
 	// 今日流量
 	var todayUp, todayDown int64
