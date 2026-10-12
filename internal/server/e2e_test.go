@@ -438,6 +438,44 @@ func TestEndToEnd(t *testing.T) {
 	if len(bobRules) != 0 {
 		t.Fatal("bob 不应看到 alice 的规则")
 	}
+
+	// ---- 公共规则：管理员创建，可使用保留端口和宿主机在监听的端口（22），可指向任意虚拟机 ----
+	var meInfo struct{ User store.User }
+	admin.do("GET", "/api/me", nil, 200, &meInfo)
+	adminID := meInfo.User.ID
+	pubRule := map[string]any{"userId": adminID, "nodeId": nid, "port": 22, "proto": "tcp", "ipVer": "v4", "vmId": vmWeb, "targetPort": 22, "remark": "公共 SSH"}
+	admin.do("POST", "/api/rules", pubRule, 200, nil)
+	pubRule["port"] = 20003 // 已分配给 alice 的端口不能用于公共规则
+	if body := admin.do("POST", "/api/rules", pubRule, 400, nil); !strings.Contains(body, "已分配给用户 alice") {
+		t.Fatalf("公共规则占用用户端口 %s", body)
+	}
+	// 普通用户不能创建公共规则：userId 会被替换为自己，22 不是他的端口
+	pubRule["port"] = 22
+	ub.do("POST", "/api/rules", pubRule, 400, nil)
+	// 公共规则占用的端口不能再分配给用户
+	carol := map[string]any{"username": "carol", "password": "carolpass1", "enabled": true,
+		"allocations": []map[string]any{{"nodeId": nid, "kind": "single", "spec": "22"}}}
+	admin.do("POST", "/api/users", carol, 400, nil)
+	var all []ruleOut
+	admin.do("GET", "/api/rules", nil, 200, &all)
+	var pubR *ruleOut
+	for i := range all {
+		if all[i].Port == 22 {
+			pubR = &all[i]
+		}
+	}
+	if pubR == nil || !pubR.Public || pubR.Owner != "公共" {
+		t.Fatalf("公共规则 %+v", pubR)
+	}
+	ub.do("GET", "/api/rules", nil, 200, &bobRules)
+	ua.do("GET", "/api/rules", nil, 200, &rules)
+	if len(bobRules) != 0 || len(rules) != 2 {
+		t.Fatal("普通用户不应看到公共规则")
+	}
+	waitFor(t, "公共规则下发", func() bool { return strings.Contains(fake.nft(), "tcp dport 22 counter dnat ip to 10.0.0.57:22") })
+	admin.do("DELETE", fmt.Sprintf("/api/rules/%d", pubR.ID), nil, 200, nil)
+	waitFor(t, "公共规则删除下发", func() bool { return !strings.Contains(fake.nft(), "dport 22 ") })
+	waitFor(t, "节点状态已同步", func() bool { n, _ := db.Node(nid); return n.AppliedVersion == n.StateVersion })
 	ub.do("DELETE", fmt.Sprintf("/api/rules/%d", rules[0].ID), nil, 404, nil)
 
 	// ---- 流量统计与配额 ----

@@ -356,7 +356,7 @@ func parseCollect(s map[string]string, prev *sample, now time.Time, st *proto.De
 		for _, r := range st.Rules {
 			rep.Conns[r.ID] = conns[r.Port]
 			msg := ""
-			if seen[r.Port] {
+			if seen[r.Port] && !r.Public {
 				msg = fmt.Sprintf("端口冲突：%d 已被宿主机进程监听", r.Port)
 			} else if healthy[r.ID] == "fail" {
 				t := r.Target4

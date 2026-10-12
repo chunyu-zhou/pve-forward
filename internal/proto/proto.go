@@ -76,6 +76,8 @@ type Rule struct {
 	Target4    string `json:"target4"`
 	Target6    string `json:"target6"`
 	TargetPort int    `json:"targetPort"`
+	// Public 为管理员创建的公共规则：允许使用宿主机也在监听的端口（公网网口的流量由 DNAT 接管）
+	Public bool `json:"public,omitempty"`
 }
 
 type DHCPHost struct {

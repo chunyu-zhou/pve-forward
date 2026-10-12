@@ -64,6 +64,13 @@
               <span style="color:rgb(var(--red-6));cursor:help"><span class="circle err"></span>异常 <icon-question-circle /></span></a-tooltip>
             <template v-else><span class="circle" :class="{ pass: record.enabled }"></span>{{ record.enabled ? '正常' : '已停用' }}</template>
           </template>
+          <div v-else-if="record.public" class="grp">
+            <a-avatar :size="24" :style="{ backgroundColor: '#86909c' }"><icon-public /></a-avatar>
+            <span class="nm">公共</span>
+            <a-tag size="small">{{ record.children.length }} 条</a-tag>
+            <a-tag v-if="record.children.some(r => r.enabled && r.error)" size="small" color="red">异常 {{ record.children.filter(r => r.enabled && r.error).length }}</a-tag>
+            <div class="info"><span>由管理员维护，普通用户不可见</span></div>
+          </div>
           <div v-else class="grp">
             <a-avatar :size="24" :style="{ backgroundColor: color(record.user.username) }">{{ record.user.username[0].toUpperCase() }}</a-avatar>
             <span class="nm">{{ record.user.username }}</span>
@@ -142,7 +149,7 @@ async function load() {
     rules.value = r
     if (admin.value) {
       users.value = u
-      if (!expanded.value.length) expanded.value = u.map(x => 'g' + x.id)
+      if (!expanded.value.length) expanded.value = ['gpub', ...u.map(x => 'g' + x.id)]
     } else me.value = u
   } finally { loading.value = false }
 }
@@ -159,14 +166,16 @@ const filtered = computed(() => rules.value.filter(r =>
   (!q.kw || [r.port, r.remark, r.target4, r.target6, r.vmName, r.vmVmid, r.entry4].join(' ').toLowerCase().includes(q.kw.toLowerCase()))))
 const errRules = computed(() => rules.value.filter(r => r.enabled && r.error))
 const nodeOptions = computed(() => [...new Map(rules.value.map(r => [r.nodeId, { label: r.nodeName, value: r.nodeId }])).values()])
-const ownerOptions = computed(() => (admin.value ? users.value.map(u => ({ label: u.username, value: u.username })) : []))
+const ownerOptions = computed(() => (admin.value ? [{ label: '公共', value: '公共' }, ...users.value.map(u => ({ label: u.username, value: u.username }))] : []))
 
 const tableRows = computed(() => {
   const list = filtered.value.map(r => Object.assign(r, { key: 'r' + r.id }))
   if (!admin.value || !grouped.value) return list
-  return users.value.filter(u => !q.owner || u.username === q.owner)
-    .map(u => ({ key: 'g' + u.id, group: true, user: u, children: list.filter(r => r.userId === u.id) }))
+  const pub = list.filter(r => r.public)
+  const groups = users.value.filter(u => !q.owner || u.username === q.owner)
+    .map(u => ({ key: 'g' + u.id, group: true, user: u, children: list.filter(r => !r.public && r.userId === u.id) }))
     .filter(g => g.children.length || (!q.status && !q.kw && !q.node && !q.proto && !q.ipVer))
+  return pub.length ? [{ key: 'gpub', group: true, public: true, children: pub }, ...groups] : groups
 })
 const selectedRules = computed(() => selected.value.filter(k => String(k).startsWith('r')).map(k => Number(String(k).slice(1))))
 

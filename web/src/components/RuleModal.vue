@@ -1,17 +1,21 @@
 <template>
   <a-modal :visible="visible" :title="rule?.id ? '编辑规则' : '添加规则'" :width="600" :ok-loading="saving" @ok="save" @cancel="$emit('update:visible', false)" unmount-on-close>
     <a-form :model="f" :label-col-props="{ span: 5 }" :wrapper-col-props="{ span: 19 }">
-      <a-form-item label="所属用户" required :extra="admin ? undefined : '规则只能创建在自己名下'">
+      <a-form-item label="所属用户" required :extra="admin ? (isPublic ? '公共规则只有管理员可以管理，可使用保留端口，可指向节点上的任意虚拟机' : undefined) : '规则只能创建在自己名下'">
         <a-select v-model="f.userId" :disabled="!admin" placeholder="请选择用户" @change="onUserChange">
+          <a-option v-if="admin" :value="session.user.id">公共（管理员）</a-option>
           <a-option v-for="u in userList" :key="u.id" :value="u.id">{{ u.username }}</a-option></a-select>
       </a-form-item>
-      <a-form-item label="节点" required :extra="opts.nodes.length ? '仅列出该用户分配了端口的节点' : '该用户还没有被分配任何节点的端口'">
+      <a-form-item label="节点" required :extra="isPublic ? undefined : opts.nodes.length ? '仅列出该用户分配了端口的节点' : '该用户还没有被分配任何节点的端口'">
         <a-select v-model="f.nodeId" placeholder="请选择节点" @change="onNodeChange">
           <a-option v-for="n in opts.nodes" :key="n.id" :value="n.id">
             {{ n.name }}<span class="muted">（{{ n.wanIp4 }}{{ n.status !== 'online' ? '，离线' : '' }}）</span></a-option>
         </a-select>
       </a-form-item>
-      <a-form-item label="监听端口" required
+      <a-form-item v-if="isPublic" label="监听端口" required extra="公共规则可使用任意未被规则占用、未分配给用户的端口（包括保留端口）">
+        <a-input-number v-model="f.port" :min="1" :max="65535" placeholder="1 - 65535" :disabled="!f.nodeId" />
+      </a-form-item>
+      <a-form-item v-else label="监听端口" required
         :extra="f.nodeId ? portExtra : '请先选择节点'">
         <a-select v-model="f.port" placeholder="请选择或输入端口搜索" :disabled="!f.nodeId" allow-search :options="portOptions"
                   :virtual-list-props="portOptions.length > 200 ? { height: 240 } : undefined">
@@ -21,9 +25,9 @@
       <a-form-item label="协议" required>
         <a-radio-group v-model="f.proto"><a-radio value="tcp">TCP</a-radio><a-radio value="udp">UDP</a-radio><a-radio value="both">TCP + UDP</a-radio></a-radio-group>
       </a-form-item>
-      <a-form-item label="目标虚拟机" required :extra="admin ? '只能选择该用户在此节点上的虚拟机或公共虚拟机' : '只能选择自己在此节点上的虚拟机或公共虚拟机'">
-        <a-select v-model="f.vmId" placeholder="请选择虚拟机" :disabled="!f.nodeId" @change="onVMChange">
-          <a-optgroup :label="admin ? '该用户的虚拟机' : '我的虚拟机'">
+      <a-form-item label="目标虚拟机" required :extra="isPublic ? '节点上的全部虚拟机' : admin ? '只能选择该用户在此节点上的虚拟机或公共虚拟机' : '只能选择自己在此节点上的虚拟机或公共虚拟机'">
+        <a-select v-model="f.vmId" placeholder="请选择虚拟机" :disabled="!f.nodeId" allow-search @change="onVMChange">
+          <a-optgroup :label="isPublic ? '虚拟机' : admin ? '该用户的虚拟机' : '我的虚拟机'">
             <a-option v-for="v in opts.vms.filter(v => !v.shared)" :key="v.id" :value="v.id" :label="vmLabel(v)" :disabled="!v.ipv4 && !v.ipv6">
               <div class="ip-opt"><span><span class="mono">{{ v.vmid }}</span> {{ v.name }}<span v-if="v.status !== 'running'" class="muted">（{{ v.status === 'stopped' ? '已停止' : v.status }}）</span>
                 <a-tag v-if="v.ipv4 && !v.ipv6" size="small" style="margin-left:4px">仅 IPv4</a-tag></span><span class="mono muted">{{ ipLabel(v) }}</span></div></a-option>
@@ -57,6 +61,8 @@ const emit = defineEmits(['update:visible', 'saved'])
 const admin = computed(isAdmin)
 const users = ref([])
 const userList = computed(() => (admin.value ? users.value : [session.user]))
+// 公共规则：所属用户为管理员自己
+const isPublic = computed(() => admin.value && f.userId === session.user?.id)
 const f = reactive({})
 const opts = reactive({ nodes: [], ports: [], vms: [], total: 0, usedCount: 0, busyCount: 0, reservedCount: 0 })
 // 端口较多时必须通过 options 传入，虚拟列表才能正常渲染

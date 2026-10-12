@@ -707,7 +707,7 @@ func (m *Manager) BuildState(n *store.Node) (*proto.DesiredState, error) {
 			reason = "用户流量已超限"
 		case v == nil || !v.Present:
 			reason = "目标虚拟机已删除"
-		case !v.Shared && (v.UserID == nil || *v.UserID != rl.UserID):
+		case u.Role != "admin" && !v.Shared && (v.UserID == nil || *v.UserID != rl.UserID):
 			reason = "目标虚拟机已不属于该用户"
 		case rl.IPVer != "v6" && v.IPv4 == "":
 			reason = "目标虚拟机没有 IPv4 地址"
@@ -727,7 +727,7 @@ func (m *Manager) BuildState(n *store.Node) (*proto.DesiredState, error) {
 			m.db.Exec(`UPDATE rules SET error_msg='' WHERE id=?`, rl.ID)
 		}
 		st.Rules = append(st.Rules, proto.Rule{ID: rl.ID, Port: rl.Port, Proto: rl.Proto, IPVer: rl.IPVer,
-			Target4: v.IPv4, Target6: v.IPv6, TargetPort: rl.TargetPort})
+			Target4: v.IPv4, Target6: v.IPv6, TargetPort: rl.TargetPort, Public: u.Role == "admin"})
 	}
 	return st, nil
 }

@@ -17,6 +17,7 @@ type ruleOut struct {
 	NodeStatus string `json:"nodeStatus"`
 	Entry4     string `json:"entry4"`
 	Entry6     string `json:"entry6"`
+	Public     bool   `json:"public"` // 管理员创建的公共规则
 	VMName     string `json:"vmName"`
 	VMVMID     int    `json:"vmVmid"`
 	VMShared   bool   `json:"vmShared"`
@@ -33,9 +34,11 @@ func (s *Server) ruleRows(uid int64) ([]*ruleOut, error) {
 		return nil, err
 	}
 	users := map[int64]string{}
+	admins := map[int64]bool{}
 	if us, err := s.db.Users(); err == nil {
 		for _, u := range us {
 			users[u.ID] = u.Username
+			admins[u.ID] = u.Role == "admin"
 		}
 	}
 	nodes := map[int64]*store.Node{}
@@ -71,7 +74,10 @@ func (s *Server) ruleRows(uid int64) ([]*ruleOut, error) {
 	}
 	res := []*ruleOut{}
 	for _, rl := range rules {
-		o := &ruleOut{Rule: rl, Owner: users[rl.UserID], Up24: t24[rl.ID][0], Down24: t24[rl.ID][1]}
+		o := &ruleOut{Rule: rl, Owner: users[rl.UserID], Public: admins[rl.UserID], Up24: t24[rl.ID][0], Down24: t24[rl.ID][1]}
+		if o.Public {
+			o.Owner = "公共"
+		}
 		if n := nodes[rl.NodeID]; n != nil {
 			o.NodeName, o.NodeStatus = n.Name, status[n.ID]
 			o.Entry4, o.Entry6 = n.Net.WANIP4, n.Net.WANIP6
@@ -146,9 +152,12 @@ func (s *Server) saveRule(w http.ResponseWriter, r *http.Request) {
 		in.UserID = old.UserID
 	}
 	owner, err := s.db.User(in.UserID)
-	if err != nil || owner.Role == "admin" {
+	if err != nil {
 		jsonErr(w, http.StatusBadRequest, "请选择所属用户")
 		return
+	}
+	if owner.Role == "admin" {
+		owner = me // 公共规则统一记在当前管理员名下
 	}
 	if err := s.validateRule(owner, old, &in); err != nil {
 		fail(w, err)
@@ -207,16 +216,28 @@ func (s *Server) validateRule(owner *store.User, old *store.Rule, in *ruleIn) er
 	if in.TargetPort < 1 || in.TargetPort > 65535 {
 		return bad("目标端口无效")
 	}
-	// 监听端口：必须分配给该用户，且未被占用
-	mine, err := s.db.UserPorts(owner.ID, n.ID)
-	if err != nil {
-		return err
+	public := owner.Role == "admin"
+	if in.Port < 1 || in.Port > 65535 {
+		return bad("监听端口无效")
 	}
-	if !mine[in.Port] {
-		return bad("端口 %d 未分配给用户 %s", in.Port, owner.Username)
-	}
-	if ports.MustSet(n.Ports.Reserved).Contains(in.Port) {
-		return bad("端口 %d 是保留端口", in.Port)
+	// 监听端口：普通用户必须使用分配给自己的端口；公共规则（管理员）可使用任意端口，包括保留端口，
+	// 但不能占用已分配给用户的端口
+	if public {
+		var holder string
+		if s.db.QueryRow(`SELECT u.username FROM allocated_ports a JOIN users u ON u.id=a.user_id WHERE a.node_id=? AND a.port=?`, n.ID, in.Port).Scan(&holder) == nil {
+			return bad("端口 %d 已分配给用户 %s，请使用其他端口或先收回分配", in.Port, holder)
+		}
+	} else {
+		mine, err := s.db.UserPorts(owner.ID, n.ID)
+		if err != nil {
+			return err
+		}
+		if !mine[in.Port] {
+			return bad("端口 %d 未分配给用户 %s", in.Port, owner.Username)
+		}
+		if ports.MustSet(n.Ports.Reserved).Contains(in.Port) {
+			return bad("端口 %d 是保留端口", in.Port)
+		}
 	}
 	samePort := old != nil && old.NodeID == in.NodeID && old.Port == in.Port
 	if !samePort {
@@ -224,7 +245,8 @@ func (s *Server) validateRule(owner *store.User, old *store.Rule, in *ruleIn) er
 		if s.db.QueryRow(`SELECT id FROM rules WHERE node_id=? AND listen_port=?`, n.ID, in.Port).Scan(&other) == nil {
 			return bad("端口 %d 已被其他规则使用", in.Port)
 		}
-		if st := s.mgr.Status(n.ID); st.Report != nil {
+		// 公共规则允许使用宿主机也在监听的端口：公网网口进入的流量由 DNAT 转到虚拟机
+		if st := s.mgr.Status(n.ID); st.Report != nil && !public {
 			for _, p := range st.Report.Listen {
 				if p == in.Port {
 					return bad("端口 %d 已被宿主机进程占用", in.Port)
@@ -237,7 +259,7 @@ func (s *Server) validateRule(owner *store.User, old *store.Rule, in *ruleIn) er
 	if err != nil || v.NodeID != n.ID || !v.Present {
 		return bad("请选择该节点上的虚拟机")
 	}
-	if !v.Shared && (v.UserID == nil || *v.UserID != owner.ID) {
+	if !public && !v.Shared && (v.UserID == nil || *v.UserID != owner.ID) {
 		return bad("只能选择 %s 的虚拟机或公共虚拟机", owner.Username)
 	}
 	if in.IPVer != "v6" && v.IPv4 == "" {
@@ -308,6 +330,11 @@ func (s *Server) ruleOptions(w http.ResponseWriter, r *http.Request) {
 	nodeID := queryInt(r, "node")
 	keep := int(queryInt(r, "keep")) // 编辑时保留当前端口
 	res := map[string]any{}
+	public := false
+	if owner, err := s.db.User(uid); err == nil && owner.Role == "admin" {
+		public = true
+	}
+	res["public"] = public
 
 	type nodeOpt struct {
 		ID     int64  `json:"id"`
@@ -318,7 +345,11 @@ func (s *Server) ruleOptions(w http.ResponseWriter, r *http.Request) {
 		V6     bool   `json:"v6"`
 	}
 	nodes := []nodeOpt{}
-	rows, err := s.db.Query(`SELECT DISTINCT node_id FROM allocated_ports WHERE user_id=?`, uid)
+	q := `SELECT DISTINCT node_id FROM allocated_ports WHERE user_id=?`
+	if public {
+		q = `SELECT id FROM nodes WHERE initialized=1 OR id=-?`
+	}
+	rows, err := s.db.Query(q, uid)
 	if err != nil {
 		fail(w, err)
 		return
@@ -391,7 +422,7 @@ func (s *Server) ruleOptions(w http.ResponseWriter, r *http.Request) {
 		vms, _ := s.db.VMs(nodeID)
 		opts := []vmOpt{}
 		for _, v := range vms {
-			if !v.Present || !(v.Shared || (v.UserID != nil && *v.UserID == uid)) {
+			if !v.Present || !(public || v.Shared || (v.UserID != nil && *v.UserID == uid)) {
 				continue
 			}
 			opts = append(opts, vmOpt{v.ID, v.VMID, v.Name, v.Status, v.IPv4, v.IPv6, v.Shared})
