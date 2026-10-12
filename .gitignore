@@ -1,0 +1,35 @@
+# Local editor / automation settings (may contain machine paths or credentials)
+/.claude/
+/.apifox/
+/.vscode/
+/.idea/
+.DS_Store
+Thumbs.db
+
+# Reproducible dependencies and build outputs; keep package-lock.json/go.sum
+/web/node_modules/
+/web/dist/
+/release/
+/bin/
+/dist/
+*.exe
+*.exe~
+*.test
+*.out
+*.log
+coverage/
+
+# Runtime data and secrets must never be committed
+/data/
+/backups/
+*.db
+*.db-wal
+*.db-shm
+master.key
+setup-token
+agent.json
+*.key
+*.pem
+.env
+.env.*
+!.env.example

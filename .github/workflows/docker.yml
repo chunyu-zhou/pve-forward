@@ -1,0 +1,371 @@
+name: Docker
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'cmd/**'
+      - 'internal/**'
+      - 'web/**'
+      - '!**/*.md'
+      - 'go.mod'
+      - 'go.sum'
+      - 'version.json'
+      - 'version.go'
+      - 'Dockerfile'
+      - '.dockerignore'
+      - 'install.sh'
+      - 'tools/build-release.sh'
+      - '.github/workflows/docker.yml'
+  pull_request:
+    branches: [main, master]
+    paths:
+      - 'cmd/**'
+      - 'internal/**'
+      - 'web/**'
+      - '!**/*.md'
+      - 'go.mod'
+      - 'go.sum'
+      - 'version.json'
+      - 'version.go'
+      - 'Dockerfile'
+      - '.dockerignore'
+      - 'install.sh'
+      - 'tools/build-release.sh'
+      - '.github/workflows/docker.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docker-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  IMAGE: ghcr.io/chunyu-zhou/pve-forward
+
+jobs:
+  verify:
+    name: Test, native smoke and multi-platform validation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    outputs:
+      go-version: ${{ steps.go-version.outputs.version }}
+      version: ${{ steps.app-version.outputs.version }}
+      new-release: ${{ steps.app-version.outputs.new-release }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      # version.json 是控制台检测新版本的唯一来源；该版本尚无 Release 时本次运行会发布它
+      - name: Read version.json
+        id: app-version
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(jq -er '.version' version.json)
+          version=${version#v}
+          if ! [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$ ]]; then
+            printf '::error file=version.json::版本号 %s 无效，应为 主.次.修订[-预发布]\n' "$version"
+            exit 1
+          fi
+          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/v${version}" >/dev/null 2>&1; then
+            new_release=false
+            printf '版本 v%s 已发布；本次只更新镜像 latest。修改 version.json 中的版本号才会发布新版本。\n' "$version"
+          else
+            new_release=true
+            printf '版本 v%s 尚未发布，验证通过后将创建 Release。\n' "$version"
+          fi
+          printf 'version=%s\nnew-release=%s\n' "$version" "$new_release" >> "$GITHUB_OUTPUT"
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Build embedded frontend
+        working-directory: web
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+          test -s dist/index.html
+      - name: Set up Go from go.mod
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Read exact Go version
+        id: go-version
+        shell: bash
+        run: |
+          version=$(awk '$1 == "go" { print $2; exit }' go.mod)
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+      - name: Go tests and vet
+        env:
+          CGO_ENABLED: '0'
+          GOTOOLCHAIN: local
+          GOFLAGS: -mod=readonly
+        run: |
+          go test ./...
+          go vet ./...
+          # 程序版本由 version.json 嵌入，与之核对
+          test "$(go run ./cmd/pve-forward version)" = "${{ steps.app-version.outputs.version }}"
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Build native amd64 smoke image (no registry credentials)
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: pve-forward:smoke
+          build-args: GO_VERSION=${{ steps.go-version.outputs.version }}
+          cache-from: type=gha,scope=pve-forward
+          cache-to: type=gha,mode=max,scope=pve-forward-verify
+      - name: Smoke HTTPS initialization, persistence and both agent downloads
+        shell: bash
+        run: |
+          set -euo pipefail
+          work=$(mktemp -d)
+          container="pf-smoke-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          volume="${container}-data"
+          base=https://localhost:15000
+          username=ci_admin
+          password=$(openssl rand -hex 24)
+          replacement=$(openssl rand -hex 24)
+          printf '::add-mask::%s\n' "$password" "$replacement"
+          cleanup() {
+            status=$?
+            if [[ $status -ne 0 ]]; then docker logs "$container" 2>&1 || true; fi
+            docker rm -f "$container" >/dev/null 2>&1 || true
+            docker volume rm "$volume" >/dev/null 2>&1 || true
+            rm -rf "$work"
+            exit "$status"
+          }
+          trap cleanup EXIT
+          docker volume create "$volume" >/dev/null
+          start() {
+            docker run -d --name "$container" \
+              --read-only --tmpfs /tmp:rw,noexec,nosuid,size=64m \
+              --cap-drop=ALL --security-opt=no-new-privileges \
+              -p 127.0.0.1:15000:5000 \
+              -v "$volume:/var/lib/pve-forward" \
+              -e PVE_FORWARD_ADMIN_USER="$username" \
+              -e PVE_FORWARD_ADMIN_PASSWORD="$1" \
+              -e PVE_FORWARD_LISTEN=:5000 \
+              -e PVE_FORWARD_TLS=self \
+              -e PVE_FORWARD_PUBLIC_URL="$base" \
+              pve-forward:smoke >/dev/null
+          }
+          ready() {
+            for attempt in {1..60}; do
+              if curl -kfsS --max-time 2 "$base/api/bootstrap" -o "$work/bootstrap.json" 2>/dev/null; then
+                jq -e '.setup == true' "$work/bootstrap.json" >/dev/null
+                return
+              fi
+              sleep 1
+            done
+            printf 'Controller readiness timed out\n' >&2
+            return 1
+          }
+          login() {
+            jq -n --arg username "$username" --arg password "$1" \
+              '{username: $username, password: $password}' > "$work/login.json"
+            curl -kfsS --max-time 10 -c "$work/cookies" \
+              -H 'Content-Type: application/json' -H 'X-Requested-With: pveforward' \
+              --data-binary "@$work/login.json" "$base/api/login" > "$work/login-response.json"
+            jq -e --arg username "$username" '.user.username == $username and .user.role == "admin"' \
+              "$work/login-response.json" >/dev/null
+            curl -kfsS --max-time 10 -b "$work/cookies" "$base/api/me" > "$work/me.json"
+            jq -e --arg username "$username" '.user.username == $username and .user.role == "admin"' \
+              "$work/me.json" >/dev/null
+          }
+          start "$password"
+          ready
+          # PID 1 is the controller directly; image and volume work without root/capabilities.
+          test "$(docker exec "$container" id -u)" = 10001
+          test "$(docker exec "$container" cat /proc/1/comm)" = pve-forward
+          docker exec "$container" test -s /var/lib/pve-forward/master.key
+          test "$(docker exec "$container" stat -c '%u' /var/lib/pve-forward)" = 10001
+          curl -kfsS --max-time 10 "$base/" -o "$work/index.html"
+          grep -q '<div id="app"' "$work/index.html"
+          login "$password"
+          user_id=$(jq -er '.user.id' "$work/me.json")
+          curl -kfsS --max-time 10 -b "$work/cookies" "$base/api/settings" > "$work/settings.json"
+          jq -e '.settings.url == "https://localhost" and .settings.port == 15000 and .settings.tls == "self"' \
+            "$work/settings.json" >/dev/null
+          for arch in amd64 arm64; do
+            binary="pve-forward-agent-linux-$arch"
+            curl -kfsS --max-time 30 "$base/agent/download/$arch" -o "$work/$binary"
+            test -s "$work/$binary"
+            docker cp "$container:/usr/local/bin/$binary" "$work/expected-$arch" >/dev/null
+            cmp "$work/$binary" "$work/expected-$arch"
+            if [[ "$arch" == amd64 ]]; then
+              readelf -h "$work/$binary" | grep -q 'Advanced Micro Devices X86-64'
+            else
+              readelf -h "$work/$binary" | grep -q 'AArch64'
+            fi
+          done
+          docker cp "$container:/var/lib/pve-forward/master.key" "$work/master.key" >/dev/null
+          # Recreate (not merely restart) against the same volume with different bootstrap credentials.
+          docker stop --time 15 "$container" >/dev/null
+          test "$(docker inspect -f '{{.State.ExitCode}}' "$container")" = 0
+          docker rm "$container" >/dev/null
+          start "$replacement"
+          ready
+          login "$password"
+          test "$(jq -er '.user.id' "$work/me.json")" = "$user_id"
+          docker cp "$container:/var/lib/pve-forward/master.key" "$work/master-after.key" >/dev/null
+          cmp "$work/master.key" "$work/master-after.key"
+          jq -n --arg username "$username" --arg password "$replacement" \
+            '{username: $username, password: $password}' > "$work/replacement.json"
+          code=$(curl -ksS --max-time 10 -o "$work/rejected.json" -w '%{http_code}' \
+            -H 'Content-Type: application/json' -H 'X-Requested-With: pveforward' \
+            --data-binary "@$work/replacement.json" "$base/api/login")
+          test "$code" = 401
+          printf 'HTTPS bootstrap, login, persistent user/key and amd64/arm64 downloads passed.\n'
+      - name: Set up QEMU for target runtime package installation
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+        with:
+          platforms: arm64
+      - name: Validate both platforms without publishing
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: false
+          build-args: GO_VERSION=${{ steps.go-version.outputs.version }}
+          cache-from: |
+            type=gha,scope=pve-forward
+            type=gha,scope=pve-forward-verify
+          cache-to: type=gha,mode=max,scope=pve-forward-verify
+
+  publish:
+    name: Publish verified multi-platform image to GHCR
+    needs: verify
+    if: >-
+      github.repository == 'chunyu-zhou/pve-forward' &&
+      github.event_name != 'pull_request' &&
+      (github.event_name == 'workflow_dispatch' ||
+       github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Image metadata
+        id: meta
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
+        with:
+          images: ${{ env.IMAGE }}
+          flavor: latest=false
+          tags: |
+            type=raw,value=latest,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+            type=sha,format=long
+            type=semver,pattern={{version}},value=v${{ needs.verify.outputs.version }},enable=${{ needs.verify.outputs.new-release == 'true' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+            type=semver,pattern={{major}}.{{minor}},value=v${{ needs.verify.outputs.version }},enable=${{ needs.verify.outputs.new-release == 'true' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+        with:
+          platforms: arm64
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      # Registry credentials exist only in this non-PR job, after every verification passed.
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push amd64 + arm64 manifest
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: GO_VERSION=${{ needs.verify.outputs.go-version }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: mode=max
+          sbom: true
+          cache-from: |
+            type=gha,scope=pve-forward-verify
+            type=gha,scope=pve-forward
+          cache-to: type=gha,mode=max,scope=pve-forward
+
+  # 发布 GitHub Release：控制台的在线更新从这里下载程序（按 SHA256SUMS 校验），
+  # 也可用于不使用 Docker 的 systemd 安装（install.sh）。镜像先发布，Release 最后创建，
+  # 控制台检测到 Release 时 Docker 镜像也已可拉取。
+  release:
+    name: Publish GitHub Release from version.json
+    needs: [verify, publish]
+    if: >-
+      needs.verify.outputs.new-release == 'true' &&
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Set up Go from go.mod
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build release package
+        env:
+          GOTOOLCHAIN: local
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: bash tools/build-release.sh --version "$VERSION"
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.verify.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          pkg="release/pve-forward-${VERSION}"
+          test "$(jq -er '.version' version.json | sed 's/^v//')" = "$VERSION"
+          # 在线更新会运行下载的程序核对版本；这里先确认产物架构与校验和
+          file "$pkg/pve-forward-linux-amd64" | grep -q 'x86-64'
+          file "$pkg/pve-forward-linux-arm64" | grep -q 'aarch64'
+          test "$("$pkg/pve-forward-linux-amd64" version)" = "$VERSION"
+          (cd "$pkg" && sha256sum -c SHA256SUMS)
+          notes=$(jq -r '.notes // ""' version.json)
+          date=$(jq -r '.date // ""' version.json)
+          {
+            if [[ -n "$notes" ]]; then printf '%s\n\n' "$notes"; fi
+            if [[ -n "$date" ]]; then printf '发布日期：%s\n\n' "$date"; fi
+            printf 'Docker 镜像：%s:%s\n\n' "$IMAGE" "$VERSION"
+            printf '控制台一小时内会检测到此版本，可在“系统设置 → 版本更新”中在线更新，或在部署目录执行 docker compose pull && docker compose up -d。\n'
+          } > "$RUNNER_TEMP/notes.md"
+          prerelease=()
+          if [[ "$VERSION" == *-* ]]; then prerelease=(--prerelease); fi
+          gh release create "v${VERSION}" --target "$GITHUB_SHA" --title "v${VERSION}" \
+            --notes-file "$RUNNER_TEMP/notes.md" "${prerelease[@]}" \
+            "$pkg/pve-forward-linux-amd64" "$pkg/pve-forward-linux-arm64" \
+            "$pkg/pve-forward-agent-linux-amd64" "$pkg/pve-forward-agent-linux-arm64" \
+            "$pkg/install.sh" "$pkg/README.md" "$pkg/BUILD-INFO.txt" "$pkg/SHA256SUMS" \
+            "release/pve-forward-${VERSION}.tar.gz" "release/pve-forward-${VERSION}.tar.gz.sha256"

@@ -1,0 +1,4 @@
+# 统一使用 LF：shell 脚本在 Linux 上执行，Go 代码由 gofmt 检查
+* text=auto eol=lf
+*.png binary
+*.jpg binary

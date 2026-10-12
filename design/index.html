@@ -1,0 +1,2249 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PVE Forward · 设计原型（控制端 + Agent）</title>
+<link rel="stylesheet" href="vendor/arco.min.css">
+<style>
+  /* ============ 全局（对齐 Arco Design Pro） ============ */
+  html, body, #app { height: 100%; margin: 0; }
+  body { font-family: Inter, -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 14px; background: var(--color-fill-2); }
+  .mono { font-family: "JetBrains Mono", Menlo, Consolas, monospace; font-size: 12px; }
+  .muted { color: var(--color-text-3); font-size: 12px; }
+
+  /* 布局：layout/default-layout.vue */
+  .layout { width: 100%; height: 100%; }
+  .layout-navbar { position: fixed; top: 0; left: 0; z-index: 100; width: 100%; height: 60px; }
+  .layout-sider { position: fixed !important; top: 0; left: 0; z-index: 99; height: 100%; padding-top: 60px; transition: all .2s cubic-bezier(.34,.69,.1,1); }
+  .layout-sider::after { position: absolute; top: 0; right: -1px; display: block; width: 1px; height: 100%; background: var(--color-border); content: ''; }
+  .layout-sider > .arco-layout-sider-children { overflow-y: hidden; }
+  .menu-wrapper { height: 100%; overflow: auto; overflow-x: hidden; }
+  .menu-wrapper .arco-menu-inner .arco-menu-inline-header { display: flex; align-items: center; }
+  .menu-wrapper .arco-menu-inner .arco-icon:not(.arco-icon-down) { font-size: 18px; }
+  .layout-content { min-height: 100vh; background-color: var(--color-fill-2); transition: padding .2s cubic-bezier(.34,.69,.1,1); padding-top: 60px; }
+  .container { padding: 0 20px 20px 20px; }
+  .container.with-actions { padding-bottom: 80px; }
+
+  /* 导航：components/navbar */
+  .navbar { display: flex; justify-content: space-between; height: 100%; background: var(--color-bg-2); border-bottom: 1px solid var(--color-border); }
+  .navbar .left-side { display: flex; align-items: center; padding-left: 20px; }
+  .logo-mark { width: 28px; height: 28px; border-radius: 6px; background: rgb(var(--primary-6)); color: #fff; display: grid; place-items: center; font-size: 16px; }
+  .navbar .right-side { display: flex; padding-right: 20px; list-style: none; margin: 0; }
+  .navbar .right-side li { display: flex; align-items: center; padding: 0 10px; }
+  .navbar .nav-btn { border-color: rgb(var(--gray-2)); color: rgb(var(--gray-8)); font-size: 16px; }
+
+  /* 面包屑 */
+  .container-breadcrumb { margin: 16px 0; }
+  .container-breadcrumb .arco-breadcrumb-item { color: rgb(var(--gray-6)); }
+  .container-breadcrumb .arco-breadcrumb-item:last-child { color: rgb(var(--gray-8)); }
+
+  /* 卡片：assets/style/global.less */
+  .general-card { border-radius: 4px; border: none; }
+  .general-card > .arco-card-header { height: auto; padding: 20px; border: none; }
+  .general-card > .arco-card-body { padding: 0 20px 20px 20px; }
+  .circle { display: inline-block; margin-right: 4px; width: 6px; height: 6px; border-radius: 50%; background: rgb(var(--gray-5)); vertical-align: middle; }
+  .circle.pass { background: rgb(var(--green-6)); }
+  .circle.err { background: rgb(var(--red-6)); }
+  .circle.warn { background: rgb(var(--orange-6)); }
+  .arco-table-th:last-child .arco-table-th-item-title { margin-left: 16px; }
+  .action-icon { margin-left: 12px; cursor: pointer; color: var(--color-text-2); display: inline-flex; }
+
+  /* 分组表单底部操作栏：views/form/group */
+  .actions { position: fixed; right: 0; bottom: 0; height: 60px; padding: 14px 20px; box-sizing: border-box; background: var(--color-bg-2); text-align: right; z-index: 98;
+    box-shadow: 0 -2px 8px rgba(0,0,0,.04); transition: left .2s cubic-bezier(.34,.69,.1,1); }
+
+  /* 分步表单：views/form/step */
+  .step-wrapper { display: flex; flex-direction: column; align-items: center; padding: 64px 0; background: var(--color-bg-2); }
+  .step-wrapper .steps { margin-bottom: 64px; }
+  .step-form .arco-form-item:last-child { margin-top: 20px; }
+  .success-wrap { text-align: center; }
+  .success-wrap .arco-result { padding-top: 0; }
+  .details-wrapper { width: 895px; margin: 54px auto 0; padding: 20px; text-align: left; background: var(--color-fill-2); }
+
+  /* 仪表盘：views/dashboard/workplace */
+  .wp-container { padding: 16px 20px 20px; display: flex; background: var(--color-fill-2); }
+  .wp-left { flex: 1; min-width: 0; }
+  .wp-right { width: 280px; margin-left: 16px; }
+  .panel { background-color: var(--color-bg-2); border-radius: 4px; overflow: auto; }
+  .panel-border { margin-bottom: 0; border-bottom: 1px solid rgb(var(--gray-2)); }
+  .wp-banner { width: 100%; padding: 20px 20px 0 20px; box-sizing: border-box; background: var(--color-bg-2); border-radius: 4px 4px 0 0; }
+  .arco-grid.data-panel { margin-bottom: 0; padding: 16px 20px 0 20px; }
+  .data-panel .panel-col { padding-left: 43px; border-right: 1px solid rgb(var(--gray-2)); }
+  .data-panel .panel-col.last { border-right: none; }
+  .col-avatar { margin-right: 12px; background-color: var(--color-fill-2) !important; }
+  .unit { margin-left: 8px; color: rgb(var(--gray-8)); font-size: 12px; }
+  .chart-legend { display: flex; gap: 20px; justify-content: center; font-size: 12px; color: var(--color-text-2); margin-bottom: 8px; }
+  .chart-legend i, .donut-legend i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 6px; }
+  .donut-wrap { display: flex; align-items: center; justify-content: center; gap: 32px; height: 300px; }
+  .donut-legend div { display: grid; grid-template-columns: 14px 80px 40px 40px; align-items: center; font-size: 13px; line-height: 32px; color: var(--color-text-2); }
+  .moduler-wrap .text { font-size: 12px; text-align: center; color: rgb(var(--gray-8)); }
+  .moduler-wrap .wrapper { margin-bottom: 8px; text-align: center; cursor: pointer; }
+  .moduler-wrap .wrapper:hover .icon { color: rgb(var(--arcoblue-6)); background-color: #e8f3ff; }
+  .moduler-wrap .wrapper:hover .text { color: rgb(var(--arcoblue-6)); }
+  .moduler-wrap .icon { display: inline-block; width: 32px; height: 32px; margin-bottom: 4px; color: rgb(var(--dark-gray-1)); line-height: 32px; font-size: 16px; text-align: center; background-color: rgb(var(--gray-1)); border-radius: 4px; }
+  .split-line { border-color: rgb(var(--gray-2)); }
+  .ann-item { display: flex; align-items: center; width: 100%; height: 24px; margin-bottom: 4px; }
+  .ann-item .item-content { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-left: 4px; color: var(--color-text-2); font-size: 13px; cursor: pointer; }
+  .status-item { display: flex; justify-content: space-between; align-items: center; min-height: 28px; font-size: 13px; }
+  .node-item { padding: 6px 0; border-bottom: 1px dashed var(--color-border-2); }
+  .node-item:last-child { border-bottom: none; }
+  .doc-link { margin: 10px 0; color: rgb(var(--gray-8)) !important; }
+
+  /* 规则表 */
+  .grp-row .arco-table-td { background: var(--color-fill-1) !important; }
+  .grp { display: flex; align-items: center; gap: 10px; user-select: none; }
+  .grp .nm { font-weight: 500; color: var(--color-text-1); }
+  .grp .info { display: flex; gap: 20px; margin-left: 12px; color: var(--color-text-3); font-size: 13px; flex-wrap: wrap; }
+  .grp .info b { color: var(--color-text-2); font-weight: 500; }
+  .lines { line-height: 1.7; }
+  .arco-table-td .arco-table-cell { white-space: nowrap; }
+  .updown { line-height: 1.6; font-size: 12px; }
+  .updown .d { color: rgb(var(--green-6)); } .updown .u { color: rgb(var(--orange-6)); }
+  .ip-opt { display: flex; justify-content: space-between; gap: 12px; width: 100%; }
+
+  /* 网络向导 / 安装命令 */
+  .nic-radio { width: 100%; margin: 0 0 8px !important; padding: 10px 12px; border: 1px solid var(--color-border-2); border-radius: 4px; box-sizing: border-box; }
+  .nic-radio.arco-radio-checked { border-color: rgb(var(--primary-6)); background: rgb(var(--primary-1)); }
+  .nic-item { display: flex; align-items: center; gap: 10px; width: 100%; }
+  .nic-radio .arco-radio-label { flex: 1; }
+  .cmd { position: relative; background: #1d2129; color: #e5e6eb; border-radius: 4px; padding: 14px 16px; font-family: "JetBrains Mono", Menlo, Consolas, monospace; font-size: 12px; line-height: 1.8; white-space: pre-wrap; word-break: break-all; }
+  .cmd .copy { position: absolute; top: 8px; right: 8px; }
+  .wait-box { display: flex; align-items: center; gap: 12px; padding: 16px; border: 1px dashed var(--color-border-3); border-radius: 4px; margin-top: 16px; }
+
+  /* 控制端初始化 */
+  .setup { min-height: 100%; background: var(--color-fill-2); }
+  .setup-navbar { height: 60px; display: flex; align-items: center; justify-content: space-between; padding: 0 20px; background: var(--color-bg-2); border-bottom: 1px solid var(--color-border); }
+  .setup-body { max-width: 1000px; margin: 20px auto; padding: 0 20px 40px; }
+
+  /* 登录：views/login */
+  .login { display: flex; height: 100%; }
+  .login .banner { width: 550px; background: linear-gradient(163.85deg, #1d2129 0%, #00308f 100%); display: flex; align-items: center; justify-content: center; color: #fff; }
+  .login .banner-inner { width: 380px; }
+  .login .banner h2 { font-size: 20px; font-weight: 500; margin: 0 0 8px; }
+  .login .banner p { color: rgba(255,255,255,.7); font-size: 14px; line-height: 22px; margin: 0; }
+  .login .flow { margin-top: 32px; background: rgba(255,255,255,.08); border-radius: 4px; padding: 16px; font-family: Menlo, Consolas, monospace; font-size: 12px; line-height: 2; color: rgba(255,255,255,.85); }
+  .login .content { flex: 1; display: flex; align-items: center; justify-content: center; background: var(--color-bg-1); }
+  .login .logo { position: fixed; top: 24px; left: 22px; z-index: 1; display: inline-flex; align-items: center; gap: 8px; color: #fff; font-size: 20px; font-weight: 500; }
+  .login-form-wrapper { width: 320px; }
+  .login-form-title { color: var(--color-text-1); font-weight: 500; font-size: 24px; line-height: 32px; }
+  .login-form-sub-title { color: var(--color-text-3); font-size: 16px; line-height: 24px; }
+  .login-form-error-msg { height: 32px; color: rgb(var(--red-6)); line-height: 32px; }
+  .login-form-password-actions { display: flex; justify-content: space-between; }
+
+  .proto-bar { position: fixed; right: 16px; bottom: 76px; z-index: 2000; background: var(--color-bg-2); border: 1px dashed var(--color-border-3); border-radius: 4px; padding: 8px 12px; }
+  .proto-bar .t { font-size: 12px; color: var(--color-text-3); margin-bottom: 6px; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+
+<script type="text/x-template" id="tpl">
+  <!-- ======================= 控制端初始化（首次访问；只填控制端必要信息） ======================= -->
+  <div v-if="page === 'setup'" class="setup">
+    <div class="setup-navbar">
+      <a-space><div class="logo-mark"><icon-swap /></div><a-typography-title :style="{ margin: 0, fontSize: '18px' }" :heading="5">PVE Forward</a-typography-title>
+        <a-tag color="arcoblue" style="margin-left:8px">控制端初始化</a-tag></a-space>
+      <span class="muted">控制端 v1.0.0</span>
+    </div>
+    <div class="setup-body">
+      <a-card class="general-card">
+        <template #title>初始化控制端</template>
+        <template #extra><span class="muted">PVE 节点在初始化完成后，于「PVE 节点 → 添加节点」中接入</span></template>
+        <div class="step-wrapper" style="padding:40px 0 48px">
+          <a-steps :current="setupStep" style="width: 640px" line-less class="steps">
+            <a-step description="令牌与管理员账号">验证</a-step>
+            <a-step description="访问地址与端口">控制端设置</a-step>
+            <a-step description="初始化完成">完成</a-step>
+          </a-steps>
+
+          <a-form v-if="setupStep === 1" :model="setupForm" class="step-form" style="width:560px" :label-col-props="{ span: 6 }" :wrapper-col-props="{ span: 18 }">
+            <a-form-item label="初始化令牌" required :validate-status="setupErr.token ? 'error' : undefined"
+              :help="setupErr.token || '安装控制端时终端已输出；也可执行 pve-forward setup-token 查看'">
+              <a-input v-model="setupForm.token" placeholder="例如 7KQ2-M9XD-4TPA" allow-clear><template #prefix><icon-safe /></template></a-input></a-form-item>
+            <a-form-item label="管理员账号" required><a-input v-model="setupForm.admin" /></a-form-item>
+            <a-form-item label="密码" required :validate-status="setupErr.pwd ? 'error' : undefined" :help="setupErr.pwd">
+              <a-input-password v-model="setupForm.pwd" placeholder="至少 8 位" /></a-form-item>
+            <a-form-item label="确认密码" required :validate-status="setupErr.pwd2 ? 'error' : undefined" :help="setupErr.pwd2">
+              <a-input-password v-model="setupForm.pwd2" placeholder="再次输入密码" /></a-form-item>
+            <a-form-item><a-button type="primary" @click="setupNext">下一步</a-button></a-form-item>
+          </a-form>
+
+          <a-form v-else-if="setupStep === 2" :model="setupForm" class="step-form" style="width:600px" :label-col-props="{ span: 6 }" :wrapper-col-props="{ span: 18 }">
+            <a-form-item label="站点名称"><a-input v-model="setupForm.site" /></a-form-item>
+            <a-form-item label="控制端访问地址" required :validate-status="setupErr.url ? 'error' : undefined"
+              :help="setupErr.url || 'Agent 通过此地址主动连接控制端，需能从各 PVE 节点访问；已按当前浏览器地址自动填写'">
+              <a-input v-model="setupForm.url" placeholder="https://panel.example.com" /></a-form-item>
+            <a-form-item label="面板端口" extra="Web 与 Agent 连接共用此端口"><a-input-number v-model="setupForm.port" :min="1" :max="65535" /></a-form-item>
+            <a-form-item label="HTTPS 证书">
+              <a-radio-group v-model="setupForm.tls"><a-radio value="self">自签名（默认）</a-radio><a-radio value="acme">Let's Encrypt</a-radio><a-radio value="proxy">由反向代理处理</a-radio></a-radio-group>
+            </a-form-item>
+            <a-form-item><a-space><a-button type="secondary" @click="setupStep--">上一步</a-button><a-button type="primary" @click="setupNext">完成初始化</a-button></a-space></a-form-item>
+          </a-form>
+
+          <div v-else class="success-wrap" style="width:100%">
+            <a-result status="success" title="控制端初始化完成" subtitle="登录后在「PVE 节点 → 添加节点」中接入第一台 PVE" />
+            <a-space :size="16"><a-button type="primary" @click="page = 'login'">进入登录</a-button></a-space>
+            <div class="details-wrapper" style="width:640px">
+              <a-descriptions :column="1" title="控制端信息" :data="[
+                { label: '站点名称', value: setupForm.site }, { label: '访问地址', value: setupForm.url + ':' + setupForm.port },
+                { label: 'Agent 连接地址', value: setupForm.url.replace(/^http/, 'ws') + ':' + setupForm.port + '/agent' }, { label: '管理员', value: setupForm.admin } ]" />
+            </div>
+          </div>
+        </div>
+      </a-card>
+    </div>
+  </div>
+
+  <!-- ======================= 登录 ======================= -->
+  <div v-else-if="page === 'login'" class="login">
+    <div class="logo"><span class="logo-mark"><icon-swap /></span>PVE Forward</div>
+    <div class="banner"><div class="banner-inner">
+      <h2>多节点 PVE 端口转发管理</h2>
+      <p>控制端统一管理用户、端口与规则，各 PVE 节点上的 Agent 通过 nftables DNAT 执行转发。</p>
+      <div class="flow">客户端 → 节点公网 IP:端口<br>&nbsp;&nbsp;→ Agent · nftables DNAT<br>&nbsp;&nbsp;→ 节点内网虚拟机:端口<br><br>控制端 ⇄ Agent（WebSocket / TLS，Agent 主动连接）</div>
+    </div></div>
+    <div class="content">
+      <div class="login-form-wrapper">
+        <div class="login-form-title">登录 {{ setupForm.site }}</div>
+        <div class="login-form-sub-title">使用管理员分配的账号登录</div>
+        <div class="login-form-error-msg"></div>
+        <a-form :model="loginForm" layout="vertical" @submit="doLogin">
+          <a-form-item field="username" hide-label>
+            <a-input v-model="loginForm.username" placeholder="用户名（输入 admin 进入管理端）"><template #prefix><icon-user /></template></a-input></a-form-item>
+          <a-form-item field="password" hide-label>
+            <a-input-password v-model="loginForm.password" placeholder="密码" allow-clear><template #prefix><icon-lock /></template></a-input-password></a-form-item>
+          <a-space :size="16" direction="vertical" fill>
+            <div class="login-form-password-actions"><a-checkbox default-checked>记住密码</a-checkbox><a-link>忘记密码请联系管理员</a-link></div>
+            <a-button type="primary" html-type="submit" long>登录</a-button>
+          </a-space>
+        </a-form>
+      </div>
+    </div>
+  </div>
+
+  <a-layout v-else class="layout">
+    <!-- ======================= 顶部导航 ======================= -->
+    <div v-if="!isPublic" class="layout-navbar">
+      <div class="navbar">
+        <div class="left-side">
+          <a-space><div class="logo-mark"><icon-swap /></div>
+            <a-typography-title :style="{ margin: 0, fontSize: '18px' }" :heading="5">{{ setupForm.site }}</a-typography-title></a-space>
+        </div>
+        <ul class="right-side">
+          <li v-if="isAdmin"><a-tag :color="nodes.every(n => n.status === 'online') ? 'green' : 'orange'" style="cursor:pointer" @click="go('nodes')">
+            <template #icon><icon-cloud /></template>节点 {{ nodes.filter(n => n.status === 'online').length }} / {{ nodes.length }} 在线</a-tag></li>
+          <li><a-tooltip content="切换主题"><a-button class="nav-btn" type="outline" shape="circle"><template #icon><icon-moon-fill /></template></a-button></a-tooltip></li>
+          <li><a-tooltip content="消息通知"><a-badge :count="2" dot><a-button class="nav-btn" type="outline" shape="circle"><template #icon><icon-notification /></template></a-button></a-badge></a-tooltip></li>
+          <li><a-tooltip content="全屏"><a-button class="nav-btn" type="outline" shape="circle"><template #icon><icon-fullscreen /></template></a-button></a-tooltip></li>
+          <li>
+            <a-dropdown trigger="click">
+              <a-avatar :size="32" :style="{ cursor: 'pointer', backgroundColor: isAdmin ? '#165dff' : '#00b42a' }">{{ me.name[0].toUpperCase() }}</a-avatar>
+              <template #content>
+                <a-doption disabled><a-space><icon-user /><span>{{ me.name }}（{{ isAdmin ? '管理员' : '用户' }}）</span></a-space></a-doption>
+                <a-doption @click="go('profile')"><a-space><icon-settings /><span>个人资料</span></a-space></a-doption>
+                <a-doption @click="page = 'login'"><a-space><icon-export /><span>退出登录</span></a-space></a-doption>
+              </template>
+            </a-dropdown>
+          </li>
+        </ul>
+      </div>
+    </div>
+
+    <a-layout>
+      <!-- ======================= 左侧菜单 ======================= -->
+      <a-layout-sider v-if="!isPublic" class="layout-sider" breakpoint="xl" :collapsed="collapsed" collapsible :width="220" hide-trigger @collapse="v => collapsed = v">
+        <div class="menu-wrapper">
+          <a-menu :key="isAdmin ? 'a' : 'u'" v-model:collapsed="collapsed" show-collapse-button :auto-open="false"
+                  :level-indent="34" :selected-keys="[menuKey]" v-model:open-keys="openKeys" style="height:100%;width:100%" @menu-item-click="go">
+            <a-menu-item key="dash"><template #icon><icon-dashboard /></template>仪表盘</a-menu-item>
+            <a-menu-item key="monitor"><template #icon><icon-desktop /></template>资源监控</a-menu-item>
+            <a-sub-menu key="fwd"><template #icon><icon-swap /></template><template #title>转发管理</template>
+              <a-menu-item key="rules">转发规则</a-menu-item>
+            </a-sub-menu>
+            <a-sub-menu v-if="isAdmin" key="user"><template #icon><icon-user-group /></template><template #title>用户管理</template>
+              <a-menu-item key="users">用户列表</a-menu-item>
+              <a-menu-item key="user-new">添加用户</a-menu-item>
+            </a-sub-menu>
+            <a-sub-menu v-if="isAdmin" key="pve"><template #icon><icon-cloud /></template><template #title>PVE 节点</template>
+              <a-menu-item key="nodes">节点列表</a-menu-item>
+              <a-menu-item key="node-new">添加节点</a-menu-item>
+              <a-menu-item key="vms">虚拟机</a-menu-item>
+              <a-menu-item key="creds">SSH 凭证</a-menu-item>
+            </a-sub-menu>
+            <a-menu-item v-if="isAdmin" key="settings"><template #icon><icon-settings /></template>系统设置</a-menu-item>
+            <a-sub-menu key="me"><template #icon><icon-user /></template><template #title>个人中心</template>
+              <a-menu-item key="profile">个人资料</a-menu-item>
+            </a-sub-menu>
+          </a-menu>
+        </div>
+      </a-layout-sider>
+
+      <a-layout class="layout-content" :style="isPublic ? { padding: 0 } : { paddingLeft: (collapsed ? 48 : 220) + 'px' }">
+        <a-layout-content>
+
+<!-- ============================================================ 仪表盘（dashboard/workplace） -->
+<div v-if="page === 'dash'" class="wp-container">
+  <div class="wp-left">
+    <div class="panel">
+      <div class="wp-banner">
+        <a-typography-title :heading="5" style="margin-top: 0">欢迎回来！{{ me.name }}</a-typography-title>
+        <a-divider class="panel-border" />
+      </div>
+      <a-grid :cols="24" :row-gap="16" class="data-panel">
+        <a-grid-item v-for="(s, i) in stats" :key="s.title" class="panel-col" :class="{ last: i === stats.length - 1 }" :span="6">
+          <a-space>
+            <a-avatar :size="54" class="col-avatar"><component :is="s.icon" :style="{ color: s.color, fontSize: '24px' }" /></a-avatar>
+            <a-statistic :title="s.title" :value="s.value" :precision="s.precision || 0" :value-from="0" animation show-group-separator>
+              <template #suffix><span class="unit">{{ s.unit }}</span></template>
+            </a-statistic>
+          </a-space>
+          <div class="muted" style="margin:6px 0 0 66px">{{ s.sub }}</div>
+        </a-grid-item>
+        <a-grid-item :span="24"><a-divider class="panel-border" style="margin: 4px 0 0 0" /></a-grid-item>
+      </a-grid>
+      <a-card class="general-card" title="流量趋势" :header-style="{ paddingBottom: 0 }" :body-style="{ paddingTop: '20px' }">
+        <template #extra>
+          <a-space>
+            <a-select v-model="chartNode" size="small" style="width:140px" :options="[{ label: '全部节点', value: 'all' }, ...readyNodes.map(n => ({ label: n.name, value: n.id }))]" />
+            <a-radio-group v-model="chartRange" type="button" size="small"><a-radio value="24h">近 24 小时</a-radio><a-radio value="7d">近 7 天</a-radio></a-radio-group>
+          </a-space>
+        </template>
+        <div class="chart-legend"><span><i style="background:#165dff"></i>入向</span><span><i style="background:#ff7d00"></i>出向</span></div>
+        <svg :viewBox="'0 0 ' + chart.W + ' ' + chart.H" style="width:100%;height:280px;display:block" preserveAspectRatio="none">
+          <defs>
+            <linearGradient id="gIn" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#165dff" stop-opacity=".18" /><stop offset="100%" stop-color="#165dff" stop-opacity="0" /></linearGradient>
+            <linearGradient id="gOut" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#ff7d00" stop-opacity=".14" /><stop offset="100%" stop-color="#ff7d00" stop-opacity="0" /></linearGradient>
+          </defs>
+          <g v-for="t in chart.ticks" :key="t.y">
+            <line :x1="chart.L" :x2="chart.W - chart.R" :y1="t.y" :y2="t.y" stroke="#e5e6eb" stroke-dasharray="3 3" />
+            <text :x="chart.L - 8" :y="t.y + 4" text-anchor="end" font-size="11" fill="#86909c">{{ t.label }}</text>
+          </g>
+          <text v-for="x in chart.xs" :key="x.label" :x="x.x" :y="chart.H - 6" text-anchor="middle" font-size="11" fill="#86909c">{{ x.label }}</text>
+          <path :d="chart.inArea" fill="url(#gIn)" /><path :d="chart.outArea" fill="url(#gOut)" />
+          <path :d="chart.inLine" fill="none" stroke="#165dff" stroke-width="2" /><path :d="chart.outLine" fill="none" stroke="#ff7d00" stroke-width="2" />
+        </svg>
+      </a-card>
+    </div>
+    <a-grid :cols="24" :col-gap="16" :row-gap="16" style="margin-top: 16px">
+      <a-grid-item :span="12">
+        <a-card class="general-card" title="流量排行" :header-style="{ paddingBottom: 0 }" :body-style="{ padding: '17px 20px 21px 20px' }" style="min-height:395px">
+          <template #extra><a-link @click="go('rules')">查看更多</a-link></template>
+          <a-space direction="vertical" :size="10" fill>
+            <a-radio-group v-model="rankProto" type="button"><a-radio value="all">全部</a-radio><a-radio value="TCP">TCP</a-radio><a-radio value="UDP">UDP</a-radio></a-radio-group>
+            <a-table :data="ranking" :pagination="false" :bordered="false" :scroll="{ x: '100%', y: '264px' }" row-key="id">
+              <template #columns>
+                <a-table-column title="排名" :width="56"><template #cell="{ rowIndex }">{{ rowIndex + 1 }}</template></a-table-column>
+                <a-table-column title="规则"><template #cell="{ record }"><a-typography-paragraph :ellipsis="{ rows: 1 }" style="margin:0">{{ record.remark || '-' }} <span class="muted mono">{{ nodeOf(record.node).name }}:{{ record.port }}</span></a-typography-paragraph></template></a-table-column>
+                <a-table-column v-if="isAdmin" title="用户" data-index="owner" :width="70" />
+                <a-table-column title="24H 流量" :width="96"><template #cell="{ record }">{{ fmtMB(h24[record.id] || 0) }}</template></a-table-column>
+                <a-table-column title="日涨幅" :width="84"><template #cell="{ record }">
+                  <span>{{ Math.abs(trend[record.id] || 0) }}%</span>
+                  <icon-caret-up v-if="(trend[record.id] || 0) > 0" style="color:#f53f3f;font-size:8px;margin-left:4px" />
+                  <icon-caret-down v-else-if="(trend[record.id] || 0) < 0" style="color:#00b42a;font-size:8px;margin-left:4px" /></template></a-table-column>
+              </template>
+            </a-table>
+          </a-space>
+        </a-card>
+      </a-grid-item>
+      <a-grid-item :span="12">
+        <a-card class="general-card" title="规则构成" :header-style="{ paddingBottom: 0 }" :body-style="{ padding: '20px' }" style="min-height:395px">
+          <template #extra><a-radio-group v-model="pieBy" type="button" size="small"><a-radio value="node">按节点</a-radio><a-radio value="proto">按协议</a-radio><a-radio value="ipver">按 IP 版本</a-radio></a-radio-group></template>
+          <div class="donut-wrap">
+            <svg viewBox="0 0 220 220" width="240" height="240">
+              <circle cx="110" cy="110" r="78" fill="none" stroke="#f2f3f5" stroke-width="26" />
+              <circle v-for="seg in pie.segs" :key="seg.name" cx="110" cy="110" r="78" fill="none" :stroke="seg.color" stroke-width="26"
+                      :stroke-dasharray="seg.len + ' ' + (pie.C - seg.len)" :stroke-dashoffset="-seg.off" transform="rotate(-90 110 110)" />
+              <text x="110" y="104" text-anchor="middle" font-size="12" fill="#86909c">规则总数</text>
+              <text x="110" y="130" text-anchor="middle" font-size="24" font-weight="500" fill="#1d2129">{{ pie.total }}</text>
+            </svg>
+            <div class="donut-legend">
+              <div v-for="seg in pie.segs" :key="seg.name"><i :style="{ background: seg.color }"></i><span>{{ seg.name }}</span><b>{{ seg.value }}</b><span class="muted">{{ pie.total ? Math.round(seg.value / pie.total * 100) : 0 }}%</span></div>
+            </div>
+          </div>
+        </a-card>
+      </a-grid-item>
+    </a-grid>
+  </div>
+
+  <div class="wp-right">
+    <a-grid :cols="24" :row-gap="16">
+      <a-grid-item :span="24">
+        <div class="panel moduler-wrap">
+          <a-card class="general-card" title="快捷操作" :header-style="{ paddingBottom: 0 }" :body-style="{ padding: '24px 20px 0 20px' }">
+            <a-row :gutter="8">
+              <a-col v-for="q in quickOps" :key="q.text" :span="8" class="wrapper" @click="q.run()">
+                <div class="icon"><component :is="q.icon" /></div>
+                <a-typography-paragraph class="text">{{ q.text }}</a-typography-paragraph>
+              </a-col>
+            </a-row>
+            <a-divider class="split-line" style="margin: 0" />
+          </a-card>
+          <a-card class="general-card" title="最近访问" :header-style="{ paddingBottom: 0 }" :body-style="{ paddingTop: '26px' }">
+            <div style="margin-bottom: -1rem">
+              <a-row :gutter="8">
+                <a-col v-for="q in recent" :key="q.text" :span="8" class="wrapper" @click="go(q.key)">
+                  <div class="icon"><component :is="q.icon" /></div>
+                  <a-typography-paragraph class="text">{{ q.text }}</a-typography-paragraph>
+                </a-col>
+              </a-row>
+            </div>
+          </a-card>
+        </div>
+      </a-grid-item>
+
+      <a-grid-item class="panel" :span="24">
+        <a-card v-if="isAdmin" class="general-card" title="节点状态" :header-style="{ paddingBottom: 0 }" :body-style="{ padding: '12px 20px 12px 20px' }">
+          <template #extra><a-link @click="go('nodes')">管理</a-link></template>
+          <div v-for="n in nodes" :key="n.id" class="node-item">
+            <div class="status-item"><span><b style="font-weight:500">{{ n.name }}</b> <span class="muted">{{ n.remark }}</span></span>
+              <a-badge :status="nodeBadge[n.status].badge" :text="nodeBadge[n.status].text" /></div>
+            <div class="muted">{{ n.initialized ? n.wanIp + ' · ' + n.subnet : '等待网络初始化' }}<template v-if="n.status === 'online' && n.initialized"> · CPU {{ n.cpu }}% · 内存 {{ n.mem }}%</template><template v-if="n.status === 'offline'"> · 最后心跳 {{ n.lastSeen }}</template></div>
+          </div>
+        </a-card>
+        <a-card v-else class="general-card" title="我的配额" :header-style="{ paddingBottom: 0 }" :body-style="{ padding: '12px 20px 12px 20px' }">
+          <div v-for="g in allocByNode(me)" :key="g.node" class="node-item">
+            <div class="status-item"><b style="font-weight:500">{{ nodeOf(g.node).name }}</b><span>端口 {{ usedPorts(me, g.node).length }} / {{ allPorts(me, g.node).length }}</span></div>
+            <a-progress :percent="allPorts(me, g.node).length ? usedPorts(me, g.node).length / allPorts(me, g.node).length : 0" :show-text="false" size="small" />
+          </div>
+          <div class="status-item"><span class="muted" style="font-size:13px">规则</span><span>{{ me.rules.length }} / {{ me.maxRules }}</span></div>
+          <div class="status-item"><span class="muted" style="font-size:13px">流量</span><span>{{ me.traffic }} / {{ me.quota || '不限' }}</span></div>
+          <div class="status-item"><span class="muted" style="font-size:13px">虚拟机</span><span>{{ vmsOf(me.name).length }} 台</span></div>
+        </a-card>
+      </a-grid-item>
+
+      <a-grid-item class="panel" :span="24">
+        <a-card class="general-card" title="事件通知" :header-style="{ paddingBottom: 0 }" :body-style="{ padding: '15px 20px 13px 20px' }">
+          <template #extra><a-link @click="query.status = 'err'; go('rules')">查看异常</a-link></template>
+          <div v-for="(e, idx) in events" :key="idx" class="ann-item">
+            <a-tag :color="e.type" size="small">{{ e.label }}</a-tag>
+            <a-tooltip :content="e.content"><span class="item-content">{{ e.content }}</span></a-tooltip>
+          </div>
+        </a-card>
+      </a-grid-item>
+
+      <a-grid-item class="panel" :span="24">
+        <a-card class="general-card" title="帮助文档" :header-style="{ paddingBottom: 0 }" :body-style="{ paddingTop: 0 }" style="height: 166px">
+          <a-row>
+            <a-col :span="12"><a-link class="doc-link">安装控制端</a-link></a-col>
+            <a-col :span="12"><a-link class="doc-link">接入 PVE 节点</a-link></a-col>
+            <a-col :span="12"><a-link class="doc-link">规则与端口说明</a-link></a-col>
+            <a-col :span="12"><a-link class="doc-link">常见问题</a-link></a-col>
+          </a-row>
+        </a-card>
+      </a-grid-item>
+    </a-grid>
+  </div>
+</div>
+
+<!-- ============================================================ 转发规则（查询表格） -->
+<div v-else-if="page === 'rules'" class="container">
+  <a-breadcrumb class="container-breadcrumb"><a-breadcrumb-item><icon-apps /></a-breadcrumb-item><a-breadcrumb-item>转发管理</a-breadcrumb-item><a-breadcrumb-item>转发规则</a-breadcrumb-item></a-breadcrumb>
+
+  <a-card v-if="!isAdmin" class="general-card" title="我的配额" style="margin-bottom:16px">
+    <a-descriptions :column="3" :data="[
+      ...allocByNode(me).map(g => ({ label: nodeOf(g.node).name + ' 端口', value: g.labels.join(' · ') + '（已用 ' + usedPorts(me, g.node).length + '/' + allPorts(me, g.node).length + '）' })),
+      { label: '规则', value: me.rules.length + ' / ' + me.maxRules },
+      { label: '我的虚拟机', value: vmsOf(me.name).map(v => nodeOf(v.node).name + '/' + v.vmid + ' ' + v.host).join('，') },
+      { label: '流量', value: me.traffic + ' / ' + (me.quota || '不限') } ]" />
+  </a-card>
+
+  <a-card class="general-card" title="转发规则">
+    <a-row>
+      <a-col :flex="1">
+        <a-form :model="query" :label-col-props="{ span: 6 }" :wrapper-col-props="{ span: 18 }" label-align="left">
+          <a-row :gutter="16">
+            <a-col :span="8"><a-form-item field="kw" label="关键词"><a-input v-model="query.kw" placeholder="端口 / IP / 备注" /></a-form-item></a-col>
+            <a-col :span="8"><a-form-item field="node" label="节点">
+              <a-select v-model="query.node" placeholder="全部" allow-clear>
+                <a-option v-for="n in readyNodes" :key="n.id" :value="n.id">{{ n.name }}</a-option></a-select></a-form-item></a-col>
+            <a-col :span="8"><a-form-item field="owner" label="所属用户">
+              <a-select v-model="query.owner" :disabled="!isAdmin" placeholder="全部" allow-clear>
+                <a-option v-for="u in (isAdmin ? users : [me])" :key="u.name" :value="u.name">{{ u.name }}</a-option></a-select></a-form-item></a-col>
+            <a-col :span="8"><a-form-item field="proto" label="协议">
+              <a-select v-model="query.proto" placeholder="全部" allow-clear :options="['TCP', 'UDP', 'TCP + UDP']" /></a-form-item></a-col>
+            <a-col :span="8"><a-form-item field="ipver" label="IP 版本">
+              <a-select v-model="query.ipver" placeholder="全部" allow-clear :options="[{ label: 'IPv4', value: 'v4' }, { label: 'IPv6', value: 'v6' }, { label: 'IPv4 + IPv6', value: 'both' }]" /></a-form-item></a-col>
+            <a-col :span="8"><a-form-item field="status" label="状态">
+              <a-select v-model="query.status" placeholder="全部" allow-clear :options="[{ label: '正常', value: 'on' }, { label: '异常', value: 'err' }, { label: '已停用', value: 'off' }]" /></a-form-item></a-col>
+          </a-row>
+        </a-form>
+      </a-col>
+      <a-divider style="height: 84px" direction="vertical" />
+      <a-col flex="86px" style="text-align: right">
+        <a-space direction="vertical" :size="18">
+          <a-button type="primary"><template #icon><icon-search /></template>查询</a-button>
+          <a-button @click="resetQuery"><template #icon><icon-refresh /></template>重置</a-button>
+        </a-space>
+      </a-col>
+    </a-row>
+    <a-divider style="margin-top: 0" />
+    <a-row style="margin-bottom: 16px">
+      <a-col :span="14">
+        <a-space>
+          <a-button type="primary" @click="openRule()"><template #icon><icon-plus /></template>添加规则</a-button>
+          <a-button :disabled="!selectedRules.length" @click="batchSet(true)">批量启用</a-button>
+          <a-button :disabled="!selectedRules.length" @click="batchSet(false)">批量停用</a-button>
+          <a-popconfirm :content="'确定删除选中的 ' + selectedRules.length + ' 条规则？'" type="warning">
+            <a-button :disabled="!selectedRules.length" status="danger">批量删除</a-button></a-popconfirm>
+          <span v-if="selectedRules.length" class="muted">已选 {{ selectedRules.length }} 条 <a-link @click="selectedKeys = []">取消选择</a-link></span>
+        </a-space>
+      </a-col>
+      <a-col :span="10" style="display:flex;align-items:center;justify-content:end">
+        <a-space v-if="isAdmin" style="margin-right:12px"><span class="muted">按用户分组</span><a-switch v-model="grouped" size="small" /></a-space>
+        <a-tooltip content="刷新"><div class="action-icon"><icon-refresh size="18" /></div></a-tooltip>
+        <a-dropdown @select="v => density = v">
+          <a-tooltip content="密度"><div class="action-icon"><icon-line-height size="18" /></div></a-tooltip>
+          <template #content><a-doption value="mini">迷你</a-doption><a-doption value="small">偏小</a-doption><a-doption value="medium">中等</a-doption><a-doption value="large">偏大</a-doption></template>
+        </a-dropdown>
+        <a-tooltip content="列设置"><div class="action-icon"><icon-settings size="18" /></div></a-tooltip>
+      </a-col>
+    </a-row>
+
+    <a-alert v-if="errRules.length" type="error" style="margin-bottom:16px" closable>
+      {{ errRules.length }} 条规则运行异常（{{ errRules.map(r => nodeOf(r.node).name + ':' + r.port + ' ' + r.err).join('；') }}）
+      <template #action><a-button size="mini" type="text" @click="query.status = 'err'">只看异常</a-button></template>
+    </a-alert>
+    <!-- 分组模式为树形数据：勾选用户行 = 勾选该用户全部规则 -->
+    <a-table row-key="key" :data="tableRows" :columns="columns" :pagination="false" :bordered="false" :size="density"
+             :row-selection="{ type: 'checkbox', showCheckedAll: true, checkStrictly: false }" v-model:selected-keys="selectedKeys"
+             v-model:expanded-keys="expandedKeys" :indent-size="0" :span-method="spanMethod" :row-class="r => r.group ? 'grp-row' : ''" :scroll="{ x: 1340 }">
+      <template #status="{ record }">
+        <template v-if="!record.group">
+          <a-tooltip v-if="record.enabled && ruleErr(record)" :content="ruleErr(record)">
+            <span style="color:rgb(var(--red-6));cursor:help"><span class="circle err"></span>异常 <icon-question-circle /></span></a-tooltip>
+          <template v-else><span class="circle" :class="{ pass: record.enabled }"></span>{{ record.enabled ? '正常' : '已停用' }}</template>
+        </template>
+        <div v-else class="grp">
+          <a-avatar :size="24" :style="{ backgroundColor: record.user.color }">{{ record.user.name[0].toUpperCase() }}</a-avatar>
+          <span class="nm">{{ record.user.name }}</span>
+          <a-tag size="small">{{ record.user.rules.length }} 条</a-tag>
+          <a-tag v-if="record.user.rules.some(r => r.enabled && ruleErr(r))" size="small" color="red">异常 {{ record.user.rules.filter(r => r.enabled && ruleErr(r)).length }}</a-tag>
+          <a-badge :status="{ '正常': 'success', '已禁用': 'normal' }[record.user.status] || 'danger'" :text="record.user.status" />
+          <div class="info">
+            <span v-for="g in allocByNode(record.user)" :key="g.node">{{ nodeOf(g.node).name }} <b class="mono">{{ g.labels.join(' · ') }}</b></span>
+            <span>虚拟机 <b>{{ vmsOf(record.user.name).length }}</b> 台</span>
+            <span>流量 <b>{{ record.user.traffic }}</b> / {{ record.user.quota || '不限' }}</span>
+          </div>
+          <a-space style="margin-left:auto" @click.stop>
+            <a-button type="text" size="mini" @click="openUser(record.user)">编辑用户</a-button>
+            <a-button type="text" size="mini" @click="openRule(null, record.user)">代加规则</a-button>
+          </a-space>
+        </div>
+      </template>
+      <template #node="{ record }"><a-tag size="small" :color="nodeOf(record.node).status === 'online' ? 'arcoblue' : 'gray'">{{ nodeOf(record.node).name }}</a-tag></template>
+      <template #remark="{ record }">{{ record.remark || '-' }}</template>
+      <template #entry="{ record }"><div class="lines"><div v-for="l in entryLines(record)" :key="l" class="mono">{{ l }}</div></div></template>
+      <template #exit="{ record }"><div class="lines">
+        <div v-for="l in exitLines(record)" :key="l" class="mono">{{ l }}</div>
+        <a-space :size="4"><span class="muted"><span class="mono">{{ vmOf(record.vmId).vmid }}</span> {{ vmOf(record.vmId).host }}</span><a-tag v-if="vmOf(record.vmId).shared" size="small" color="arcoblue">公共</a-tag></a-space>
+      </div></template>
+      <template #ipver="{ record }"><a-tag :color="{ v4: 'arcoblue', v6: 'purple', both: 'green' }[record.ipver]">{{ ipverName[record.ipver] }}</a-tag></template>
+      <template #proto="{ record }"><a-tag>{{ record.proto }}</a-tag></template>
+      <template #traffic="{ record }"><div class="updown"><div>累计 {{ record.total }}</div><span class="d"><icon-arrow-down /> {{ record.down }}</span>&nbsp; <span class="u"><icon-arrow-up /> {{ record.up }}</span></div></template>
+      <template #conn="{ record }">{{ record.enabled && !ruleErr(record) ? record.conn : '-' }}</template>
+      <template #switch="{ record }"><a-switch v-model="record.enabled" size="small" /></template>
+      <template #operations="{ record }">
+        <a-space :size="0"><a-button type="text" size="small" @click="openRule(record)">编辑</a-button>
+        <a-popconfirm content="删除后该端口立即停止转发，确定删除？" type="warning"><a-button type="text" size="small" status="danger">删除</a-button></a-popconfirm></a-space>
+      </template>
+    </a-table>
+    <a-pagination :total="visibleRules.length" show-total show-page-size :page-size="20" style="justify-content:flex-end;margin-top:16px" />
+  </a-card>
+</div>
+
+<!-- ============================================================ 用户列表（查询表格） -->
+<div v-else-if="page === 'users'" class="container">
+  <a-breadcrumb class="container-breadcrumb"><a-breadcrumb-item><icon-apps /></a-breadcrumb-item><a-breadcrumb-item>用户管理</a-breadcrumb-item><a-breadcrumb-item>用户列表</a-breadcrumb-item></a-breadcrumb>
+  <a-card class="general-card" title="用户列表">
+    <a-row>
+      <a-col :flex="1">
+        <a-form :model="{}" :label-col-props="{ span: 6 }" :wrapper-col-props="{ span: 18 }" label-align="left">
+          <a-row :gutter="16">
+            <a-col :span="8"><a-form-item label="用户名"><a-input placeholder="请输入用户名" /></a-form-item></a-col>
+            <a-col :span="8"><a-form-item label="节点"><a-select placeholder="全部" allow-clear :options="readyNodes.map(n => ({ label: n.name, value: n.id }))" /></a-form-item></a-col>
+            <a-col :span="8"><a-form-item label="状态"><a-select placeholder="全部" allow-clear :options="['正常', '已禁用', '流量超限']" /></a-form-item></a-col>
+            <a-col :span="8"><a-form-item label="包含端口"><a-input-number placeholder="例如 20001" :min="1" :max="65535" /></a-form-item></a-col>
+            <a-col :span="8"><a-form-item label="虚拟机"><a-input placeholder="VMID / 名称 / IP" /></a-form-item></a-col>
+          </a-row>
+        </a-form>
+      </a-col>
+      <a-divider style="height: 84px" direction="vertical" />
+      <a-col flex="86px" style="text-align: right">
+        <a-space direction="vertical" :size="18">
+          <a-button type="primary"><template #icon><icon-search /></template>查询</a-button>
+          <a-button><template #icon><icon-refresh /></template>重置</a-button>
+        </a-space>
+      </a-col>
+    </a-row>
+    <a-divider style="margin-top: 0" />
+    <a-row style="margin-bottom: 16px">
+      <a-col :span="12"><a-button type="primary" @click="openNewUser"><template #icon><icon-plus /></template>添加用户</a-button></a-col>
+      <a-col :span="12" style="display:flex;align-items:center;justify-content:end">
+        <span class="muted">已分配 {{ totalAllocated }} 个端口 · {{ vms.filter(v => v.owner).length }} 台虚拟机</span>
+        <a-tooltip content="刷新"><div class="action-icon"><icon-refresh size="18" /></div></a-tooltip>
+      </a-col>
+    </a-row>
+    <a-table row-key="name" :data="users" :pagination="{ showTotal: true, pageSize: 20 }" :bordered="false" :scroll="{ x: 1320 }">
+      <template #columns>
+        <a-table-column title="用户" :width="120"><template #cell="{ record }">
+          <a-space><a-avatar :size="24" :style="{ backgroundColor: record.color }">{{ record.name[0].toUpperCase() }}</a-avatar>{{ record.name }}</a-space></template></a-table-column>
+        <a-table-column title="状态" :width="100"><template #cell="{ record }">
+          <span class="circle" :class="{ pass: record.status === '正常', err: record.status === '流量超限' }"></span>{{ record.status }}</template></a-table-column>
+        <a-table-column title="端口分配（按节点）" :width="300"><template #cell="{ record }">
+          <div v-for="g in allocByNode(record)" :key="g.node" style="line-height:1.9">
+            <a-tag size="small" color="arcoblue">{{ nodeOf(g.node).name }}</a-tag> <span class="mono">{{ g.labels.join(' · ') }}</span>
+            <span class="muted"> 已用 {{ usedPorts(record, g.node).length }}/{{ allPorts(record, g.node).length }}</span></div></template></a-table-column>
+        <a-table-column title="虚拟机" :width="260"><template #cell="{ record }">
+          <div v-for="v in vmsOf(record.name)" :key="v.id" style="line-height:1.9"><span class="muted">{{ nodeOf(v.node).name }}/</span><span class="mono">{{ v.vmid }}</span> {{ v.host }} <span class="muted mono">{{ v.v4 }}</span></div></template></a-table-column>
+        <a-table-column title="规则" :width="110"><template #cell="{ record }">{{ record.rules.length }} / {{ record.maxRules }}
+          <a-tag v-if="record.rules.some(r => r.enabled && ruleErr(r))" size="small" color="red" style="margin-left:4px">异常 {{ record.rules.filter(r => r.enabled && ruleErr(r)).length }}</a-tag></template></a-table-column>
+        <a-table-column title="流量" :width="150"><template #cell="{ record }">{{ record.traffic }} / {{ record.quota || '不限' }}</template></a-table-column>
+        <a-table-column title="操作" :width="210"><template #cell="{ record }"><a-space :size="0">
+          <a-button type="text" size="small" @click="openUser(record)">编辑</a-button>
+          <a-button type="text" size="small" @click="query.owner = record.name; go('rules')">查看规则</a-button>
+          <a-dropdown><a-button type="text" size="small">更多 <icon-down /></a-button>
+            <template #content><a-doption>重置密码</a-doption><a-doption>{{ record.status === '已禁用' ? '启用' : '禁用' }}</a-doption><a-doption style="color:rgb(var(--red-6))">删除用户</a-doption></template>
+          </a-dropdown></a-space></template></a-table-column>
+      </template>
+    </a-table>
+  </a-card>
+</div>
+
+<!-- ============================================================ 资源监控（参考 Pulse Proxmox Overview） -->
+<!-- 公开访问：未开放 / 需要访问密码 -->
+<div v-else-if="isPublic && (!pub.enabled || (pub.access === 'password' && !pubUnlocked))" class="pub-gate">
+  <a-card class="general-card" style="width:420px">
+    <div style="text-align:center;padding:24px 0 8px">
+      <div class="logo-mark" style="margin:0 auto 12px;width:40px;height:40px;font-size:22px"><icon-swap /></div>
+      <a-typography-title :heading="5" style="margin:0 0 4px">{{ pub.title }}</a-typography-title>
+      <template v-if="!pub.enabled"><a-result status="404" title="页面未开放" subtitle="管理员未开启公开监控页" style="padding:16px 0 0" /></template>
+      <template v-else>
+        <div class="muted" style="margin-bottom:20px">请输入访问密码</div>
+        <a-input-password v-model="pubPwd" placeholder="访问密码" @press-enter="unlockPub" />
+        <div v-if="pubPwdErr" style="color:rgb(var(--red-6));font-size:12px;margin-top:6px;text-align:left">{{ pubPwdErr }}</div>
+        <a-button type="primary" long style="margin-top:16px" @click="unlockPub">进入</a-button>
+      </template>
+    </div>
+  </a-card>
+</div>
+
+<div v-else-if="page === 'monitor' || isPublic" class="container" :class="{ 'pub-page': isPublic }">
+  <a-breadcrumb v-if="!isPublic" class="container-breadcrumb"><a-breadcrumb-item><icon-apps /></a-breadcrumb-item><a-breadcrumb-item>资源监控</a-breadcrumb-item></a-breadcrumb>
+  <!-- 公开页标题（无导航、无菜单） -->
+  <div v-else class="pub-head">
+    <a-space :size="12"><div class="logo-mark"><icon-swap /></div>
+      <div><div class="pub-title">{{ pub.title }}</div><div class="muted">{{ pub.desc }}</div></div></a-space>
+    <a-space :size="16"><a-badge :status="monNodes.every(n => n.status === 'online') ? 'success' : 'warning'" :text="monNodes.every(n => n.status === 'online') ? '全部节点正常' : '部分节点异常'" />
+      <span class="muted">更新于 {{ monUpdated }} · 每 {{ pub.refresh }} 刷新</span></a-space>
+  </div>
+
+  <!-- 汇总 -->
+  <a-card class="general-card" :body-style="{ padding: '20px' }" style="margin-bottom:16px">
+    <a-grid :cols="monSummary.length" :col-gap="16">
+      <a-grid-item v-for="s in monSummary" :key="s.title" class="mon-sum">
+        <a-statistic :title="s.title" :value="s.value" :precision="s.precision || 0" :value-style="{ color: s.color, fontWeight: 500 }">
+          <template #suffix><span class="unit">{{ s.unit }}</span></template></a-statistic>
+        <div class="muted">{{ s.sub }}</div>
+      </a-grid-item>
+    </a-grid>
+  </a-card>
+
+  <!-- 节点卡片（管理员） -->
+  <a-grid v-if="monAll && (!isPublic || pub.showNodes)" class="node-grid" :cols="{ xs: 1, sm: 1, md: 2, lg: 2, xl: 3, xxl: 3 }" :col-gap="16" :row-gap="16" style="margin-bottom:16px">
+    <a-grid-item v-for="n in monNodes" :key="n.id">
+      <a-card class="general-card node-card" :class="{ offline: n.status !== 'online', active: monNode === n.id }" :hoverable="!isPublic || pub.showVms" @click="monNode = monNode === n.id ? 'all' : n.id">
+        <template #title><a-space><span>{{ n.name }}</span><a-badge :status="nodeBadge[n.status].badge" :text="nodeBadge[n.status].text" /></a-space></template>
+        <template #extra><span class="muted">{{ n.status === 'online' ? '运行 ' + n.uptime : '最后心跳 ' + n.lastSeen }}</span></template>
+        <template v-if="n.status === 'online'">
+          <div class="mon-metric">
+            <span class="lbl">CPU</span>
+            <a-progress :percent="n.cpu / 100" :color="lvl(n.cpu)" :show-text="false" />
+            <span class="val">{{ n.cpu }}%<span class="muted"> · {{ n.cores }} 核</span></span>
+            <svg class="spark" viewBox="0 0 60 20" preserveAspectRatio="none"><path :d="sparkPath(spark('n' + n.id, 'cpu', 30, n.cpu), 60, 20)" fill="none" :stroke="lvl(n.cpu)" stroke-width="1.5" /></svg>
+          </div>
+          <div class="mon-metric">
+            <span class="lbl">内存</span>
+            <a-progress :percent="n.mem / 100" :color="lvl(n.mem)" :show-text="false" />
+            <span class="val">{{ (n.memTotal * n.mem / 100).toFixed(0) }} / {{ n.memTotal }} GB</span>
+            <svg class="spark" viewBox="0 0 60 20" preserveAspectRatio="none"><path :d="sparkPath(spark('n' + n.id, 'mem', 30, n.mem), 60, 20)" fill="none" :stroke="lvl(n.mem)" stroke-width="1.5" /></svg>
+          </div>
+          <div class="mon-metric">
+            <span class="lbl">磁盘</span>
+            <a-progress :percent="n.disk / 100" :color="lvl(n.disk)" :show-text="false" />
+            <span class="val">{{ (n.diskTotal * n.disk / 100).toFixed(2) }} / {{ n.diskTotal }} TB</span>
+            <span class="spark"></span>
+          </div>
+          <div class="mon-metric">
+            <a-tooltip content="CPU 等待磁盘 IO 的时间占比"><span class="lbl" style="cursor:help">IO 等待</span></a-tooltip>
+            <a-progress :percent="Math.min(nodeIo[n.id].iowait * 4, 100) / 100" :color="busyOf(nodeIo[n.id].iowait * 4).color" :show-text="false" />
+            <span class="val">{{ nodeIo[n.id].iowait }}%</span>
+            <svg class="spark" viewBox="0 0 60 20" preserveAspectRatio="none"><path :d="sparkPath(spark('n' + n.id, 'iow', 30, nodeIo[n.id].iowait * 4), 60, 20)" fill="none" :stroke="busyOf(nodeIo[n.id].iowait * 4).color" stroke-width="1.5" /></svg>
+          </div>
+          <!-- 物理磁盘：每块两行，第一行设备与繁忙度，第二行进度条与 IOPS / 延迟 -->
+          <div class="disk-list">
+            <div v-for="d in nodeIo[n.id].disks" :key="d.dev" class="disk-item">
+              <div class="disk-l1">
+                <a-tooltip :content="d.model + ' · ' + d.pool + ' · 读 ' + fmtRate(d.rMB) + ' 写 ' + fmtRate(d.wMB)">
+                  <span class="dev"><span class="mono">{{ d.dev }}</span> <a-tag size="small">{{ d.kind }}</a-tag></span></a-tooltip>
+                <a-tag size="small" :color="busyOf(d.util, d.await).tag">{{ busyOf(d.util, d.await).text }} {{ d.util }}%</a-tag>
+              </div>
+              <div class="disk-l2">
+                <a-progress :percent="d.util / 100" :color="busyOf(d.util, d.await).color" :show-text="false" size="small" />
+                <span class="mono muted">{{ fmtK(d.rIops + d.wIops) }} IOPS</span>
+                <span class="mono" :style="{ color: d.await >= 20 ? busyOf(0, d.await).color : 'var(--color-text-3)' }">{{ d.await }} ms</span>
+              </div>
+            </div>
+          </div>
+          <div class="mon-foot">
+            <span>负载 <b class="mono">{{ n.load.split(' ')[0] }}</b></span>
+            <span><icon-arrow-down style="color:rgb(var(--green-6))" /> {{ fmtRate(n.netIn) }} <icon-arrow-up style="color:rgb(var(--orange-6))" /> {{ fmtRate(n.netOut) }}</span>
+            <span>虚拟机 <b>{{ vms.filter(v => v.node === n.id && v.status === 'running').length }}</b>/{{ vms.filter(v => v.node === n.id).length }}</span>
+          </div>
+        </template>
+        <a-empty v-else description="节点离线，显示最后一次上报的数据" style="padding:18px 0" />
+      </a-card>
+    </a-grid-item>
+  </a-grid>
+
+  <!-- 虚拟机与容器 -->
+  <a-card v-if="!isPublic || pub.showVms" class="general-card" :title="monAll ? '虚拟机与容器' : '我的虚拟机'">
+    <template #extra>
+      <a-space v-if="!isPublic">
+        <span class="muted">更新于 {{ monUpdated }}</span>
+        <a-select v-model="monRefresh" size="small" style="width:120px" :options="[{ label: '自动刷新 5s', value: '5s' }, { label: '自动刷新 10s', value: '10s' }, { label: '自动刷新 30s', value: '30s' }, { label: '暂停刷新', value: 'off' }]" />
+      </a-space>
+    </template>
+    <a-row justify="space-between" align="center" style="margin-bottom:16px" :gutter="8">
+      <a-space wrap>
+        <a-input-search v-model="monKw" placeholder="名称 / VMID / IP" style="width:200px" allow-clear />
+        <a-select v-if="monAll" v-model="monNode" style="width:140px" :options="[{ label: '全部节点', value: 'all' }, ...monNodes.map(n => ({ label: n.name, value: n.id }))]" />
+        <a-radio-group v-model="monType" type="button"><a-radio value="all">全部</a-radio><a-radio value="qemu">VM</a-radio><a-radio value="lxc">CT</a-radio></a-radio-group>
+        <a-radio-group v-model="monStatus" type="button"><a-radio value="all">全部状态</a-radio><a-radio value="running">运行中</a-radio><a-radio value="stopped">已停止</a-radio></a-radio-group>
+      </a-space>
+      <a-space>
+        <span class="muted">显示</span>
+        <a-radio-group v-model="monMode" type="button" size="small"><a-radio value="bars">进度条</a-radio><a-radio value="trend">趋势 1h</a-radio></a-radio-group>
+        <template v-if="monAll"><span class="muted" style="margin-left:8px">按节点分组</span><a-switch v-model="monGroup" size="small" /></template>
+      </a-space>
+    </a-row>
+
+    <a-table row-key="key" :data="monRows" :columns="monColumns" :pagination="false" :bordered="false" size="medium"
+             v-model:expanded-keys="monExpanded" :indent-size="0" :span-method="monSpan" :row-class="r => r.group ? 'grp-row' : 'mon-row'"
+             :scroll="{ x: monColumns.reduce((t, c) => t + c.width, 0) }" @row-click="r => !r.group && (!isPublic || pub.showDetail) && openMonVm(r)">
+      <template #name="{ record }">
+        <div v-if="record.group" class="grp">
+          <icon-cloud /><span class="nm">{{ record.node.name }}</span>
+          <a-badge :status="nodeBadge[record.node.status].badge" :text="nodeBadge[record.node.status].text" />
+          <div class="info">
+            <span>CPU <b>{{ record.node.cpu }}%</b></span><span>内存 <b>{{ record.node.mem }}%</b></span>
+            <span>运行 <b>{{ record.children.filter(v => v.status === 'running').length }}</b> / {{ record.children.length }}</span>
+          </div>
+        </div>
+        <template v-else><span class="circle" :class="{ pass: record.status === 'running' }"></span><b style="font-weight:500">{{ record.host }}</b> <span class="muted mono">{{ record.vmid }}</span></template>
+      </template>
+      <template #type="{ record }"><a-tag size="small" :color="record.type === 'qemu' ? 'arcoblue' : 'cyan'">{{ record.type === 'qemu' ? 'VM' : 'CT' }}</a-tag></template>
+      <template #owner="{ record }"><a-tag v-if="record.shared" size="small" color="arcoblue">公共</a-tag><span v-else-if="record.owner">{{ record.owner }}</span><span v-else class="muted">未分配</span></template>
+      <template #uptime="{ record }"><span :class="{ muted: record.status !== 'running' }">{{ record.status === 'running' ? record.uptime : '-' }}</span></template>
+      <template #cpu="{ record }"><mon-cell :on="record.status === 'running'" :mode="monMode" :pct="record.cpu" :text="record.cpu + '%'" :sub="record.cores + ' 核'" :series="spark(record.id, 'cpu', 30, record.cpu)" /></template>
+      <template #mem="{ record }"><mon-cell :on="record.status === 'running'" :mode="monMode" :pct="pct(record.memU, record.memT)" :text="pct(record.memU, record.memT) + '%'" :sub="record.memU + ' / ' + record.memT + ' GB'" :series="spark(record.id, 'mem', 30, pct(record.memU, record.memT))" /></template>
+      <template #disk="{ record }"><mon-cell :on="true" mode="bars" :pct="pct(record.diskU, record.diskT)" :text="pct(record.diskU, record.diskT) + '%'" :sub="record.diskU + ' / ' + record.diskT + ' GB'" /></template>
+      <template #io="{ record }"><div v-if="record.status === 'running'" class="updown">
+        <a-tooltip :content="'读 ' + fmtRate(record.dr) + ' · 写 ' + fmtRate(record.dw)">
+          <div><a-tag size="small" :color="vmBusy(record).tag">{{ vmBusy(record).text }}</a-tag> <span class="mono">{{ vmIo(record).lat }} ms</span></div></a-tooltip>
+        <div class="muted mono">{{ fmtK(vmIo(record).iops) }} IOPS</div></div><span v-else class="muted">-</span></template>
+      <template #net="{ record }"><div v-if="record.status === 'running'" class="updown"><div class="d"><icon-arrow-down /> {{ fmtRate(record.ni) }}</div><div class="u"><icon-arrow-up /> {{ fmtRate(record.no) }}</div></div><span v-else class="muted">-</span></template>
+      <template #ip="{ record }"><div class="lines"><div class="mono">{{ record.v4 || '-' }}</div><div v-if="record.v6" class="mono muted">{{ record.v6 }}</div></div></template>
+    </a-table>
+  </a-card>
+
+  <!-- 虚拟机详情抽屉 -->
+  <a-drawer v-model:visible="monDrawer" :width="680" :footer="false" unmount-on-close>
+    <template #title><a-space><span class="circle" :class="{ pass: monVm.status === 'running' }"></span>{{ monVm.host }} <span class="muted mono">{{ nodeOf(monVm.node).name }}/{{ monVm.vmid }}</span></a-space></template>
+    <a-descriptions :column="3" size="small" :data="[
+      { label: '类型', value: monVm.type === 'qemu' ? '虚拟机 (VM)' : '容器 (CT)' }, { label: '状态', value: monVm.status === 'running' ? '运行中 · ' + monVm.uptime : '已停止' },
+      ...(isPublic && !pub.showOwner ? [] : [{ label: '归属', value: monVm.shared ? '公共' : (monVm.owner || '未分配') }]), { label: '配置', value: monVm.cores + ' 核 / ' + monVm.memT + ' GB / ' + monVm.diskT + ' GB' },
+      ...(isPublic ? (pub.showIp ? [{ label: 'IPv4', value: monVm.v4 || '-' }] : []) : [{ label: 'IPv4', value: monVm.v4 || '-' }, { label: 'MAC', value: monVm.mac }, { label: '转发规则', value: vmRuleCount(monVm.id) + ' 条' }]) ]" />
+    <a-divider />
+    <a-row justify="space-between" style="margin-bottom:12px"><b>历史趋势</b>
+      <a-radio-group v-model="monRange" type="button" size="small"><a-radio value="1h">1 小时</a-radio><a-radio value="24h">24 小时</a-radio><a-radio value="7d">7 天</a-radio></a-radio-group></a-row>
+    <a-grid :cols="2" :col-gap="12" :row-gap="12">
+      <a-grid-item v-for="c in monCharts" :key="c.title">
+        <div class="mini-chart">
+          <div class="mc-head"><span>{{ c.title }}</span><b>{{ c.now }}</b></div>
+          <svg viewBox="0 0 300 90" preserveAspectRatio="none" style="width:100%;height:90px;display:block">
+            <path :d="sparkPath(c.a, 300, 90) + ' L300 90 L0 90 Z'" :fill="c.color" fill-opacity=".1" />
+            <path :d="sparkPath(c.a, 300, 90)" fill="none" :stroke="c.color" stroke-width="1.5" />
+            <path v-if="c.b" :d="sparkPath(c.b, 300, 90)" fill="none" stroke="#ff7d00" stroke-width="1.5" />
+          </svg>
+          <div class="muted" style="display:flex;justify-content:space-between"><span>{{ c.from }}</span><span>{{ c.legend }}</span><span>现在</span></div>
+        </div>
+      </a-grid-item>
+    </a-grid>
+  </a-drawer>
+</div>
+
+<!-- ============================================================ 添加用户（分步表单） -->
+<div v-else-if="page === 'user-new'" class="container">
+  <a-breadcrumb class="container-breadcrumb"><a-breadcrumb-item><icon-apps /></a-breadcrumb-item><a-breadcrumb-item>用户管理</a-breadcrumb-item><a-breadcrumb-item>添加用户</a-breadcrumb-item></a-breadcrumb>
+  <a-card class="general-card">
+    <template #title>添加用户</template>
+    <div class="step-wrapper">
+      <a-steps :current="step" style="width: 760px" line-less class="steps">
+        <a-step description="用户名与配额">账号信息</a-step>
+        <a-step description="按节点分配端口">端口分配</a-step>
+        <a-step description="选择 PVE 虚拟机">虚拟机</a-step>
+        <a-step description="创建成功">完成</a-step>
+      </a-steps>
+
+      <a-form v-if="step === 1" :model="userForm" class="step-form" style="width:520px" :label-col-props="{ span: 6 }" :wrapper-col-props="{ span: 18 }">
+        <a-form-item label="用户名" required :validate-status="stepErr.name ? 'error' : undefined" :help="stepErr.name">
+          <a-input v-model="userForm.name" placeholder="字母、数字、下划线，3-20 位" /></a-form-item>
+        <a-form-item label="密码" required :validate-status="stepErr.pwd ? 'error' : undefined" :help="stepErr.pwd">
+          <a-input-password v-model="userForm.pwd" placeholder="至少 8 位" /></a-form-item>
+        <a-form-item label="流量上限" extra="所有节点合计"><a-input-number v-model="userForm.quota" placeholder="留空为不限" :min="0"><template #append>GB</template></a-input-number></a-form-item>
+        <a-form-item label="规则上限"><a-input-number v-model="userForm.maxRules" :min="1"><template #append>条</template></a-input-number></a-form-item>
+        <a-form-item label="状态"><a-radio-group v-model="userForm.enabled"><a-radio :value="true">启用</a-radio><a-radio :value="false">禁用</a-radio></a-radio-group></a-form-item>
+        <a-form-item label="备注"><a-textarea v-model="userForm.remark" placeholder="选填" :max-length="100" show-word-limit /></a-form-item>
+        <a-form-item><a-button type="primary" @click="nextStep">下一步</a-button></a-form-item>
+      </a-form>
+
+      <a-form v-else-if="step === 2" :model="allocForm" class="step-form" style="width:720px" :label-col-props="{ span: 4 }" :wrapper-col-props="{ span: 20 }">
+        <a-form-item label="节点" extra="端口按节点独立：不同节点可使用相同端口号">
+          <a-radio-group v-model="allocForm.node" type="button"><a-radio v-for="n in readyNodes" :key="n.id" :value="n.id">{{ n.name }}</a-radio></a-radio-group></a-form-item>
+        <a-form-item label="分配方式">
+          <a-radio-group v-model="allocForm.type" type="button"><a-radio value="single">单个</a-radio><a-radio value="multi">多个</a-radio><a-radio value="range">范围</a-radio></a-radio-group></a-form-item>
+        <a-form-item :label="{ single: '端口', multi: '端口列表', range: '端口范围' }[allocForm.type]" :validate-status="allocErr ? 'error' : undefined"
+          :help="allocErr || '同一节点内端口不可重复；' + nodeOf(allocForm.node).name + ' 保留端口 ' + nodeOf(allocForm.node).reserved.join(' / ')">
+          <a-space>
+            <a-input-number v-if="allocForm.type === 'single'" model-event="input" v-model="allocForm.single" :min="1" :max="65535" placeholder="例如 10022" style="width:220px" />
+            <a-input-tag v-if="allocForm.type === 'multi'" v-model="allocForm.multi" placeholder="输入后回车，可粘贴 8001,8002" style="width:330px" allow-clear />
+            <template v-if="allocForm.type === 'range'">
+              <a-input-number model-event="input" v-model="allocForm.from" :min="1" :max="65535" placeholder="起始端口" style="width:150px" /><span>~</span>
+              <a-input-number model-event="input" v-model="allocForm.to" :min="1" :max="65535" placeholder="结束端口" style="width:150px" />
+            </template>
+            <a-button type="primary" @click="addAlloc"><template #icon><icon-plus /></template>添加</a-button>
+          </a-space>
+        </a-form-item>
+        <a-form-item label="已分配" :validate-status="stepErr.ports ? 'error' : undefined" :help="stepErr.ports">
+          <a-table :data="userForm.allocs" :pagination="false" :bordered="false" size="small" style="width:100%">
+            <template #columns>
+              <a-table-column title="节点" :width="100"><template #cell="{ record }"><a-tag size="small" color="arcoblue">{{ nodeOf(record.node).name }}</a-tag></template></a-table-column>
+              <a-table-column title="类型" :width="80"><template #cell="{ record }"><a-tag size="small">{{ allocTypeName[record.type] }}</a-tag></template></a-table-column>
+              <a-table-column title="端口"><template #cell="{ record }"><span class="mono">{{ record.label }}</span></template></a-table-column>
+              <a-table-column title="数量" :width="70"><template #cell="{ record }">{{ expand([record]).length }}</template></a-table-column>
+              <a-table-column title="操作" :width="70"><template #cell="{ rowIndex }"><a-button type="text" size="mini" status="danger" @click="userForm.allocs.splice(rowIndex, 1)">移除</a-button></template></a-table-column>
+            </template>
+            <template #empty><a-empty description="尚未分配端口" /></template>
+          </a-table>
+        </a-form-item>
+        <a-form-item><a-space><a-button type="secondary" @click="step--">上一步</a-button><a-button type="primary" @click="nextStep">下一步</a-button></a-space></a-form-item>
+      </a-form>
+
+      <div v-else-if="step === 3" class="step-form" style="width:1000px">
+        <a-row justify="space-between" align="center" style="margin-bottom:12px">
+          <a-space>
+            <a-select v-model="vmNode" style="width:150px" :options="[{ label: '全部节点', value: 'all' }, ...readyNodes.map(n => ({ label: n.name, value: n.id }))]" />
+            <a-input-search v-model="vmKw" placeholder="VMID / 名称 / MAC" style="width:200px" allow-clear />
+            <a-checkbox v-model="vmOnlyFree">只看可分配</a-checkbox>
+          </a-space>
+          <a-space><span class="muted">由各节点 Agent 上报，仅含接入内网网桥的虚拟机</span>
+            <a-button size="small" @click="syncPve()"><template #icon><icon-sync /></template>立即同步</a-button></a-space>
+        </a-row>
+        <a-table row-key="id" :data="vmChoices" :pagination="false" :bordered="false" size="small" :scroll="{ y: 320 }"
+                 :row-selection="{ type: 'checkbox', showCheckedAll: true }" v-model:selected-keys="userForm.vmIds">
+          <template #columns>
+            <a-table-column title="节点" :width="90"><template #cell="{ record }"><a-tag size="small" color="arcoblue">{{ nodeOf(record.node).name }}</a-tag></template></a-table-column>
+            <a-table-column title="VMID" :width="70"><template #cell="{ record }"><span class="mono">{{ record.vmid }}</span></template></a-table-column>
+            <a-table-column title="名称" data-index="host" :width="120" />
+            <a-table-column title="类型" :width="60"><template #cell="{ record }"><a-tag size="small" :color="record.type === 'qemu' ? 'arcoblue' : 'cyan'">{{ record.type === 'qemu' ? 'VM' : 'CT' }}</a-tag></template></a-table-column>
+            <a-table-column title="状态" :width="80"><template #cell="{ record }"><span class="circle" :class="{ pass: record.status === 'running' }"></span>{{ record.status === 'running' ? '运行中' : '已停止' }}</template></a-table-column>
+            <a-table-column title="MAC" :width="140"><template #cell="{ record }"><span class="mono">{{ record.mac }}</span></template></a-table-column>
+            <a-table-column title="内网 IP"><template #cell="{ record }">
+              <template v-if="record.v4"><span class="mono">{{ record.v4 }}</span><span v-if="record.v6" class="muted mono"> / {{ record.v6 }}</span></template>
+              <template v-else-if="vmPreview[record.id]"><span class="mono" style="color:rgb(var(--arcoblue-6))">{{ vmPreview[record.id].v4 }}</span> <a-tag size="small" color="arcoblue">保存后分配</a-tag></template>
+              <span v-else class="muted">勾选后自动分配</span></template></a-table-column>
+            <a-table-column title="归属" :width="110"><template #cell="{ record }">
+              <a-tag v-if="record.owner && record.owner !== userForm.name" size="small">{{ record.owner }}</a-tag>
+              <span v-else-if="record.owner" class="muted">当前用户</span><span v-else class="muted">未分配</span></template></a-table-column>
+          </template>
+        </a-table>
+        <a-alert style="margin-top:12px">已选 {{ selectedVms.length }} 台<template v-if="selectedVms.length">：{{ selectedVms.map(v => nodeOf(v.node).name + '/' + v.vmid + ' ' + v.host).join('，') }}</template>。保存后由对应节点的 Agent 按 MAC 自动分配内网 IP 并写入 DHCP 静态绑定。</a-alert>
+        <div v-if="stepErr.vms" style="color:rgb(var(--red-6));margin-top:8px">{{ stepErr.vms }}</div>
+        <div style="text-align:center;margin-top:32px"><a-space><a-button type="secondary" @click="step--">上一步</a-button><a-button type="primary" @click="nextStep">提交</a-button></a-space></div>
+      </div>
+
+      <div v-else class="success-wrap" style="width:100%">
+        <a-result status="success" title="用户创建成功" :subtitle="'账号 ' + userForm.name + ' 已可登录，端口与虚拟机已下发到对应节点'" />
+        <a-space :size="16"><a-button type="primary" @click="go('users')">查看用户列表</a-button><a-button type="secondary" @click="openNewUser">继续添加</a-button></a-space>
+        <div class="details-wrapper">
+          <a-typography-title :heading="6" style="margin-top: 0">创建信息</a-typography-title>
+          <a-descriptions :column="2" :data="[
+            { label: '用户名', value: userForm.name }, { label: '状态', value: userForm.enabled ? '启用' : '禁用' },
+            { label: '流量上限', value: userForm.quota ? userForm.quota + ' GB' : '不限' }, { label: '规则上限', value: userForm.maxRules + ' 条' },
+            { label: '端口', value: allocByNode(userForm).map(g => nodeOf(g.node).name + '：' + g.labels.join('、')).join('；') },
+            { label: '虚拟机', value: selectedVms.map(v => nodeOf(v.node).name + '/' + v.vmid + ' ' + v.host + '（' + (v.v4 || (vmPreview[v.id] || {}).v4) + '）').join('，') } ]" />
+        </div>
+      </div>
+    </div>
+  </a-card>
+</div>
+
+<!-- ============================================================ 编辑用户（分组表单） -->
+<div v-else-if="page === 'user-edit'" class="container with-actions">
+  <a-breadcrumb class="container-breadcrumb"><a-breadcrumb-item><icon-apps /></a-breadcrumb-item><a-breadcrumb-item>用户管理</a-breadcrumb-item><a-breadcrumb-item>编辑用户 · {{ userForm.name }}</a-breadcrumb-item></a-breadcrumb>
+  <a-form :model="userForm" layout="vertical">
+    <a-space direction="vertical" :size="16" fill>
+      <a-card class="general-card"><template #title>账号信息</template>
+        <a-row :gutter="80">
+          <a-col :span="8"><a-form-item label="用户名"><a-input v-model="userForm.name" disabled /></a-form-item></a-col>
+          <a-col :span="8"><a-form-item label="新密码"><a-input-password v-model="userForm.pwd" placeholder="留空则不修改" /></a-form-item></a-col>
+          <a-col :span="8"><a-form-item label="状态"><a-radio-group v-model="userForm.enabled"><a-radio :value="true">启用</a-radio><a-radio :value="false">禁用</a-radio></a-radio-group></a-form-item></a-col>
+        </a-row>
+        <a-row :gutter="80">
+          <a-col :span="8"><a-form-item label="流量上限" extra="所有节点合计"><a-input-number v-model="userForm.quota" placeholder="留空为不限" :min="0"><template #append>GB</template></a-input-number></a-form-item></a-col>
+          <a-col :span="8"><a-form-item label="规则上限"><a-input-number v-model="userForm.maxRules" :min="1"><template #append>条</template></a-input-number></a-form-item></a-col>
+          <a-col :span="8"><a-form-item label="备注"><a-input v-model="userForm.remark" placeholder="选填" /></a-form-item></a-col>
+        </a-row>
+      </a-card>
+
+      <a-card class="general-card"><template #title>端口分配</template>
+        <template #extra><span class="muted">共 {{ allPorts(userForm).length }} 个端口；同一节点内端口不可重复</span></template>
+        <a-row :gutter="40">
+          <a-col :span="6"><a-form-item label="节点"><a-select v-model="allocForm.node" :options="readyNodes.map(n => ({ label: n.name, value: n.id }))" /></a-form-item></a-col>
+          <a-col :span="6"><a-form-item label="分配方式">
+            <a-radio-group v-model="allocForm.type" type="button"><a-radio value="single">单个</a-radio><a-radio value="multi">多个</a-radio><a-radio value="range">范围</a-radio></a-radio-group></a-form-item></a-col>
+          <a-col :span="12"><a-form-item :label="{ single: '端口', multi: '端口列表', range: '端口范围' }[allocForm.type]" :validate-status="allocErr ? 'error' : undefined" :help="allocErr || undefined">
+            <a-space>
+              <a-input-number v-if="allocForm.type === 'single'" model-event="input" v-model="allocForm.single" :min="1" :max="65535" placeholder="例如 10022" style="width:220px" />
+              <a-input-tag v-if="allocForm.type === 'multi'" v-model="allocForm.multi" placeholder="输入后回车" style="width:300px" allow-clear />
+              <template v-if="allocForm.type === 'range'">
+                <a-input-number model-event="input" v-model="allocForm.from" :min="1" :max="65535" placeholder="起始端口" style="width:140px" /><span>~</span>
+                <a-input-number model-event="input" v-model="allocForm.to" :min="1" :max="65535" placeholder="结束端口" style="width:140px" />
+              </template>
+              <a-button type="primary" @click="addAlloc"><template #icon><icon-plus /></template>添加</a-button>
+            </a-space></a-form-item></a-col>
+        </a-row>
+        <a-table :data="userForm.allocs" :pagination="false" :bordered="false">
+          <template #columns>
+            <a-table-column title="节点" :width="120"><template #cell="{ record }"><a-tag color="arcoblue">{{ nodeOf(record.node).name }}</a-tag></template></a-table-column>
+            <a-table-column title="类型" :width="100"><template #cell="{ record }"><a-tag>{{ allocTypeName[record.type] }}</a-tag></template></a-table-column>
+            <a-table-column title="端口"><template #cell="{ record }"><span class="mono">{{ record.label }}</span></template></a-table-column>
+            <a-table-column title="数量" :width="100"><template #cell="{ record }">{{ expand([record]).length }}</template></a-table-column>
+            <a-table-column title="已被规则使用" :width="140"><template #cell="{ record }">{{ expand([record]).filter(p => ruleUsedOn(record.node).has(p)).length }}</template></a-table-column>
+            <a-table-column title="操作" :width="100"><template #cell="{ rowIndex }">
+              <a-popconfirm content="若其中端口已被规则使用，对应规则会一并删除，确定移除？" type="warning" @ok="userForm.allocs.splice(rowIndex, 1)">
+                <a-button type="text" size="small" status="danger">移除</a-button></a-popconfirm></template></a-table-column>
+          </template>
+          <template #empty><a-empty description="尚未分配端口" /></template>
+        </a-table>
+      </a-card>
+
+      <a-card class="general-card"><template #title>虚拟机分配</template>
+        <template #extra><span class="muted">该用户的规则只能指向这些虚拟机或同节点的公共虚拟机</span></template>
+        <a-row justify="space-between" align="center" style="margin-bottom:12px">
+          <a-space>
+            <a-select v-model="vmNode" style="width:150px" :options="[{ label: '全部节点', value: 'all' }, ...readyNodes.map(n => ({ label: n.name, value: n.id }))]" />
+            <a-input-search v-model="vmKw" placeholder="VMID / 名称 / MAC" style="width:200px" allow-clear />
+            <a-checkbox v-model="vmOnlyFree">只看可分配</a-checkbox>
+          </a-space>
+          <a-button size="small" @click="syncPve()"><template #icon><icon-sync /></template>立即同步</a-button>
+        </a-row>
+        <a-table row-key="id" :data="vmChoices" :pagination="false" :bordered="false" size="small" :scroll="{ y: 320 }"
+                 :row-selection="{ type: 'checkbox', showCheckedAll: true }" v-model:selected-keys="userForm.vmIds">
+          <template #columns>
+            <a-table-column title="节点" :width="100"><template #cell="{ record }"><a-tag size="small" color="arcoblue">{{ nodeOf(record.node).name }}</a-tag></template></a-table-column>
+            <a-table-column title="VMID" :width="80"><template #cell="{ record }"><span class="mono">{{ record.vmid }}</span></template></a-table-column>
+            <a-table-column title="名称" data-index="host" :width="130" />
+            <a-table-column title="类型" :width="70"><template #cell="{ record }"><a-tag size="small" :color="record.type === 'qemu' ? 'arcoblue' : 'cyan'">{{ record.type === 'qemu' ? 'VM' : 'CT' }}</a-tag></template></a-table-column>
+            <a-table-column title="状态" :width="90"><template #cell="{ record }"><span class="circle" :class="{ pass: record.status === 'running' }"></span>{{ record.status === 'running' ? '运行中' : '已停止' }}</template></a-table-column>
+            <a-table-column title="MAC" :width="150"><template #cell="{ record }"><span class="mono">{{ record.mac }}</span></template></a-table-column>
+            <a-table-column title="内网 IP"><template #cell="{ record }">
+              <template v-if="record.v4"><span class="mono">{{ record.v4 }}</span><span v-if="record.v6" class="muted mono"> / {{ record.v6 }}</span></template>
+              <template v-else-if="vmPreview[record.id]"><span class="mono" style="color:rgb(var(--arcoblue-6))">{{ vmPreview[record.id].v4 }}</span> <a-tag size="small" color="arcoblue">保存后分配</a-tag></template>
+              <span v-else class="muted">勾选后自动分配</span></template></a-table-column>
+            <a-table-column title="归属" :width="170"><template #cell="{ record }">
+              <a-tag v-if="record.owner && record.owner !== userForm.name" size="small">{{ record.owner }}</a-tag>
+              <span v-else-if="record.owner" class="muted">当前用户</span><span v-else class="muted">未分配</span>
+              <a-tag v-if="vmRuleCount(record.id)" size="small" color="orange" style="margin-left:4px">{{ vmRuleCount(record.id) }} 条规则</a-tag></template></a-table-column>
+          </template>
+        </a-table>
+        <a-alert style="margin-top:12px">已选 {{ selectedVms.length }} 台。取消已被规则使用的虚拟机，对应规则会被停用。</a-alert>
+      </a-card>
+    </a-space>
+    <div class="actions" :style="{ left: (collapsed ? 48 : 220) + 'px' }">
+      <a-space><a-button @click="go('users')">取消</a-button><a-button>重置</a-button><a-button type="primary" @click="go('users')">保存并下发</a-button></a-space>
+    </div>
+  </a-form>
+</div>
+
+<!-- ============================================================ 节点列表（查询表格） -->
+<div v-else-if="page === 'nodes'" class="container">
+  <a-breadcrumb class="container-breadcrumb"><a-breadcrumb-item><icon-apps /></a-breadcrumb-item><a-breadcrumb-item>PVE 节点</a-breadcrumb-item><a-breadcrumb-item>节点列表</a-breadcrumb-item></a-breadcrumb>
+  <a-card class="general-card" title="节点列表">
+    <a-row>
+      <a-col :flex="1">
+        <a-form :model="{}" :label-col-props="{ span: 6 }" :wrapper-col-props="{ span: 18 }" label-align="left">
+          <a-row :gutter="16">
+            <a-col :span="8"><a-form-item label="关键词"><a-input placeholder="名称 / 主机名 / 公网 IP" /></a-form-item></a-col>
+            <a-col :span="8"><a-form-item label="状态"><a-select placeholder="全部" allow-clear :options="Object.values(nodeBadge).map(b => b.text)" /></a-form-item></a-col>
+            <a-col :span="8"><a-form-item label="Agent 版本"><a-select placeholder="全部" allow-clear :options="['1.0.0', '0.9.2']" /></a-form-item></a-col>
+          </a-row>
+        </a-form>
+      </a-col>
+      <a-divider style="height: 32px" direction="vertical" />
+      <a-col flex="86px" style="text-align: right"><a-button type="primary"><template #icon><icon-search /></template>查询</a-button></a-col>
+    </a-row>
+    <a-divider style="margin-top: 0" />
+    <a-row style="margin-bottom: 16px">
+      <a-col :span="12"><a-button type="primary" @click="openNewNode"><template #icon><icon-plus /></template>添加节点</a-button></a-col>
+      <a-col :span="12" style="display:flex;align-items:center;justify-content:end">
+        <span class="muted">Agent 连接地址 <span class="mono">{{ agentUrl }}</span></span>
+        <a-tooltip content="刷新"><div class="action-icon"><icon-refresh size="18" /></div></a-tooltip>
+      </a-col>
+    </a-row>
+    <a-table row-key="id" :data="nodes" :pagination="false" :bordered="false" :scroll="{ x: 1470 }">
+      <template #columns>
+        <a-table-column title="节点" :width="170"><template #cell="{ record }">
+          <div style="font-weight:500">{{ record.name }}</div><div class="muted">{{ record.remark }}</div></template></a-table-column>
+        <a-table-column title="连接方式" :width="170"><template #cell="{ record }">
+          <template v-if="record.mode === 'ssh'"><a-tag size="small" color="purple">SSH</a-tag> <span class="mono">{{ record.sshHost }}:{{ record.sshPort }}</span>
+            <div class="muted">{{ record.credId ? '凭证 · ' + credOf(record.credId).name : record.auth === 'key' ? '密钥' : '密码' }}</div></template>
+          <template v-else><a-tag size="small" color="green">Agent</a-tag> <span class="muted">WSS</span><div class="muted">v{{ record.agentVer || '-' }}</div></template></template></a-table-column>
+        <a-table-column title="状态" :width="130"><template #cell="{ record }">
+          <a-badge :status="nodeBadge[record.status].badge" :text="nodeBadge[record.status].text" />
+          <div class="muted">心跳 {{ record.lastSeen }}</div></template></a-table-column>
+        <a-table-column title="公网地址" :width="200"><template #cell="{ record }">
+          <template v-if="record.initialized"><div class="mono">{{ record.wan }} · {{ record.wanIp }}</div><div v-if="record.wanIp6" class="mono muted">{{ record.wanIp6 }}</div></template>
+          <span v-else class="muted">-</span></template></a-table-column>
+        <a-table-column title="内网" :width="170"><template #cell="{ record }">
+          <template v-if="record.initialized"><div class="mono">{{ record.lan }} · {{ record.subnet }}</div><div class="muted">DHCP {{ record.dhcp }}</div></template>
+          <span v-else class="muted">-</span></template></a-table-column>
+        <a-table-column title="虚拟机 / 规则" :width="120"><template #cell="{ record }">{{ vms.filter(v => v.node === record.id).length }} 台 / {{ allRules.filter(r => r.node === record.id).length }} 条</template></a-table-column>
+        <a-table-column title="资源" :width="150"><template #cell="{ record }">
+          <template v-if="record.status === 'online' && record.initialized">
+            <div class="muted">CPU {{ record.cpu }}%</div><a-progress :percent="record.cpu / 100" :show-text="false" size="small" />
+            <div class="muted">内存 {{ record.mem }}%</div><a-progress :percent="record.mem / 100" :show-text="false" size="small" /></template>
+          <span v-else class="muted">-</span></template></a-table-column>
+        <a-table-column title="版本" :width="150"><template #cell="{ record }">
+          <div class="muted">PVE {{ record.pveVer || '-' }}</div><div v-if="record.mode !== 'ssh'" class="muted">Agent {{ record.agentVer || '-' }}
+            <a-tag v-if="record.agentVer && record.agentVer !== '1.0.0'" size="small" color="orange">可升级</a-tag></div></template></a-table-column>
+        <a-table-column title="操作" :width="220"><template #cell="{ record }"><a-space :size="0">
+          <a-button v-if="record.status === 'pending'" type="text" size="small" @click="initNode(record)">初始化网络</a-button>
+          <a-button v-else-if="record.status === 'waiting'" type="text" size="small" @click="resumeNode(record)">继续接入</a-button>
+          <a-button v-else type="text" size="small" @click="openNode(record)">配置</a-button>
+          <a-button v-if="record.mode !== 'ssh'" type="text" size="small" @click="showCmd(record)">安装命令</a-button>
+          <a-button v-else type="text" size="small" @click="testSsh(record)">测试连接</a-button>
+          <a-dropdown><a-button type="text" size="small">更多 <icon-down /></a-button>
+            <template #content>
+              <a-doption @click="syncPve(record.id)">同步虚拟机</a-doption><a-doption v-if="record.mode !== 'ssh'">升级 Agent</a-doption><a-doption>切换连接方式</a-doption><a-doption>重新下发规则</a-doption>
+              <a-doption style="color:rgb(var(--red-6))">删除节点</a-doption></template>
+          </a-dropdown></a-space></template></a-table-column>
+      </template>
+    </a-table>
+  </a-card>
+</div>
+
+<!-- ============================================================ 添加节点（分步表单：建立连接 → 网络初始化） -->
+<div v-else-if="page === 'node-new'" class="container">
+  <a-breadcrumb class="container-breadcrumb"><a-breadcrumb-item><icon-apps /></a-breadcrumb-item><a-breadcrumb-item>PVE 节点</a-breadcrumb-item><a-breadcrumb-item>添加节点</a-breadcrumb-item></a-breadcrumb>
+  <a-card class="general-card">
+    <template #title>添加节点<span v-if="nodeForm.name" class="muted" style="margin-left:8px">{{ nodeForm.name }}</span></template>
+    <template #extra><span class="muted">网络配置由 Agent 或 SSH 检测并执行，完成前不会改动节点</span></template>
+    <div class="step-wrapper" style="padding:40px 0 48px">
+      <a-steps :current="nodeStep" style="width: 940px" line-less class="steps">
+        <a-step description="名称与连接方式">节点信息</a-step>
+        <a-step :description="nodeForm.mode === 'ssh' ? '测试 SSH 连接' : '在 PVE 上安装 Agent'">建立连接</a-step>
+        <a-step description="公网网口与地址">公网网络</a-step>
+        <a-step description="网桥与 DHCP">内网与 DHCP</a-step>
+        <a-step description="检查并应用">确认</a-step>
+      </a-steps>
+
+      <!-- 1. 节点信息与连接方式 -->
+      <a-form v-if="nodeStep === 1" :model="nodeForm" class="step-form" style="width:640px" :label-col-props="{ span: 5 }" :wrapper-col-props="{ span: 19 }">
+        <a-form-item label="节点名称" required :validate-status="nodeErr.name ? 'error' : undefined" :help="nodeErr.name || '用于界面展示，例如 pve-hk'">
+          <a-input v-model="nodeForm.name" placeholder="pve-xx" /></a-form-item>
+        <a-form-item label="备注"><a-input v-model="nodeForm.remark" placeholder="地域、机房等，选填" /></a-form-item>
+        <a-form-item label="连接方式">
+          <a-radio-group v-model="nodeForm.mode" direction="vertical" style="width:100%">
+            <a-radio value="agent" class="nic-radio"><div class="nic-item"><b>Agent（WSS）</b><a-tag size="small" color="green">推荐</a-tag>
+              <span class="muted">在 PVE 上安装 Agent，主动连接控制端；PVE 无需开放端口，适合内网 / NAT</span></div></a-radio>
+            <a-radio value="ssh" class="nic-radio"><div class="nic-item"><b>SSH</b>
+              <span class="muted">控制端通过 SSH 管理，PVE 无需安装程序；需能从控制端访问 PVE 的 SSH 端口</span></div></a-radio>
+          </a-radio-group>
+        </a-form-item>
+        <template v-if="nodeForm.mode === 'ssh'">
+          <a-form-item label="SSH 地址" required :validate-status="nodeErr.host ? 'error' : undefined" :help="nodeErr.host">
+            <a-input-group style="width:100%"><a-input v-model="nodeForm.sshHost" placeholder="IP 或域名" style="width:75%" /><a-input-number v-model="nodeForm.sshPort" :min="1" :max="65535" style="width:25%" /></a-input-group></a-form-item>
+          <a-form-item label="认证方式">
+            <a-radio-group v-model="nodeForm.auth" type="button"><a-radio value="password">密码</a-radio><a-radio value="key">密钥</a-radio><a-radio value="cred">已保存凭证</a-radio></a-radio-group></a-form-item>
+          <a-form-item v-if="nodeForm.auth === 'cred'" label="凭证" required :validate-status="nodeErr.cred ? 'error' : undefined" :help="nodeErr.cred">
+            <a-select v-model="nodeForm.credId" placeholder="选择凭证">
+              <a-option v-for="c in creds" :key="c.id" :value="c.id" :label="c.name"><div class="ip-opt"><span>{{ c.name }}</span><span class="muted">{{ c.user }} · {{ c.type === 'key' ? '密钥' : '密码' }}</span></div></a-option>
+            </a-select>
+            <template #extra><a-link @click="openCred()">新建凭证</a-link></template>
+          </a-form-item>
+          <template v-else>
+            <a-form-item label="用户名"><a-input v-model="nodeForm.sshUser" /></a-form-item>
+            <a-form-item v-if="nodeForm.auth === 'password'" label="密码" required :validate-status="nodeErr.secret ? 'error' : undefined" :help="nodeErr.secret">
+              <a-input-password v-model="nodeForm.sshPwd" /></a-form-item>
+            <template v-else>
+              <a-form-item label="私钥" required :validate-status="nodeErr.secret ? 'error' : undefined" :help="nodeErr.secret || '支持 OpenSSH / PEM 格式，可粘贴或上传'">
+                <a-textarea v-model="nodeForm.sshKey" :auto-size="{ minRows: 3, maxRows: 6 }" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----" class="mono" /></a-form-item>
+              <a-form-item label="私钥口令"><a-input-password v-model="nodeForm.sshPass" placeholder="无口令可留空" /></a-form-item>
+            </template>
+            <a-form-item label=" "><a-checkbox v-model="nodeForm.saveCred">保存为凭证，供其他节点复用</a-checkbox>
+              <a-input v-if="nodeForm.saveCred" v-model="nodeForm.credName" size="small" placeholder="凭证名称" style="width:200px;margin-left:12px" /></a-form-item>
+          </template>
+        </template>
+        <a-form-item><a-button type="primary" @click="nodeNext">{{ nodeForm.mode === 'agent' ? '生成安装命令' : '测试连接' }}</a-button></a-form-item>
+      </a-form>
+
+      <!-- 2a. 建立连接：SSH -->
+      <div v-else-if="nodeStep === 2 && nodeForm.mode === 'ssh'" class="step-form" style="width:760px">
+        <a-descriptions :column="3" size="small" :data="[
+          { label: '地址', value: nodeForm.sshHost + ':' + nodeForm.sshPort },
+          { label: '用户', value: nodeForm.auth === 'cred' ? credOf(nodeForm.credId).user : nodeForm.sshUser },
+          { label: '认证', value: nodeForm.auth === 'cred' ? '凭证 · ' + credOf(nodeForm.credId).name : nodeForm.auth === 'key' ? '密钥' : '密码' } ]" />
+        <a-steps direction="vertical" :current="sshCheck.idx + 1" small style="margin:20px 0 0 0">
+          <a-step v-for="(t, i) in sshTasks" :key="t.title" :status="sshCheck.idx > i ? 'finish' : sshCheck.idx === i ? (sshCheck.waitHostKey ? 'process' : 'process') : 'wait'" :description="sshCheck.idx > i ? t.ok : sshCheck.idx === i ? '进行中…' : ''">{{ t.title }}</a-step>
+        </a-steps>
+        <a-alert v-if="sshCheck.waitHostKey" type="warning" style="margin-top:12px">
+          首次连接，请核对主机指纹：<span class="mono">SHA256:Jk2bQ8x1mV9p3cR7tYw4LzN0aHfE6uD5sG2iK8oP1qE</span>（ED25519）。可在 PVE 上执行 <span class="mono">ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub</span> 查看
+          <template #action><a-button size="mini" type="primary" @click="trustHostKey">信任并继续</a-button></template>
+        </a-alert>
+        <div v-if="sshCheck.done" class="wait-box"><icon-check-circle-fill style="color:rgb(var(--green-6));font-size:24px" /><div style="flex:1">
+          <div>SSH 连接成功</div>
+          <a-descriptions :column="3" size="small" style="margin-top:6px" :data="[
+            { label: '主机名', value: detect.hostname }, { label: 'PVE', value: detect.pve }, { label: '权限', value: 'root' },
+            { label: '网口', value: detect.nics.length + ' 个' }, { label: '网桥', value: detect.bridges.length + ' 个' }, { label: '虚拟机', value: detect.vmCount + ' 台' } ]" /></div></div>
+        <div style="text-align:center;margin-top:32px"><a-space>
+          <a-button type="secondary" @click="nodeStep--">上一步</a-button>
+          <a-button type="primary" :disabled="!sshCheck.done" @click="nodeNext">下一步：配置网络</a-button>
+          <a-button type="text" @click="go('nodes')">稍后初始化</a-button></a-space></div>
+      </div>
+
+      <!-- 2b. 建立连接：Agent -->
+      <div v-else-if="nodeStep === 2" class="step-form" style="width:760px">
+        <div class="muted" style="margin-bottom:8px">在 <b>{{ nodeForm.name }}</b> 的 PVE 宿主机上以 root 执行：</div>
+        <div class="cmd">{{ agentCmd(nodeForm.token) }}<a-button class="copy" size="mini" @click="copyCmd"><template #icon><icon-copy /></template>复制</a-button></div>
+        <a-space direction="vertical" :size="4" style="margin-top:12px" class="muted">
+          <span>· Agent 主动连接控制端 <span class="mono">{{ agentUrl }}</span>，PVE 无需开放入站端口</span>
+          <span>· 接入令牌 30 分钟内有效、仅可使用一次；过期可重新生成</span>
+          <span>· 安装过程不修改网络配置，网络在下一步由你确认后再应用</span>
+        </a-space>
+        <div class="wait-box">
+          <template v-if="!agentConn.connected"><a-spin :size="20" /><div><div>等待 Agent 连接…</div><div class="muted">已等待 {{ agentConn.wait }} 秒</div></div>
+            <a-space style="margin-left:auto"><a-button size="small" @click="regenToken">重新生成令牌</a-button><a-button size="small" type="outline" @click="mockConnect">模拟 Agent 已连接</a-button></a-space></template>
+          <template v-else><icon-check-circle-fill style="color:rgb(var(--green-6));font-size:24px" /><div style="flex:1">
+            <div>Agent 已连接</div>
+            <a-descriptions :column="3" size="small" style="margin-top:6px" :data="[
+              { label: '主机名', value: detect.hostname }, { label: 'PVE', value: detect.pve }, { label: 'Agent', value: '1.0.0' },
+              { label: '网口', value: detect.nics.length + ' 个' }, { label: '网桥', value: detect.bridges.length + ' 个' }, { label: '虚拟机', value: detect.vmCount + ' 台' } ]" /></div></template>
+        </div>
+        <div style="text-align:center;margin-top:32px"><a-space>
+          <a-button type="secondary" @click="nodeStep--">上一步</a-button>
+          <a-button type="primary" :disabled="!agentConn.connected" @click="nodeNext">下一步：配置网络</a-button>
+          <a-button type="text" @click="go('nodes')">稍后初始化</a-button></a-space></div>
+      </div>
+
+      <!-- 3. 公网网络 -->
+      <a-form v-else-if="nodeStep === 3" :model="nodeForm" class="step-form" style="width:760px" :label-col-props="{ span: 5 }" :wrapper-col-props="{ span: 19 }">
+        <a-form-item label="公网网口" extra="已按默认路由自动识别，一般无需修改">
+          <a-radio-group v-model="nodeForm.wan" direction="vertical" style="width:100%">
+            <a-radio v-for="n in detect.nics" :key="n.name" :value="n.name" :disabled="!n.up" class="nic-radio">
+              <div class="nic-item"><b class="mono">{{ n.name }}</b>
+                <a-tag v-if="n.def" size="small" color="green">默认路由</a-tag><a-tag v-if="!n.up" size="small">未连接</a-tag>
+                <span class="muted mono">{{ n.ip4 || '无 IPv4' }}{{ n.ip6 ? ' · ' + n.ip6 : '' }}</span><span class="muted" style="margin-left:auto">{{ n.speed }}</span></div>
+            </a-radio>
+          </a-radio-group>
+        </a-form-item>
+        <a-form-item label="公网 IPv4" extra="取自网口地址；若为内网地址（如云厂商 NAT），会改用出口探测结果">
+          <a-input v-model="nodeForm.wanIp"><template #append><a-link @click="redetect">重新检测</a-link></template></a-input></a-form-item>
+        <a-form-item label="公网 IPv6" extra="留空则该节点不启用 IPv6 转发"><a-input v-model="nodeForm.wanIp6" allow-clear /></a-form-item>
+        <a-form-item label="保留端口" extra="SSH、PVE Web 等端口不可分配给用户"><a-input-tag v-model="nodeForm.reserved" /></a-form-item>
+        <a-form-item><a-space><a-button type="secondary" @click="nodeStep--">上一步</a-button><a-button type="primary" @click="nodeNext">下一步</a-button></a-space></a-form-item>
+      </a-form>
+
+      <!-- 4. 内网与 DHCP -->
+      <a-form v-else-if="nodeStep === 4" :model="nodeForm" class="step-form" style="width:760px" :label-col-props="{ span: 5 }" :wrapper-col-props="{ span: 19 }">
+        <a-form-item label="内网网桥">
+          <a-radio-group v-model="nodeForm.lan" direction="vertical" style="width:100%" @change="onBridgeChange">
+            <a-radio v-for="b in detect.bridges" :key="b.name" :value="b.name" class="nic-radio">
+              <div class="nic-item"><b class="mono">{{ b.name }}</b><span class="muted mono">{{ b.cidr || '未配置地址' }}</span><span class="muted">{{ b.ports }} · {{ b.vms }} 台虚拟机</span></div>
+            </a-radio>
+            <a-radio value="__new" class="nic-radio"><div class="nic-item"><b>新建网桥</b>
+              <a-input v-if="nodeForm.lan === '__new'" v-model="nodeForm.newBridge" size="small" style="width:120px" @click.stop /><span class="muted">无物理端口的内部网桥</span></div></a-radio>
+          </a-radio-group>
+        </a-form-item>
+        <a-form-item label="内网网段" :extra="bridgeCidr ? '默认取网桥 ' + nodeForm.lan + ' 现有网段' : '默认 172.16.0.0/24，可自定义'"><a-input v-model="nodeForm.subnet" /></a-form-item>
+        <a-form-item v-if="subnetDiffers" label="网段处理">
+          <div style="width:100%">
+            <a-radio-group v-model="nodeForm.addrMode"><a-radio value="append">追加地址（推荐）</a-radio><a-radio value="replace">替换原地址</a-radio></a-radio-group>
+            <a-alert :type="nodeForm.addrMode === 'replace' ? 'warning' : 'info'" style="margin-top:8px">
+              {{ nodeForm.lan }} 当前为 {{ bridgeCidr }}。{{ nodeForm.addrMode === 'replace' ? '替换后使用旧网段的虚拟机将断网，需重新获取地址。' : '在 ' + nodeForm.lan + ' 上追加 ' + gw(nodeForm.subnet) + '，原网段虚拟机不受影响。' }}</a-alert>
+          </div>
+        </a-form-item>
+        <a-form-item label="网关"><a-input :model-value="gw(nodeForm.subnet)" disabled /></a-form-item>
+        <a-form-item label="DHCP 服务">
+          <div style="width:100%">
+            <a-alert :type="detect.dhcp ? 'success' : 'warning'" style="margin-bottom:8px">{{ detect.dhcp ? '检测到 ' + detect.dhcp + ' 正在运行，将沿用现有配置' : '未检测到 DHCP 服务（dnsmasq / isc-dhcp-server / kea）' }}</a-alert>
+            <template v-if="!detect.dhcp"><a-switch v-model="nodeForm.dhcp" /> 安装并启用 dnsmasq（仅 DHCP，不提供 DNS）</template>
+          </div>
+        </a-form-item>
+        <template v-if="nodeForm.dhcp && !detect.dhcp">
+          <a-form-item label="DHCP 动态范围"><a-input :model-value="range(nodeForm.subnet, 100, 250)" disabled /></a-form-item>
+          <a-form-item label="DNS"><a-input-tag v-model="nodeForm.dns" /></a-form-item>
+        </template>
+        <a-form-item label="虚拟机分配池" extra="分配虚拟机时从此范围取 IP，与 DHCP 动态范围错开"><a-input :model-value="range(nodeForm.subnet, 10, 99)" disabled /></a-form-item>
+        <a-form-item label="IPv6">
+          <a-radio-group v-model="nodeForm.ipv6" :disabled="!nodeForm.wanIp6"><a-radio value="ula">内网 ULA + NAT</a-radio><a-radio value="off">不启用</a-radio></a-radio-group>
+          <template #extra>{{ !nodeForm.wanIp6 ? '该节点未配置公网 IPv6，已禁用' : nodeForm.ipv6 === 'ula' ? '内网使用 ' + nodeForm.subnet6 + '，经公网 IPv6 转发' : '规则仅支持 IPv4' }}</template>
+        </a-form-item>
+        <a-form-item><a-space><a-button type="secondary" @click="nodeStep--">上一步</a-button><a-button type="primary" @click="nodeNext">下一步</a-button></a-space></a-form-item>
+      </a-form>
+
+      <!-- 5. 确认并应用 -->
+      <div v-else class="step-form" style="width:820px">
+        <template v-if="!applying && !applied">
+          <a-descriptions :column="2" bordered title="配置摘要" :data="nodeSummary" />
+          <div style="text-align:center;margin-top:32px"><a-space>
+            <a-button type="secondary" @click="nodeStep--">上一步</a-button>
+            <a-button type="primary" @click="applyNode"><template #icon><icon-check /></template>下发并初始化</a-button></a-space></div>
+        </template>
+        <template v-else>
+          <a-result v-if="applied" status="success" :title="nodeForm.name + ' 已就绪'" subtitle="可以在用户管理中为用户分配该节点的端口和虚拟机">
+            <template #extra><a-space><a-button type="primary" @click="go('nodes')">查看节点列表</a-button><a-button @click="go('users')">为用户分配</a-button></a-space></template>
+          </a-result>
+          <a-steps direction="vertical" :current="applyIdx + 1" small style="margin:0 auto;width:540px">
+            <a-step v-for="(t, i) in applyTasks" :key="t" :status="i < applyIdx || applied ? 'finish' : i === applyIdx ? 'process' : 'wait'"
+                    :description="i < applyIdx || applied ? '完成' : i === applyIdx ? 'Agent 执行中…' : ''">{{ t }}</a-step>
+          </a-steps>
+        </template>
+      </div>
+    </div>
+  </a-card>
+</div>
+
+<!-- ============================================================ 凭证管理（查询表格） -->
+<div v-else-if="page === 'creds'" class="container">
+  <a-breadcrumb class="container-breadcrumb"><a-breadcrumb-item><icon-apps /></a-breadcrumb-item><a-breadcrumb-item>PVE 节点</a-breadcrumb-item><a-breadcrumb-item>SSH 凭证</a-breadcrumb-item></a-breadcrumb>
+  <a-card class="general-card" title="SSH 凭证">
+    <template #extra><span class="muted">凭证在控制端加密保存，可被多个 SSH 节点复用；密码与私钥保存后不可查看</span></template>
+    <a-row style="margin-bottom: 16px">
+      <a-col :span="12"><a-space>
+        <a-button type="primary" @click="openCred()"><template #icon><icon-plus /></template>新建凭证</a-button>
+        <a-input-search v-model="credKw" placeholder="名称 / 用户名" style="width:220px" allow-clear /></a-space></a-col>
+    </a-row>
+    <a-table row-key="id" :data="creds.filter(c => !credKw || (c.name + c.user).includes(credKw))" :pagination="false" :bordered="false">
+      <template #columns>
+        <a-table-column title="名称" data-index="name" :width="180" />
+        <a-table-column title="类型" :width="100"><template #cell="{ record }"><a-tag :color="record.type === 'key' ? 'arcoblue' : 'orange'">{{ record.type === 'key' ? '密钥' : '密码' }}</a-tag></template></a-table-column>
+        <a-table-column title="用户名" :width="120"><template #cell="{ record }"><span class="mono">{{ record.user }}</span></template></a-table-column>
+        <a-table-column title="指纹 / 说明"><template #cell="{ record }"><span v-if="record.type === 'key'" class="mono muted">{{ record.algo }} · {{ record.fp }}</span><span v-else class="muted">密码已加密保存</span></template></a-table-column>
+        <a-table-column title="使用节点" :width="200"><template #cell="{ record }">
+          <a-space v-if="nodes.filter(n => n.credId === record.id).length" :size="4" wrap><a-tag v-for="n in nodes.filter(n => n.credId === record.id)" :key="n.id" size="small">{{ n.name }}</a-tag></a-space><span v-else class="muted">未使用</span></template></a-table-column>
+        <a-table-column title="更新时间" data-index="updated" :width="150" />
+        <a-table-column title="操作" :width="160"><template #cell="{ record }"><a-space :size="0">
+          <a-button type="text" size="small" @click="openCred(record)">编辑</a-button>
+          <a-popconfirm :content="nodes.some(n => n.credId === record.id) ? '该凭证正被节点使用，无法删除' : '确定删除该凭证？'" type="warning">
+            <a-button type="text" size="small" status="danger">删除</a-button></a-popconfirm></a-space></template></a-table-column>
+      </template>
+    </a-table>
+  </a-card>
+</div>
+
+<!-- ============================================================ 节点配置（分组表单） -->
+<div v-else-if="page === 'node-edit'" class="container with-actions">
+  <a-breadcrumb class="container-breadcrumb"><a-breadcrumb-item><icon-apps /></a-breadcrumb-item><a-breadcrumb-item>PVE 节点</a-breadcrumb-item><a-breadcrumb-item>节点配置 · {{ editNode.name }}</a-breadcrumb-item></a-breadcrumb>
+  <a-form :model="editNode" layout="vertical">
+    <a-space direction="vertical" :size="16" fill>
+      <a-card class="general-card"><template #title>节点信息</template>
+        <template #extra><a-badge :status="nodeBadge[editNode.status].badge" :text="nodeBadge[editNode.status].text + ' · 心跳 ' + editNode.lastSeen" /></template>
+        <a-row :gutter="80">
+          <a-col :span="8"><a-form-item label="节点名称"><a-input v-model="editNode.name" /></a-form-item></a-col>
+          <a-col :span="8"><a-form-item label="备注"><a-input v-model="editNode.remark" /></a-form-item></a-col>
+          <a-col :span="8"><a-form-item label="主机"><a-input :model-value="editNode.hostname + ' · PVE ' + editNode.pveVer" disabled /></a-form-item></a-col>
+        </a-row>
+        <a-row :gutter="80">
+          <a-col :span="8"><a-form-item label="连接方式"><a-radio-group v-model="editNode.mode" type="button"><a-radio value="agent">Agent（WSS）</a-radio><a-radio value="ssh">SSH</a-radio></a-radio-group></a-form-item></a-col>
+          <template v-if="editNode.mode === 'ssh'">
+            <a-col :span="8"><a-form-item label="SSH 地址"><a-input-group style="width:100%"><a-input v-model="editNode.sshHost" style="width:72%" /><a-input-number v-model="editNode.sshPort" style="width:28%" /></a-input-group></a-form-item></a-col>
+            <a-col :span="8"><a-form-item label="凭证"><a-select v-model="editNode.credId" :options="creds.map(c => ({ label: c.name + '（' + c.user + '）', value: c.id }))" /></a-form-item></a-col>
+          </template>
+          <a-col v-else :span="16"><a-form-item label="Agent"><a-input :model-value="'v' + (editNode.agentVer || '-') + ' · 已连接 ' + agentUrl" disabled /></a-form-item></a-col>
+        </a-row>
+      </a-card>
+      <a-card class="general-card"><template #title>公网</template>
+        <a-row :gutter="80">
+          <a-col :span="8"><a-form-item label="公网网口"><a-select v-model="editNode.wan" :options="['enp3s0f1', 'enp3s0f0', 'eno1']" /></a-form-item></a-col>
+          <a-col :span="8"><a-form-item label="公网 IPv4"><a-input v-model="editNode.wanIp" /></a-form-item></a-col>
+          <a-col :span="8"><a-form-item label="公网 IPv6" extra="留空则规则的 IPv6 / 双栈选项不可用"><a-input v-model="editNode.wanIp6" /></a-form-item></a-col>
+        </a-row>
+        <a-row :gutter="80"><a-col :span="8"><a-form-item label="保留端口"><a-input-tag v-model="editNode.reserved" /></a-form-item></a-col></a-row>
+      </a-card>
+      <a-card class="general-card"><template #title>内网</template>
+        <a-row :gutter="80">
+          <a-col :span="8"><a-form-item label="内网网桥"><a-input v-model="editNode.lan" /></a-form-item></a-col>
+          <a-col :span="8"><a-form-item label="IPv4 网段"><a-input v-model="editNode.subnet" /></a-form-item></a-col>
+          <a-col :span="8"><a-form-item label="IPv6 网段"><a-input v-model="editNode.subnet6" placeholder="未启用" /></a-form-item></a-col>
+        </a-row>
+        <a-row :gutter="80"><a-col :span="8"><a-form-item label="虚拟机分配池"><a-input :model-value="range(editNode.subnet || '', 10, 99)" disabled /></a-form-item></a-col></a-row>
+      </a-card>
+      <a-card class="general-card"><template #title>DHCP</template>
+        <a-row :gutter="80">
+          <a-col :span="8"><a-form-item label="DHCP 服务"><a-input :model-value="editNode.dhcp" disabled /></a-form-item></a-col>
+          <a-col :span="8"><a-form-item label="动态范围"><a-input :model-value="range(editNode.subnet || '', 100, 250)" disabled /></a-form-item></a-col>
+          <a-col :span="8"><a-form-item label="DNS"><a-input-tag :default-value="['223.5.5.5', '1.1.1.1']" /></a-form-item></a-col>
+        </a-row>
+      </a-card>
+    </a-space>
+    <div class="actions" :style="{ left: (collapsed ? 48 : 220) + 'px' }">
+      <a-space><a-button @click="go('nodes')">取消</a-button><a-button type="primary" @click="go('nodes')">保存并下发到节点</a-button></a-space>
+    </div>
+  </a-form>
+</div>
+
+<!-- ============================================================ 虚拟机（查询表格） -->
+<div v-else-if="page === 'vms'" class="container">
+  <a-breadcrumb class="container-breadcrumb"><a-breadcrumb-item><icon-apps /></a-breadcrumb-item><a-breadcrumb-item>PVE 节点</a-breadcrumb-item><a-breadcrumb-item>虚拟机</a-breadcrumb-item></a-breadcrumb>
+  <a-card class="general-card" title="虚拟机">
+    <a-row>
+      <a-col :flex="1">
+        <a-form :model="{}" :label-col-props="{ span: 6 }" :wrapper-col-props="{ span: 18 }" label-align="left">
+          <a-row :gutter="16">
+            <a-col :span="8"><a-form-item label="节点"><a-select v-model="vmNode" :options="[{ label: '全部节点', value: 'all' }, ...readyNodes.map(n => ({ label: n.name, value: n.id }))]" /></a-form-item></a-col>
+            <a-col :span="8"><a-form-item label="关键词"><a-input v-model="vmKw" placeholder="VMID / 名称 / IP / MAC" /></a-form-item></a-col>
+            <a-col :span="8"><a-form-item label="归属"><a-select v-model="vmOwner" placeholder="全部" allow-clear>
+              <a-option value="__free">未分配</a-option><a-option value="__public">公共</a-option>
+              <a-option v-for="u in users" :key="u.name" :value="u.name">{{ u.name }}</a-option></a-select></a-form-item></a-col>
+            <a-col :span="8"><a-form-item label="类型"><a-select placeholder="全部" allow-clear :options="[{ label: '虚拟机 (VM)', value: 'qemu' }, { label: '容器 (CT)', value: 'lxc' }]" /></a-form-item></a-col>
+            <a-col :span="8"><a-form-item label="运行状态"><a-select placeholder="全部" allow-clear :options="['运行中', '已停止']" /></a-form-item></a-col>
+          </a-row>
+        </a-form>
+      </a-col>
+      <a-divider style="height: 84px" direction="vertical" />
+      <a-col flex="86px" style="text-align: right">
+        <a-space direction="vertical" :size="18">
+          <a-button type="primary"><template #icon><icon-search /></template>查询</a-button>
+          <a-button @click="vmOwner = undefined; vmKw = ''; vmNode = 'all'"><template #icon><icon-refresh /></template>重置</a-button>
+        </a-space>
+      </a-col>
+    </a-row>
+    <a-divider style="margin-top: 0" />
+    <a-row style="margin-bottom: 16px">
+      <a-col :span="12"><a-button type="primary" @click="syncPve()"><template #icon><icon-sync /></template>同步全部节点</a-button></a-col>
+      <a-col :span="12" style="display:flex;align-items:center;justify-content:end">
+        <span class="muted">共 {{ vms.length }} 台，未分配 {{ vms.filter(v => !v.owner && !v.shared).length }} 台 · 由各节点 Agent 每 60 秒上报</span>
+      </a-col>
+    </a-row>
+    <a-table row-key="id" :data="vmRows" :pagination="{ showTotal: true, pageSize: 20 }" :bordered="false" :scroll="{ x: 1300 }">
+      <template #columns>
+        <a-table-column title="节点" :width="100"><template #cell="{ record }"><a-tag :color="nodeOf(record.node).status === 'online' ? 'arcoblue' : 'gray'">{{ nodeOf(record.node).name }}</a-tag></template></a-table-column>
+        <a-table-column title="VMID" :width="80"><template #cell="{ record }"><span class="mono">{{ record.vmid }}</span></template></a-table-column>
+        <a-table-column title="名称" data-index="host" :width="130" />
+        <a-table-column title="类型" :width="70"><template #cell="{ record }"><a-tag :color="record.type === 'qemu' ? 'arcoblue' : 'cyan'">{{ record.type === 'qemu' ? 'VM' : 'CT' }}</a-tag></template></a-table-column>
+        <a-table-column title="状态" :width="90"><template #cell="{ record }"><span class="circle" :class="{ pass: record.status === 'running' }"></span>{{ record.status === 'running' ? '运行中' : '已停止' }}</template></a-table-column>
+        <a-table-column title="归属" :width="100"><template #cell="{ record }">
+          <a-tag v-if="record.shared" color="arcoblue">公共</a-tag><a-space v-else-if="record.owner" :size="6"><icon-user />{{ record.owner }}</a-space><span v-else class="muted">未分配</span></template></a-table-column>
+        <a-table-column title="MAC" :width="150"><template #cell="{ record }"><span class="mono">{{ record.mac }}</span></template></a-table-column>
+        <a-table-column title="IPv4" :width="120"><template #cell="{ record }"><span class="mono">{{ record.v4 || '-' }}</span></template></a-table-column>
+        <a-table-column title="IPv6" :width="120"><template #cell="{ record }"><span class="mono">{{ record.v6 || '-' }}</span></template></a-table-column>
+        <a-table-column title="规则" :width="70"><template #cell="{ record }">{{ vmRuleCount(record.id) }} 条</template></a-table-column>
+        <a-table-column title="操作" :width="220"><template #cell="{ record }"><a-space :size="0">
+          <a-dropdown @select="name => assignVm(record, name)">
+            <a-button type="text" size="small">分配给 <icon-down /></a-button>
+            <template #content><a-doption v-for="u in users" :key="u.name" :value="u.name" :disabled="u.name === record.owner">{{ u.name }}</a-doption></template>
+          </a-dropdown>
+          <a-button type="text" size="small" @click="togglePublic(record)">{{ record.shared ? '取消公共' : '设为公共' }}</a-button>
+          <a-popconfirm v-if="record.owner || record.shared" content="收回后 IP 保留，引用它的规则会被停用，确定收回？" type="warning" @ok="reclaimVm(record)">
+            <a-button type="text" size="small" status="danger">收回</a-button></a-popconfirm></a-space></template></a-table-column>
+      </template>
+    </a-table>
+  </a-card>
+</div>
+
+<!-- ============================================================ 系统设置（控制端，分组表单） -->
+<div v-else-if="page === 'settings'" class="container with-actions">
+  <a-breadcrumb class="container-breadcrumb"><a-breadcrumb-item><icon-apps /></a-breadcrumb-item><a-breadcrumb-item>系统设置</a-breadcrumb-item></a-breadcrumb>
+  <a-form :model="setupForm" layout="vertical">
+    <a-space direction="vertical" :size="16" fill>
+      <a-card class="general-card"><template #title>控制端</template>
+        <a-row :gutter="80">
+          <a-col :span="8"><a-form-item label="站点名称"><a-input v-model="setupForm.site" /></a-form-item></a-col>
+          <a-col :span="8"><a-form-item label="访问地址" extra="修改后各节点 Agent 需能访问新地址"><a-input v-model="setupForm.url" /></a-form-item></a-col>
+          <a-col :span="8"><a-form-item label="面板端口"><a-input-number v-model="setupForm.port" :min="1" :max="65535" /></a-form-item></a-col>
+        </a-row>
+      </a-card>
+      <a-card class="general-card"><template #title>Agent</template>
+        <a-row :gutter="80">
+          <a-col :span="8"><a-form-item label="心跳间隔"><a-select default-value="15s" :options="['5s', '15s', '30s']" /></a-form-item></a-col>
+          <a-col :span="8"><a-form-item label="离线判定" extra="超过该时间无心跳视为离线"><a-select default-value="60s" :options="['30s', '60s', '180s']" /></a-form-item></a-col>
+          <a-col :span="8"><a-form-item label="自动升级 Agent"><a-switch default-checked /></a-form-item></a-col>
+        </a-row>
+        <a-row :gutter="80">
+          <a-col :span="8"><a-form-item label="新节点默认保留端口"><a-input-tag :default-value="['22', '8006']" /></a-form-item></a-col>
+        </a-row>
+      </a-card>
+      <a-card class="general-card"><template #title>统计与检查</template>
+        <a-row :gutter="80">
+          <a-col :span="8"><a-form-item label="流量统计间隔"><a-select default-value="60s" :options="['30s', '60s', '300s']" /></a-form-item></a-col>
+          <a-col :span="8"><a-form-item label="虚拟机同步间隔"><a-select default-value="60s" :options="['30s', '60s', '300s']" /></a-form-item></a-col>
+          <a-col :span="8"><a-form-item label="规则健康检查间隔"><a-select default-value="60s" :options="['30s', '60s', '300s']" /></a-form-item></a-col>
+        </a-row>
+      </a-card>
+      <a-card class="general-card"><template #title>公开监控页</template>
+        <template #extra><a-space><a-tag v-if="pub.enabled" color="green">已开启</a-tag><a-tag v-else>未开启</a-tag>
+          <a-button size="small" :disabled="!pub.enabled" @click="openPublic"><template #icon><icon-eye /></template>预览</a-button></a-space></template>
+        <a-row :gutter="80">
+          <a-col :span="8"><a-form-item label="允许外部访问" extra="开启后无需登录即可查看监控页"><a-switch v-model="pub.enabled" /></a-form-item></a-col>
+          <a-col :span="8"><a-form-item label="访问地址">
+            <a-input :model-value="setupForm.url + ':' + setupForm.port + '/status/' + pub.slug" readonly>
+              <template #append><a-link @click="copyCmd"><icon-copy /></a-link></template></a-input>
+            <template #extra>路径后缀可自定义：<a-input v-model="pub.slug" size="mini" style="width:120px" /> <a-link @click="pub.slug = Math.random().toString(36).slice(2, 10)">随机生成</a-link></template></a-form-item></a-col>
+          <a-col :span="8"><a-form-item label="访问控制">
+            <a-radio-group v-model="pub.access"><a-radio value="open">完全公开</a-radio><a-radio value="password">访问密码</a-radio></a-radio-group>
+            <a-input-password v-if="pub.access === 'password'" v-model="pub.pwd" placeholder="访问密码" style="margin-top:8px" /></a-form-item></a-col>
+        </a-row>
+        <a-row :gutter="80">
+          <a-col :span="8"><a-form-item label="页面标题"><a-input v-model="pub.title" /></a-form-item></a-col>
+          <a-col :span="8"><a-form-item label="页面说明"><a-input v-model="pub.desc" placeholder="选填" /></a-form-item></a-col>
+          <a-col :span="8"><a-form-item label="刷新间隔"><a-select v-model="pub.refresh" :options="['10 秒', '30 秒', '60 秒']" /></a-form-item></a-col>
+        </a-row>
+        <a-row :gutter="80">
+          <a-col :span="8"><a-form-item label="展示节点"><a-select v-model="pub.nodes" multiple :options="readyNodes.map(n => ({ label: n.name, value: n.id }))" placeholder="选择要公开的节点" /></a-form-item></a-col>
+          <a-col :span="16"><a-form-item label="展示内容" extra="外部访问页不显示 MAC、转发规则、端口等管理信息">
+            <a-space wrap :size="20">
+              <a-checkbox v-model="pub.showNodes">节点概况</a-checkbox>
+              <a-checkbox v-model="pub.showVms">虚拟机列表</a-checkbox>
+              <a-checkbox v-model="pub.showDetail" :disabled="!pub.showVms">虚拟机历史曲线</a-checkbox>
+              <a-checkbox v-model="pub.showIp" :disabled="!pub.showVms">内网 IP</a-checkbox>
+              <a-checkbox v-model="pub.showOwner" :disabled="!pub.showVms">归属用户</a-checkbox>
+              <a-checkbox v-model="pub.onlyShared" :disabled="!pub.showVms">只显示公共虚拟机</a-checkbox>
+            </a-space></a-form-item></a-col>
+        </a-row>
+      </a-card>
+      <a-card class="general-card"><template #title>安全</template>
+        <a-row :gutter="80">
+          <a-col :span="8"><a-form-item label="HTTPS 证书"><a-select v-model="setupForm.tls" :options="[{ label: '自签名', value: 'self' }, { label: `Let's Encrypt`, value: 'acme' }, { label: '由反向代理处理', value: 'proxy' }]" /></a-form-item></a-col>
+          <a-col :span="8"><a-form-item label="会话有效期"><a-select default-value="7 天" :options="['1 天', '7 天', '30 天']" /></a-form-item></a-col>
+          <a-col :span="8"><a-form-item label="登录失败锁定"><a-select default-value="5 次 / 15 分钟" :options="['3 次 / 15 分钟', '5 次 / 15 分钟', '不锁定']" /></a-form-item></a-col>
+        </a-row>
+      </a-card>
+    </a-space>
+    <div class="actions" :style="{ left: (collapsed ? 48 : 220) + 'px' }"><a-space><a-button>重置</a-button><a-button type="primary">保存</a-button></a-space></div>
+  </a-form>
+</div>
+
+<!-- ============================================================ 个人资料 -->
+<div v-else class="container">
+  <a-breadcrumb class="container-breadcrumb"><a-breadcrumb-item><icon-apps /></a-breadcrumb-item><a-breadcrumb-item>个人中心</a-breadcrumb-item><a-breadcrumb-item>个人资料</a-breadcrumb-item></a-breadcrumb>
+  <a-space direction="vertical" :size="16" fill>
+    <a-card class="general-card" title="基本信息">
+      <a-descriptions :column="3" :data="[
+        { label: '用户名', value: me.name }, { label: '角色', value: isAdmin ? '管理员' : '普通用户' }, { label: '状态', value: me.status || '正常' },
+        { label: '流量上限', value: me.quota || '不限' }, { label: '规则上限', value: isAdmin ? '不限' : String(me.maxRules) }, { label: '创建时间', value: '2026-09-01 10:12' } ]" />
+    </a-card>
+    <a-card class="general-card" title="修改密码">
+      <a-form :model="{}" style="width:420px" :label-col-props="{ span: 6 }" :wrapper-col-props="{ span: 18 }">
+        <a-form-item label="当前密码"><a-input-password /></a-form-item>
+        <a-form-item label="新密码"><a-input-password /></a-form-item>
+        <a-form-item label="确认新密码"><a-input-password /></a-form-item>
+        <a-form-item><a-button type="primary">保存</a-button></a-form-item>
+      </a-form>
+    </a-card>
+  </a-space>
+</div>
+
+        </a-layout-content>
+      </a-layout>
+    </a-layout>
+  </a-layout>
+
+  <!-- ======================= 弹窗：添加 / 编辑规则 ======================= -->
+  <a-modal v-model:visible="ruleVisible" :title="ruleForm.id ? '编辑规则' : '添加规则'" :width="600" @ok="ruleVisible = false">
+    <a-form :model="ruleForm" :label-col-props="{ span: 5 }" :wrapper-col-props="{ span: 19 }">
+      <a-form-item label="所属用户" required :extra="isAdmin ? undefined : '规则只能创建在自己名下'">
+        <a-select v-model="ruleForm.owner" :disabled="!isAdmin" @change="onOwnerChange">
+          <a-option v-for="u in (isAdmin ? users : [me])" :key="u.name" :value="u.name">{{ u.name }}</a-option></a-select>
+      </a-form-item>
+      <a-form-item label="节点" required extra="仅列出该用户分配了端口的节点">
+        <a-select v-model="ruleForm.node" placeholder="请选择节点" @change="onRuleNodeChange">
+          <a-option v-for="g in allocByNode(ownerOf(ruleForm.owner))" :key="g.node" :value="g.node" :disabled="nodeOf(g.node).status !== 'online'">
+            {{ nodeOf(g.node).name }}<span class="muted">（{{ nodeOf(g.node).wanIp }}{{ nodeOf(g.node).status !== 'online' ? '，离线' : '' }}）</span></a-option>
+        </a-select>
+      </a-form-item>
+      <a-form-item label="监听端口" required
+        :extra="ruleForm.node ? '只能从管理员分配的端口中选择。可选 ' + freePorts(ownerOf(ruleForm.owner), ruleForm.node).length + ' 个；已排除规则已使用 ' + portStat(ownerOf(ruleForm.owner), ruleForm.node).used + ' 个、宿主机占用 ' + portStat(ownerOf(ruleForm.owner), ruleForm.node).busy + ' 个' : '请先选择节点'">
+        <a-select v-model="ruleForm.port" placeholder="请选择端口" :allow-search="false" :disabled="!ruleForm.node">
+          <a-option v-for="p in freePorts(ownerOf(ruleForm.owner), ruleForm.node, ruleForm.port)" :key="p" :value="p" :label="String(p)" />
+          <template #empty><div style="padding:12px;text-align:center" class="muted">没有可用端口，请联系管理员分配</div></template>
+        </a-select>
+      </a-form-item>
+      <a-form-item label="协议" required>
+        <a-radio-group v-model="ruleForm.proto"><a-radio value="TCP">TCP</a-radio><a-radio value="UDP">UDP</a-radio><a-radio value="TCP + UDP">TCP + UDP</a-radio></a-radio-group>
+      </a-form-item>
+      <a-form-item label="目标虚拟机" required :extra="'只能选择' + (isAdmin ? '该用户' : '自己') + '在此节点上的虚拟机或公共虚拟机'">
+        <a-select v-model="ruleForm.vmId" placeholder="请选择虚拟机" :disabled="!ruleForm.node" @change="onVmChange">
+          <a-optgroup :label="isAdmin ? ruleForm.owner + ' 的虚拟机' : '我的虚拟机'">
+            <a-option v-for="v in vmsOf(ruleForm.owner).filter(v => v.node === ruleForm.node)" :key="v.id" :value="v.id" :label="v.vmid + ' ' + v.host + '  ' + ipLabel(v)" :disabled="!v.v4 && !v.v6">
+              <div class="ip-opt"><span><span class="mono">{{ v.vmid }}</span> {{ v.host }}<span v-if="v.status !== 'running'" class="muted">（已停止）</span>
+                <a-tag v-if="v.v4 && !v.v6" size="small" style="margin-left:4px">仅 IPv4</a-tag></span><span class="mono muted">{{ ipLabel(v) }}</span></div></a-option>
+          </a-optgroup>
+          <a-optgroup label="公共虚拟机">
+            <a-option v-for="v in vms.filter(v => v.shared && v.node === ruleForm.node)" :key="v.id" :value="v.id" :label="v.vmid + ' ' + v.host + '  ' + ipLabel(v)">
+              <div class="ip-opt"><span><span class="mono">{{ v.vmid }}</span> {{ v.host }}
+                <a-tag v-if="v.v4 && !v.v6" size="small" style="margin-left:4px">仅 IPv4</a-tag></span><span class="mono muted">{{ ipLabel(v) }}</span></div></a-option>
+          </a-optgroup>
+        </a-select>
+      </a-form-item>
+      <!-- IP 版本：节点没有公网 IPv6，或所选虚拟机没有 IPv6 时，禁用含 v6 的选项 -->
+      <a-form-item label="IP 版本" required :extra="ipverHint">
+        <a-radio-group v-model="ruleForm.ipver">
+          <a-radio value="v4">IPv4</a-radio>
+          <a-radio value="v6" :disabled="!v6Allowed">IPv6</a-radio>
+          <a-radio value="both" :disabled="!v6Allowed">IPv4 + IPv6</a-radio></a-radio-group>
+      </a-form-item>
+      <a-form-item label="目标端口" required><a-input-number v-model="ruleForm.tport" :min="1" :max="65535" placeholder="1 - 65535" /></a-form-item>
+      <a-form-item label="备注"><a-input v-model="ruleForm.remark" :max-length="40" show-word-limit placeholder="选填" /></a-form-item>
+    </a-form>
+  </a-modal>
+
+  <!-- ======================= 弹窗：新建 / 编辑 SSH 凭证 ======================= -->
+  <a-modal v-model:visible="credVisible" :title="credForm.id ? '编辑凭证' : '新建凭证'" :width="600" @ok="saveCred">
+    <a-form :model="credForm" :label-col-props="{ span: 5 }" :wrapper-col-props="{ span: 19 }">
+      <a-form-item label="名称" required><a-input v-model="credForm.name" placeholder="例如 机房 A root 密钥" /></a-form-item>
+      <a-form-item label="类型"><a-radio-group v-model="credForm.type" type="button"><a-radio value="password">密码</a-radio><a-radio value="key">密钥</a-radio></a-radio-group></a-form-item>
+      <a-form-item label="用户名" extra="需为 root，或具备免密 sudo 权限的用户"><a-input v-model="credForm.user" /></a-form-item>
+      <a-form-item v-if="credForm.type === 'password'" label="密码"><a-input-password v-model="credForm.pwd" :placeholder="credForm.id ? '留空则不修改' : ''" /></a-form-item>
+      <template v-else>
+        <a-form-item label="密钥来源"><a-radio-group v-model="credForm.keySrc"><a-radio value="paste">粘贴私钥</a-radio><a-radio value="gen">由控制端生成</a-radio></a-radio-group></a-form-item>
+        <template v-if="credForm.keySrc === 'paste'">
+          <a-form-item label="私钥"><a-textarea v-model="credForm.key" :auto-size="{ minRows: 4, maxRows: 8 }" class="mono" :placeholder="credForm.id ? '留空则不修改' : '-----BEGIN OPENSSH PRIVATE KEY-----'" /></a-form-item>
+          <a-form-item label="私钥口令"><a-input-password v-model="credForm.pass" placeholder="无口令可留空" /></a-form-item>
+        </template>
+        <a-form-item v-else label="公钥" extra="生成 ED25519 密钥对，私钥仅保存在控制端；将下面命令在 PVE 上执行一次">
+          <div class="cmd" style="width:100%">echo '{{ genPub }}' &gt;&gt; /root/.ssh/authorized_keys<a-button class="copy" size="mini" @click="copyCmd"><template #icon><icon-copy /></template>复制</a-button></div>
+        </a-form-item>
+      </template>
+      <a-form-item label="备注"><a-input v-model="credForm.remark" placeholder="选填" /></a-form-item>
+    </a-form>
+  </a-modal>
+
+  <!-- ======================= 弹窗：Agent 安装命令 ======================= -->
+  <a-modal v-model:visible="cmdVisible" :title="'Agent 安装命令 · ' + cmdNode.name" :width="680" :footer="false">
+    <div class="muted" style="margin-bottom:8px">在该节点的 PVE 宿主机以 root 执行（用于首次安装、重装或迁移到新主机）：</div>
+    <div class="cmd">{{ agentCmd(cmdNode.token || 'R4XP-8MZK-2QVD') }}<a-button class="copy" size="mini" @click="copyCmd"><template #icon><icon-copy /></template>复制</a-button></div>
+    <div class="muted" style="margin-top:8px">令牌 30 分钟内有效、仅可使用一次；重装后节点上的规则会自动重新下发。</div>
+  </a-modal>
+
+  <div class="proto-bar">
+    <div class="t">原型切换（正式版无此控件）</div>
+    <a-radio-group type="button" size="mini" :model-value="['setup', 'login', 'public'].includes(page) ? page : isAdmin ? 'admin' : 'user'" @change="switchProto">
+      <a-radio value="setup">控制端初始化</a-radio><a-radio value="login">登录</a-radio><a-radio value="user">用户端</a-radio><a-radio value="admin">管理端</a-radio><a-radio value="public">公开监控页</a-radio>
+    </a-radio-group>
+  </div>
+</script>
+
+<style>
+  /* 资源监控 */
+  .mon-sum { border-right: 1px solid rgb(var(--gray-2)); padding-left: 8px; }
+  .mon-sum:last-child { border-right: none; }
+  .node-card { cursor: pointer; border: 1px solid transparent; }
+  /* 卡片撑满网格单元，离线节点与在线节点等高，内容垂直居中 */
+  .node-card { height: 100%; display: flex; flex-direction: column; }
+  .node-grid { grid-auto-rows: 1fr; }  /* 换行后各行也等高 */
+  .node-card > .arco-card-body { flex: 1; display: flex; flex-direction: column; }
+  .node-card.offline > .arco-card-body { justify-content: center; }
+  .node-card.active { border-color: rgb(var(--primary-6)); }
+  .node-card.offline { opacity: .65; }
+  .mon-metric { display: grid; grid-template-columns: 52px minmax(30px, 1fr) auto 60px; align-items: center; gap: 8px; height: 28px; font-size: 13px; min-width: 0; }
+  .mon-metric .arco-progress { min-width: 0; }
+  .mon-metric .spark { width: 60px; height: 20px; }
+  .mon-metric .lbl { color: var(--color-text-3); }
+  .mon-metric .val { text-align: right; white-space: nowrap; font-size: 12px; }
+  .disk-list { margin-top: 8px; padding: 6px 10px; background: var(--color-fill-1); border-radius: 4px; font-size: 12px; }
+  .disk-item { padding: 4px 0; }
+  .disk-item + .disk-item { border-top: 1px dashed var(--color-border-2); }
+  .disk-l1 { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
+  .disk-l1 .dev { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .disk-l2 { display: grid; grid-template-columns: minmax(30px, 1fr) auto auto; gap: 10px; align-items: center; margin-top: 2px; white-space: nowrap; }
+  .mon-foot { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 4px 12px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--color-border-1); font-size: 12px; color: var(--color-text-3); white-space: nowrap; }
+  .mon-foot b { color: var(--color-text-1); font-weight: 500; }
+  .mon-row { cursor: pointer; }
+  .mon-cell { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .mon-cell .arco-progress { flex: 1; }
+  .mon-cell .t { width: 84px; flex: none; font-size: 12px; line-height: 1.3; }
+  .pub-page { max-width: 1440px; margin: 0 auto; padding-top: 20px; }
+  .pub-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; padding: 16px 20px; background: var(--color-bg-2); border-radius: 4px; }
+  .pub-title { font-size: 18px; font-weight: 500; color: var(--color-text-1); }
+  .pub-gate { min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+  .mini-chart { border: 1px solid var(--color-border-2); border-radius: 4px; padding: 10px 12px; }
+  .mini-chart .mc-head { display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 6px; }
+</style>
+<script src="vendor/vue.global.prod.js"></script>
+<script src="vendor/arco-vue.min.js"></script>
+<script src="vendor/arco-vue-icon.min.js"></script>
+<script>
+const { createApp, reactive, ref, computed, watch } = Vue;
+
+// ---------------- 工具 ----------------
+// 端口分配按节点：node + 单个 / 多个 / 范围
+const R = (node, from, to) => ({ node, type: 'range', from, to, label: from + '-' + to });
+const S = (node, p) => ({ node, type: 'single', ports: [p], label: String(p) });
+const M = (node, ps) => ({ node, type: 'multi', ports: ps, label: ps.join(',') });
+function expand(allocs) {
+  const s = new Set();
+  for (const a of allocs) {
+    if (a.type === 'range') for (let p = a.from; p <= a.to; p++) s.add(p);
+    else a.ports.forEach(p => s.add(p));
+  }
+  return [...s].sort((x, y) => x - y);
+}
+// err：规则已启用但运行异常时的原因（由 Agent 健康检查上报）
+const rule = (id, node, port, proto, ipver, vmId, tport, remark, total, down, up, conn, enabled = true, err = '') =>
+  ({ id, node, port, proto, ipver, vmId, tport, remark, total, down, up, conn, enabled, err });
+// 虚拟机及监控指标（Agent 上报）：cpu %，内存 / 磁盘 GB，IO 与网络 MB/s
+const vm = (id, node, vmid, host, type, status, owner, mac, v4, v6, metric = {}, shared = false) =>
+  ({ id, node, vmid, host, type, status, owner, shared, mac, v4, v6, cpu: 0, cores: 2, memU: 0, memT: 4, diskU: 8, diskT: 32, dr: 0, dw: 0, ni: 0, no: 0, uptime: '-', ...metric });
+const mt = (cpu, cores, memU, memT, diskU, diskT, dr, dw, ni, no, uptime) => ({ cpu, cores, memU, memT, diskU, diskT, dr, dw, ni, no, uptime });
+const genToken = () => Array.from({ length: 3 }, () => Math.random().toString(36).slice(2, 6).toUpperCase().padEnd(4, 'X')).join('-');
+// 确定性伪随机序列，用于趋势图
+function spark(seed, metric, n = 30, base = 40) {
+  let h = 0; for (const c of String(seed) + metric) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+  const out = []; let v = base;
+  for (let i = 0; i < n; i++) { h = (h * 1103515245 + 12345) >>> 0; v += ((h % 1000) / 1000 - 0.5) * Math.max(6, base * 0.25); v = Math.max(1, Math.min(99, v * 0.85 + base * 0.15)); out.push(v); }
+  out[n - 1] = base; return out;
+}
+function sparkPath(vals, w, h) {
+  if (!vals || !vals.length) return '';
+  const max = Math.max(100, ...vals), step = w / (vals.length - 1);
+  return vals.map((v, i) => (i ? 'L' : 'M') + (i * step).toFixed(1) + ' ' + (h - 2 - v / max * (h - 4)).toFixed(1)).join(' ');
+}
+const lvl = p => p >= 85 ? '#f53f3f' : p >= 65 ? '#ff7d00' : '#00b42a';
+
+// 指标单元格：进度条 / 1 小时趋势
+const MonCell = {
+  props: ['on', 'mode', 'pct', 'text', 'sub', 'series'],
+  setup() { return { lvl, sparkPath }; },
+  template: `<span v-if="!on" class="muted">-</span>
+    <div v-else class="mon-cell">
+      <a-progress v-if="mode === 'bars' || !series" :percent="pct / 100" :color="lvl(pct)" :show-text="false" />
+      <svg v-else width="90" height="24" viewBox="0 0 90 24" style="flex:1"><path :d="sparkPath(series, 90, 24)" fill="none" :stroke="lvl(pct)" stroke-width="1.5" /></svg>
+      <div class="t"><div>{{ text }}</div><div class="muted">{{ sub }}</div></div>
+    </div>`,
+};
+
+createApp({
+  template: '#tpl',
+  setup() {
+    const page = ref('dash');
+    const isAdmin = ref(true);
+    const collapsed = ref(false);
+
+    // ---------------- 控制端初始化 ----------------
+    const setupStep = ref(1);
+    const setupErr = reactive({});
+    const setupForm = reactive({ token: '', admin: 'admin', pwd: '', pwd2: '', site: 'PVE Forward', url: 'https://panel.example.com', port: 5000, tls: 'self' });
+    const setupNext = () => {
+      for (const k in setupErr) delete setupErr[k];
+      if (setupStep.value === 1) {
+        if (!/^[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/i.test(setupForm.token)) setupErr.token = '令牌格式不正确（XXXX-XXXX-XXXX）';
+        if (setupForm.pwd.length < 8) setupErr.pwd = '密码至少 8 位';
+        else if (setupForm.pwd !== setupForm.pwd2) setupErr.pwd2 = '两次输入的密码不一致';
+      }
+      if (setupStep.value === 2 && !/^https?:\/\/[\w.-]+$/.test(setupForm.url)) setupErr.url = '请输入 http(s)://域名或 IP，不含端口和路径';
+      if (!Object.keys(setupErr).length) setupStep.value++;
+    };
+    const agentUrl = computed(() => setupForm.url.replace(/^http/, 'ws') + ':' + setupForm.port + '/agent');
+    const agentCmd = token => `curl -fsSL ${setupForm.url}:${setupForm.port}/agent/install.sh | bash -s -- \\\n  --server ${agentUrl.value} \\\n  --token ${token}`;
+    const copyCmd = () => ArcoVue.Message.success('安装命令已复制');
+
+    // ---------------- 节点（Agent 上报） ----------------
+    const nodeBadge = { online: { badge: 'success', text: '在线' }, offline: { badge: 'danger', text: '离线' }, pending: { badge: 'warning', text: '待初始化' }, waiting: { badge: 'normal', text: '等待 Agent' } };
+    const nodes = reactive([
+      { id: 'hk', name: 'pve-hk', mode: 'agent', remark: '香港 · 主力', status: 'online', initialized: true, lastSeen: '2 秒前', hostname: 'pve-hk01', pveVer: '8.2.4', agentVer: '1.0.0',
+        wan: 'enp3s0f1', wanIp: '203.0.113.10', wanIp6: '2001:db8:10::10', lan: 'vmbr1', subnet: '172.16.0.0/24', subnet6: 'fd00:16::/64', dhcp: 'dnsmasq', reserved: ['22', '8006'], hostBusy: [20005, 21120],
+        cpu: 23, cores: 32, mem: 61, memTotal: 128, disk: 41, diskTotal: 1.8, load: '3.12 2.80 2.65', uptime: '42 天', netIn: 18.4, netOut: 46.2 },
+      { id: 'sg', name: 'pve-sg', remark: '新加坡', status: 'online', initialized: true, lastSeen: '1 秒前', hostname: 'pve-sg01', pveVer: '8.2.4', agentVer: '',
+        mode: 'ssh', sshHost: '198.51.100.20', sshPort: 22, auth: 'cred', credId: 'c1',
+        wan: 'eno1', wanIp: '198.51.100.20', wanIp6: '', lan: 'vmbr1', subnet: '172.17.0.0/24', subnet6: '', dhcp: 'dnsmasq', reserved: ['22', '8006'], hostBusy: [],
+        cpu: 71, cores: 16, mem: 88, memTotal: 64, disk: 58, diskTotal: 0.96, load: '9.84 8.12 7.95', uptime: '17 天', netIn: 6.1, netOut: 12.9 },
+      { id: 'jp', name: 'pve-jp', mode: 'agent', remark: '东京 · 维护中', status: 'offline', initialized: true, lastSeen: '8 分钟前', hostname: 'pve-jp01', pveVer: '8.1.10', agentVer: '0.9.2',
+        wan: 'enp1s0', wanIp: '192.0.2.30', wanIp6: '', lan: 'vmbr1', subnet: '172.18.0.0/24', subnet6: '', dhcp: 'dnsmasq', reserved: ['22', '8006'], hostBusy: [],
+        cpu: 0, cores: 8, mem: 0, memTotal: 32, disk: 33, diskTotal: 0.48, load: '-', uptime: '-', netIn: 0, netOut: 0 },
+      { id: 'de', name: 'pve-de', mode: 'agent', remark: '法兰克福', status: 'pending', initialized: false, lastSeen: '3 秒前', hostname: 'pve-de01', pveVer: '8.3.1', agentVer: '1.0.0', reserved: ['22', '8006'], hostBusy: [] },
+    ]);
+    const nodeOf = id => nodes.find(n => n.id === id) || { reserved: [], hostBusy: [] };
+    // 磁盘繁忙度（节点侧读取 /proc/diskstats 计算，等同 iostat -x）：util = %util，await = 平均延迟 ms
+    const dk = (dev, kind, model, pool, util, rIops, wIops, rMB, wMB, aw) => ({ dev, kind, model, pool, util, rIops, wIops, rMB, wMB, await: aw });
+    const nodeIo = {
+      hk: { iowait: 3.1, disks: [dk('nvme0n1', 'NVMe', 'Samsung PM9A3 1.92TB', 'local-lvm', 34, 1820, 2950, 42.1, 61.3, 0.8), dk('nvme1n1', 'NVMe', 'Samsung PM9A3 1.92TB', 'local-lvm', 31, 1640, 2710, 38.6, 55.0, 0.7)] },
+      sg: { iowait: 18.6, disks: [dk('sda', 'SSD', 'Intel S4510 960GB', 'local-lvm', 96, 2410, 5820, 31.2, 88.7, 41.5), dk('sdb', 'HDD', 'WD Ultrastar 8TB', 'backup', 72, 96, 214, 12.8, 21.4, 23.6)] },
+      jp: { iowait: 0, disks: [dk('sda', 'SSD', 'Micron 5300 480GB', 'local-lvm', 0, 0, 0, 0, 0, 0)] },
+      de: { iowait: 0.4, disks: [dk('nvme0n1', 'NVMe', 'Micron 7450 1.92TB', 'local-zfs', 4, 120, 310, 2.1, 4.4, 0.3)] },
+    };
+    // 虚拟机磁盘 IOPS / 延迟：QEMU blockstats（VM）或 cgroup io.stat（CT）
+    const vmIoMap = { 1: [80, 0.6], 2: [12, 0.4], 3: [1450, 1.9], 4: [40, 0.5], 5: [3900, 6.8], 9: [10, 0.3], 10: [1100, 2.2], 11: [980, 2.0], 12: [6800, 46.2], 7: [60, 3.1], 13: [520, 12.4], 14: [30, 1.1] };
+    const vmIo = v => { const [iops, lat] = vmIoMap[v.id] || [0, 0]; return { iops, lat }; };
+    // 繁忙度分级：%util ≥ 90 或延迟 ≥ 40ms 为饱和；≥ 70% 或 ≥ 20ms 为繁忙；≥ 30% 为正常；否则空闲
+    const busyOf = (util, aw = 0) => util >= 90 || aw >= 40 ? { text: '饱和', tag: 'red', color: '#f53f3f' }
+      : util >= 70 || aw >= 20 ? { text: '繁忙', tag: 'orange', color: '#ff7d00' }
+      : util >= 30 ? { text: '正常', tag: 'arcoblue', color: '#165dff' } : { text: '空闲', tag: 'green', color: '#00b42a' };
+    // 虚拟机无 %util，按延迟与 IOPS 估算
+    const vmBusy = v => { const { iops, lat } = vmIo(v); return busyOf(iops >= 5000 ? 90 : iops >= 3000 ? 70 : iops >= 500 ? 30 : 0, lat); };
+    const fmtK = n => n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
+    const readyNodes = computed(() => nodes.filter(n => n.initialized));
+
+    // ---------------- 虚拟机 ----------------
+    const vms = reactive([
+      vm(1, 'hk', 110, 'shared-nginx', 'lxc', 'running', null, 'bc:24:11:00:00:05', '172.16.0.5', 'fd00:16::5', mt(4, 2, 0.4, 1, 3, 8, 0.1, 0.3, 4.2, 9.8, '42 天'), true),
+      vm(2, 'hk', 111, 'shared-dns', 'lxc', 'running', null, 'bc:24:11:00:00:06', '172.16.0.6', '', mt(1, 1, 0.1, 0.5, 1, 4, 0, 0.1, 0.2, 0.2, '42 天'), true),
+      vm(3, 'hk', 101, 'web01', 'qemu', 'running', 'alice', 'bc:24:11:3a:01:9f', '172.16.0.10', 'fd00:16::10', mt(37, 4, 5.8, 8, 41, 80, 1.2, 3.4, 6.8, 22.4, '12 天')),
+      vm(4, 'hk', 102, 'vpn01', 'lxc', 'running', 'alice', 'bc:24:11:7e:22:10', '172.16.0.11', 'fd00:16::11', mt(8, 1, 0.3, 1, 2, 8, 0, 0.1, 1.1, 1.3, '12 天')),
+      vm(5, 'hk', 103, 'win-rdp', 'qemu', 'running', 'bob', 'bc:24:11:c0:8d:44', '172.16.0.12', 'fd00:16::12', mt(68, 8, 14.6, 16, 96, 120, 6.2, 2.8, 2.1, 3.6, '3 天')),
+      vm(6, 'hk', 104, 'mc-server', 'qemu', 'stopped', 'bob', 'bc:24:11:0f:6a:2b', '172.16.0.13', '', mt(0, 4, 0, 8, 22, 64, 0, 0, 0, 0, '-')),
+      vm(8, 'hk', 120, 'dev-ubuntu', 'qemu', 'stopped', null, 'bc:24:11:8a:10:20', '', '', mt(0, 2, 0, 4, 6, 32, 0, 0, 0, 0, '-')),
+      vm(9, 'hk', 121, 'test-debian', 'lxc', 'running', null, 'bc:24:11:8a:10:21', '', '', mt(2, 1, 0.2, 1, 1, 8, 0, 0, 0.1, 0.1, '5 小时')),
+      vm(10, 'hk', 122, 'k8s-node1', 'qemu', 'running', null, 'bc:24:11:8a:10:22', '', '', mt(52, 4, 6.1, 8, 28, 64, 2.2, 4.1, 3.3, 3.1, '9 天')),
+      vm(11, 'hk', 123, 'k8s-node2', 'qemu', 'running', null, 'bc:24:11:8a:10:23', '', '', mt(49, 4, 5.7, 8, 27, 64, 2.0, 3.6, 3.0, 2.9, '9 天')),
+      vm(12, 'sg', 201, 'sg-web', 'qemu', 'running', 'alice', 'bc:24:11:51:00:01', '172.17.0.10', '', mt(91, 4, 7.6, 8, 52, 60, 3.3, 8.8, 5.2, 11.4, '17 天')),
+      vm(7, 'sg', 202, 'blog', 'lxc', 'running', 'carol', 'bc:24:11:5d:77:01', '172.17.0.11', '', mt(3, 1, 0.6, 2, 5, 16, 0, 0.2, 0.3, 0.9, '17 天')),
+      vm(13, 'sg', 203, 'sg-cache', 'lxc', 'running', null, 'bc:24:11:51:00:03', '', '', mt(12, 2, 3.1, 4, 4, 16, 0.4, 1.2, 1.4, 1.6, '6 天')),
+      vm(14, 'sg', 210, 'sg-proxy', 'lxc', 'running', null, 'bc:24:11:51:00:05', '172.17.0.5', '', mt(6, 1, 0.3, 1, 2, 8, 0, 0.1, 2.2, 5.3, '17 天'), true),
+      vm(15, 'jp', 301, 'jp-game', 'qemu', 'running', 'bob', 'bc:24:11:61:00:01', '172.18.0.10', '', mt(0, 4, 0, 8, 30, 64, 0, 0, 0, 0, '未知')),
+    ]);
+    const vmOf = id => vms.find(v => v.id === id) || {};
+    const vmsOf = name => vms.filter(v => v.owner === name);
+    const ipverName = { v4: 'IPv4', v6: 'IPv6', both: 'IPv4 + IPv6' };
+    const hasV = (v, ver) => ver === 'v4' ? !!v.v4 : ver === 'v6' ? !!v.v6 : !!(v.v4 && v.v6);
+    const ipLabel = v => [v.v4, v.v6].filter(Boolean).join('  ·  ') || '未分配 IP';
+    const entryLines = r => { const n = nodeOf(r.node);
+      return [...(r.ipver !== 'v6' ? [n.wanIp + ':' + r.port] : []), ...(r.ipver !== 'v4' && n.wanIp6 ? ['[' + n.wanIp6 + ']:' + r.port] : [])]; };
+    const exitLines = r => { const v = vmOf(r.vmId);
+      return [...(r.ipver !== 'v6' ? [v.v4 + ':' + r.tport] : []), ...(r.ipver !== 'v4' && v.v6 ? ['[' + v.v6 + ']:' + r.tport] : [])]; };
+
+    // ---------------- 用户 ----------------
+    const users = reactive([
+      { name: 'alice', color: '#00b42a', status: '正常', quota: '500 GB', maxRules: 20, traffic: '128.4 GB',
+        allocs: [R('hk', 20000, 20009), S('hk', 30022), R('sg', 20000, 20004)], rules: [
+          rule(1, 'hk', 20000, 'TCP', 'both', 3, 22, 'web01 SSH', '4.6 GB', '50.5 MB', '585 MB', 3),
+          rule(2, 'hk', 20001, 'TCP + UDP', 'both', 3, 443, 'web01 HTTPS', '98.7 GB', '3.36 MB', '7.62 MB', 412),
+          rule(3, 'hk', 20002, 'UDP', 'v4', 4, 51820, 'WireGuard', '2.7 GB', '3.94 MB', '8.06 MB', 1, false),
+          rule(4, 'hk', 30022, 'TCP', 'v6', 1, 80, '公共反代', '42 MB', '12 KB', '30 KB', 1),
+          rule(9, 'sg', 20000, 'TCP', 'v4', 12, 22, 'sg-web SSH', '1.2 GB', '8.1 MB', '22 MB', 2),
+        ] },
+      { name: 'bob', color: '#ff7d00', status: '正常', quota: '', maxRules: 10, traffic: '12.0 GB',
+        allocs: [M('hk', [21001, 21002, 21005]), R('hk', 21100, 21149), R('jp', 25000, 25009)], rules: [
+          rule(5, 'hk', 21001, 'TCP', 'v4', 5, 3389, 'Windows RDP', '12.0 GB', '44.2 MB', '194 MB', 2),
+          rule(6, 'hk', 21100, 'TCP + UDP', 'v4', 6, 25565, 'Minecraft', '5.5 GB', '3.41 MB', '8.84 MB', 17, true, '目标不可达：172.16.0.13:25565 连续 3 次探测无响应（虚拟机 104 已停止）'),
+          rule(8, 'hk', 21002, 'TCP', 'v4', 5, 22, 'win-rdp SSH', '210 MB', '0 B', '0 B', 0, true, '端口冲突：21002 已被宿主机进程 sshd 监听'),
+          rule(10, 'jp', 25000, 'UDP', 'v4', 15, 27015, 'jp-game', '3.3 GB', '-', '-', 0),
+        ] },
+      { name: 'carol', color: '#722ed1', status: '流量超限', quota: '100 GB', maxRules: 5, traffic: '100.0 GB',
+        allocs: [S('sg', 22000)], rules: [ rule(7, 'sg', 22000, 'TCP', 'v4', 7, 80, 'blog', '99.8 GB', '0 B', '0 B', 0, false) ] },
+    ]);
+    const adminUser = { name: 'admin', allocs: [], rules: [], maxRules: 0, status: '正常' };
+    const currentName = ref('admin');
+    const me = computed(() => isAdmin.value ? adminUser : users.find(u => u.name === currentName.value));
+    const ownerOf = n => users.find(u => u.name === n) || me.value;
+    const allRules = computed(() => users.flatMap(u => u.rules.map(r => Object.assign(r, { owner: u.name }))));
+    // 节点离线时，其上规则状态未知，按异常展示
+    const ruleErr = r => r.err || (nodeOf(r.node).status === 'offline' ? `节点 ${nodeOf(r.node).name} 离线（最后心跳 ${nodeOf(r.node).lastSeen}），规则状态未知` : '');
+
+    // ---------------- 端口（按节点独立） ----------------
+    const nodesOfAllocs = u => nodes.map(n => n.id).filter(id => (u.allocs || []).some(a => a.node === id));
+    const allPorts = (u, node) => node ? expand((u.allocs || []).filter(a => a.node === node)) : nodesOfAllocs(u).flatMap(n => allPorts(u, n));
+    const usedPorts = (u, node) => (u.rules || []).filter(r => !node || r.node === node).map(r => r.port);
+    const ruleUsedOn = node => new Set(allRules.value.filter(r => r.node === node).map(r => r.port));
+    // 可选端口 = 该节点上分配给用户的 − 已被规则使用 − 宿主机占用 − 保留；编辑时保留当前端口
+    const freePorts = (u, node, keep) => { if (!node) return [];
+      const used = ruleUsedOn(node), n = nodeOf(node);
+      return allPorts(u, node).filter(p => p === keep || (!used.has(p) && !n.hostBusy.includes(p) && !n.reserved.includes(String(p)))); };
+    const portStat = (u, node) => { if (!node) return { used: 0, busy: 0 };
+      const used = ruleUsedOn(node), all = allPorts(u, node);
+      return { used: all.filter(p => used.has(p)).length, busy: all.filter(p => !used.has(p) && nodeOf(node).hostBusy.includes(p)).length }; };
+    const allocByNode = u => nodesOfAllocs(u).map(node => ({ node, labels: u.allocs.filter(a => a.node === node).map(a => a.label) }));
+    const allocTypeName = { single: '单个', multi: '多个', range: '范围' };
+    const totalAllocated = computed(() => users.reduce((n, u) => n + allPorts(u).length, 0));
+
+    // ---------------- 导航 ----------------
+    const menuKey = computed(() => ({ 'user-edit': 'users', 'node-edit': 'nodes' })[page.value] || page.value);
+    const go = k => { if (k === 'user-new') return openNewUser(); if (k === 'node-new') return openNewNode(); page.value = k; };
+    const parentOf = { rules: 'fwd', users: 'user', 'user-new': 'user', nodes: 'pve', 'node-new': 'pve', vms: 'pve', creds: 'pve', profile: 'me' };
+    const openKeys = ref(['fwd']);
+    watch(menuKey, k => { const p = parentOf[k]; if (p && !openKeys.value.includes(p)) openKeys.value = [...openKeys.value, p]; });
+
+    // ---------------- 规则表 ----------------
+    const query = reactive({});
+    const resetQuery = () => { for (const k in query) delete query[k]; if (!isAdmin.value) query.owner = me.value.name; };
+    const density = ref('medium');
+    const grouped = ref(true);
+    const ruleState = r => !r.enabled ? 'off' : ruleErr(r) ? 'err' : 'on';
+    const match = r => (!query.node || r.node === query.node) && (!query.proto || r.proto === query.proto) && (!query.ipver || r.ipver === query.ipver)
+      && (!query.status || ruleState(r) === query.status);
+    const scopeUsers = computed(() => isAdmin.value ? users.filter(u => !query.owner || u.name === query.owner) : [me.value]);
+    const visibleRules = computed(() => scopeUsers.value.flatMap(u => u.rules.filter(match)));
+    const errRules = computed(() => scopeUsers.value.flatMap(u => u.rules.filter(r => r.enabled && ruleErr(r))));
+    const tableRows = computed(() => {
+      const rows = [];
+      for (const u of scopeUsers.value) {
+        const rs = u.rules.filter(match).map(r => Object.assign(r, { key: 'r' + r.id, owner: u.name }));
+        if (isAdmin.value && grouped.value) rows.push({ key: 'g-' + u.name, group: true, user: u, children: rs });
+        else rows.push(...rs);
+      }
+      return rows;
+    });
+    const expandedKeys = ref(['g-alice', 'g-bob', 'g-carol']);
+    const selectedKeys = ref([]);
+    const selectedRules = computed(() => selectedKeys.value.filter(k => String(k).startsWith('r')));
+    const batchSet = on => {
+      const ids = new Set(selectedRules.value.map(k => +k.slice(1)));
+      users.forEach(u => u.rules.forEach(r => { if (ids.has(r.id)) r.enabled = on; }));
+      ArcoVue.Message.success(`已${on ? '启用' : '停用'} ${ids.size} 条规则，已下发到对应节点`);
+      selectedKeys.value = [];
+    };
+    const columns = computed(() => [
+      { title: '状态', slotName: 'status', width: 100 },
+      { title: '节点', slotName: 'node', width: 90 },
+      { title: '规则备注', slotName: 'remark', width: 120, ellipsis: true, tooltip: true },
+      ...(isAdmin.value && !grouped.value ? [{ title: '所属用户', dataIndex: 'owner', width: 90 }] : []),
+      { title: '转发入口', slotName: 'entry', width: 220 },
+      { title: '转发出口', slotName: 'exit', width: 180 },
+      { title: 'IP 版本', slotName: 'ipver', width: 110 },
+      { title: '协议', slotName: 'proto', width: 100 },
+      { title: '流量', slotName: 'traffic', width: 160 },
+      { title: '连接', slotName: 'conn', width: 60 },
+      { title: '启用', slotName: 'switch', width: 60 },
+      { title: '操作', slotName: 'operations', width: 120 },
+    ]);
+    const spanMethod = ({ record, columnIndex }) => {
+      if (!record.group) return;
+      return columnIndex === 0 ? { rowspan: 1, colspan: columns.value.length } : { rowspan: 0, colspan: 0 };
+    };
+
+    // ---------------- 规则弹窗 ----------------
+    const ruleVisible = ref(false);
+    const ruleForm = reactive({});
+    const firstNode = u => (allocByNode(u).find(g => nodeOf(g.node).status === 'online') || {}).node;
+    const openRule = (r, owner) => {
+      const o = owner ? owner.name : (isAdmin.value ? (query.owner || users[0].name) : me.value.name);
+      Object.assign(ruleForm, r ? { ...r } : { id: null, owner: o, node: query.node || firstNode(ownerOf(o)), port: undefined, proto: 'TCP', ipver: 'v4', vmId: undefined, tport: undefined, remark: '' });
+      ruleVisible.value = true;
+    };
+    const onOwnerChange = () => { ruleForm.node = firstNode(ownerOf(ruleForm.owner)); ruleForm.port = undefined; ruleForm.vmId = undefined; };
+    const onRuleNodeChange = () => { ruleForm.port = undefined; ruleForm.vmId = undefined; if (!nodeOf(ruleForm.node).wanIp6) ruleForm.ipver = 'v4'; };
+    // 含 v6 的选项需要：节点有公网 IPv6，且所选虚拟机有 IPv6 地址
+    const v6Allowed = computed(() => !!nodeOf(ruleForm.node).wanIp6 && (!ruleForm.vmId || !!vmOf(ruleForm.vmId).v6));
+    const onVmChange = () => { if (!v6Allowed.value) ruleForm.ipver = 'v4'; };
+    const ipverHint = computed(() => {
+      if (!ruleForm.node) return undefined;
+      const entry = '入口：' + entryLines({ node: ruleForm.node, ipver: ruleForm.ipver, port: ruleForm.port || '端口' }).join('  /  ');
+      if (!nodeOf(ruleForm.node).wanIp6) return entry + '（节点 ' + nodeOf(ruleForm.node).name + ' 未配置公网 IPv6）';
+      if (ruleForm.vmId && !vmOf(ruleForm.vmId).v6) return entry + '（所选虚拟机没有 IPv6 地址）';
+      return entry;
+    });
+
+    // ---------------- 虚拟机分配 ----------------
+    const vmKw = ref(''), vmOnlyFree = ref(false), vmOwner = ref(), vmNode = ref('all');
+    const vmRuleCount = id => allRules.value.filter(r => r.vmId === id).length;
+    const prefixOf = cidr => (cidr || '').split('/')[0].split('.').slice(0, 3).join('.');
+    const nextFreeIp = (node, taken) => { const n = nodeOf(node), p = prefixOf(n.subnet), p6 = (n.subnet6 || '').split('/')[0];
+      for (let h = 10; h <= 99; h++) { const v4 = p + '.' + h; if (!taken.has(v4)) { taken.add(v4); return { v4, v6: p6 ? p6 + h : '' }; } } };
+    const syncPve = node => ArcoVue.Message.success(node ? `已请求 ${nodeOf(node).name} 的 Agent 重新上报虚拟机` : `已请求 ${readyNodes.value.filter(n => n.status === 'online').length} 个在线节点重新上报虚拟机`);
+    const userForm = reactive({ allocs: [], vmIds: [] });
+    const vmChoices = computed(() => vms.filter(v => !v.shared && nodeOf(v.node).initialized)
+      .filter(v => vmNode.value === 'all' || v.node === vmNode.value)
+      .filter(v => !vmOnlyFree.value || !v.owner || (userForm.edit && v.owner === userForm.name))
+      .filter(v => !vmKw.value || [v.vmid, v.host, v.mac].join(' ').includes(vmKw.value))
+      .map(v => ({ ...v, disabled: !!v.owner && !(userForm.edit && v.owner === userForm.name) })));
+    const selectedVms = computed(() => (userForm.vmIds || []).map(id => vmOf(id)).filter(v => v.id));
+    const vmPreview = computed(() => {
+      const taken = new Set(vms.map(v => v.v4).filter(Boolean)), out = {};
+      for (const v of selectedVms.value) if (!v.v4) out[v.id] = nextFreeIp(v.node, taken);
+      return out;
+    });
+    const vmRows = computed(() => vms.filter(v => vmNode.value === 'all' || v.node === vmNode.value)
+      .filter(v => !vmOwner.value || (vmOwner.value === '__free' ? !v.owner && !v.shared : vmOwner.value === '__public' ? v.shared : v.owner === vmOwner.value))
+      .filter(v => !vmKw.value || [v.vmid, v.host, v.mac, v.v4, v.v6].join(' ').includes(vmKw.value)));
+    const ensureIp = v => { if (!v.v4) Object.assign(v, nextFreeIp(v.node, new Set(vms.map(x => x.v4).filter(Boolean)))); };
+    const assignVm = (v, name) => { v.owner = name; v.shared = false; ensureIp(v); ArcoVue.Message.success(`${nodeOf(v.node).name}/${v.vmid} ${v.host} 已分配给 ${name}，IP ${v.v4}`); };
+    const togglePublic = v => { v.shared = !v.shared; if (v.shared) { v.owner = null; ensureIp(v); } };
+    const reclaimVm = v => { v.owner = null; v.shared = false; };
+
+    // ---------------- 添加 / 编辑用户 ----------------
+    const allocForm = reactive({ node: 'hk', type: 'range', single: undefined, multi: [], from: undefined, to: undefined });
+    const allocErr = ref('');
+    const openUser = u => {
+      Object.assign(userForm, u
+        ? { edit: true, name: u.name, pwd: '', quota: parseInt(u.quota) || undefined, maxRules: u.maxRules, enabled: u.status !== '已禁用', remark: u.remark || '',
+            allocs: u.allocs.map(a => ({ ...a })), vmIds: vmsOf(u.name).map(v => v.id) }
+        : { edit: false, name: '', pwd: '', quota: undefined, maxRules: 10, enabled: true, remark: '', allocs: [], vmIds: [] });
+      Object.assign(allocForm, { node: readyNodes.value[0].id, type: 'range', single: undefined, multi: [], from: undefined, to: undefined });
+      vmKw.value = ''; vmOnlyFree.value = false; vmNode.value = 'all';
+      allocErr.value = ''; page.value = u ? 'user-edit' : 'user-new';
+    };
+    const step = ref(1);
+    const stepErr = reactive({});
+    const openNewUser = () => { openUser(); step.value = 1; for (const k in stepErr) delete stepErr[k]; };
+    const nextStep = () => {
+      for (const k in stepErr) delete stepErr[k];
+      if (step.value === 1) {
+        if (!/^[A-Za-z0-9_]{3,20}$/.test(userForm.name || '')) stepErr.name = '用户名需为 3-20 位字母、数字或下划线';
+        else if (users.some(u => u.name === userForm.name)) stepErr.name = '用户名已存在';
+        if ((userForm.pwd || '').length < 8) stepErr.pwd = '密码至少 8 位';
+      }
+      if (step.value === 2 && !userForm.allocs.length) stepErr.ports = '至少分配 1 个端口';
+      if (step.value === 3 && !userForm.vmIds.length) stepErr.vms = '至少选择 1 台虚拟机';
+      if (!Object.keys(stepErr).length) step.value++;
+    };
+    const addAlloc = () => {
+      let a; const node = allocForm.node;
+      if (allocForm.type === 'single' && allocForm.single) a = S(node, allocForm.single);
+      if (allocForm.type === 'multi') {
+        const ps = [...new Set(allocForm.multi.flatMap(x => String(x).split(/[,，\s]+/)).map(Number).filter(n => n >= 1 && n <= 65535))].sort((x, y) => x - y);
+        if (ps.length) a = M(node, ps);
+      }
+      if (allocForm.type === 'range' && allocForm.from && allocForm.to && allocForm.from <= allocForm.to) a = R(node, allocForm.from, allocForm.to);
+      if (!a) { allocErr.value = '请输入有效端口（范围需起始 ≤ 结束）'; return; }
+      const mine = allPorts(userForm, node), n = nodeOf(node);
+      for (const p of expand([a])) {
+        if (n.reserved.includes(String(p))) { allocErr.value = `端口 ${p} 是 ${n.name} 的保留端口`; return; }
+        if (mine.includes(p)) { allocErr.value = `端口 ${p} 已在当前用户 ${n.name} 的分配中`; return; }
+        const owner = users.find(u => u.name !== userForm.name && allPorts(u, node).includes(p));
+        if (owner) { allocErr.value = `${n.name} 的端口 ${p} 已分配给用户 ${owner.name}`; return; }
+      }
+      allocErr.value = ''; userForm.allocs.push(a);
+      Object.assign(allocForm, { single: undefined, multi: [], from: undefined, to: undefined });
+    };
+
+    // ---------------- 添加节点：接入 Agent → 网络初始化 ----------------
+    const nodeStep = ref(1);
+    const nodeErr = reactive({});
+    const nodeForm = reactive({});
+    const agentConn = reactive({ connected: false, wait: 0 });
+    let waitTimer = null;
+    // Agent 连接后上报的检测结果（每个节点各自探测）
+    const detect = reactive({ hostname: '', pve: '8.3.1', dhcp: null, vmCount: 6,
+      nics: [{ name: 'enp5s0', ip4: '185.0.2.40/24', ip6: '2a01:db8:40::40/64', def: true, up: true, speed: '10 Gbps' }, { name: 'enp6s0', ip4: '', ip6: '', up: false, speed: '' }],
+      bridges: [{ name: 'vmbr1', cidr: '10.0.0.1/24', ports: '无物理端口', vms: 6 }] });
+    const freshNodeForm = () => ({ id: null, name: '', remark: '', token: genToken(), mode: 'agent',
+      sshHost: '', sshPort: 22, auth: 'cred', credId: undefined, sshUser: 'root', sshPwd: '', sshKey: '', sshPass: '', saveCred: false, credName: '', wan: 'enp5s0', wanIp: '185.0.2.40', wanIp6: '2a01:db8:40::40', reserved: ['22', '8006'],
+      lan: 'vmbr1', newBridge: 'vmbr2', subnet: '10.0.0.0/24', addrMode: 'append', dhcp: true, dns: ['223.5.5.5', '1.1.1.1'], ipv6: 'ula', subnet6: 'fd00:40::/64' });
+    const stopWait = () => { clearInterval(waitTimer); waitTimer = null; };
+    const startWait = () => { stopWait(); agentConn.wait = 0;
+      waitTimer = setInterval(() => { agentConn.wait++; if (agentConn.wait >= 6) mockConnect(); }, 1000); };
+    const mockConnect = () => { stopWait(); agentConn.connected = true; detect.hostname = (nodeForm.name || 'pve') + '01';
+      const n = nodes.find(x => x.id === nodeForm.id); if (n) Object.assign(n, { status: 'pending', lastSeen: '刚刚', agentVer: '1.0.0', pveVer: detect.pve, hostname: detect.hostname }); };
+    const regenToken = () => { nodeForm.token = genToken(); startWait(); ArcoVue.Message.info('已生成新令牌，旧令牌作废'); };
+    const resetApply = () => { applied.value = false; applying.value = false; applyIdx.value = 0; };
+    const openNewNode = () => { stopWait(); Object.assign(nodeForm, freshNodeForm()); agentConn.connected = false; nodeStep.value = 1; resetApply(); for (const k in nodeErr) delete nodeErr[k]; page.value = 'node-new'; };
+    const resumeNode = n => { Object.assign(nodeForm, freshNodeForm(), { id: n.id, name: n.name, remark: n.remark, token: n.token || genToken() }); agentConn.connected = false; nodeStep.value = 2; resetApply(); page.value = 'node-new'; startWait(); };
+    const initNode = n => { stopWait(); Object.assign(nodeForm, freshNodeForm(), { id: n.id, name: n.name, remark: n.remark }); agentConn.connected = true; detect.hostname = n.hostname; nodeStep.value = 3; resetApply(); page.value = 'node-new'; };
+    const nodeNext = () => {
+      for (const k in nodeErr) delete nodeErr[k];
+      if (nodeStep.value === 1) {
+        if (!nodeForm.name.trim()) nodeErr.name = '请输入节点名称';
+        else if (nodes.some(n => n.name === nodeForm.name && n.id !== nodeForm.id)) nodeErr.name = '节点名称已存在';
+        if (nodeForm.mode === 'ssh') {
+          if (!nodeForm.sshHost.trim()) nodeErr.host = '请输入 SSH 地址';
+          if (nodeForm.auth === 'cred' && !nodeForm.credId) nodeErr.cred = '请选择凭证';
+          if (nodeForm.auth === 'password' && !nodeForm.sshPwd) nodeErr.secret = '请输入密码';
+          if (nodeForm.auth === 'key' && !nodeForm.sshKey.trim()) nodeErr.secret = '请粘贴私钥';
+        }
+        if (Object.keys(nodeErr).length) return;
+        // 勾选“保存为凭证”时写入凭证库，节点改为引用该凭证
+        if (nodeForm.mode === 'ssh' && nodeForm.auth !== 'cred' && nodeForm.saveCred) {
+          const c = { id: 'c' + Date.now(), name: nodeForm.credName || nodeForm.name + ' 凭证', type: nodeForm.auth, user: nodeForm.sshUser, algo: 'ED25519', fp: 'SHA256:new…', updated: '刚刚' };
+          creds.push(c); nodeForm.auth = 'cred'; nodeForm.credId = c.id;
+        }
+        const conn = nodeForm.mode === 'ssh' ? { mode: 'ssh', sshHost: nodeForm.sshHost, sshPort: nodeForm.sshPort, auth: nodeForm.auth, credId: nodeForm.auth === 'cred' ? nodeForm.credId : null } : { mode: 'agent' };
+        if (!nodeForm.id) { nodeForm.id = 'n' + Date.now(); nodes.push({ id: nodeForm.id, name: nodeForm.name, remark: nodeForm.remark, status: 'waiting', initialized: false, lastSeen: '-', reserved: ['22', '8006'], hostBusy: [], token: nodeForm.token, ...conn }); }
+        else Object.assign(nodes.find(n => n.id === nodeForm.id), conn);
+        nodeStep.value = 2;
+        if (nodeForm.mode === 'ssh') runSshCheck(); else startWait();
+        return;
+      }
+      if (nodeStep.value === 2) {
+        if (nodeForm.mode === 'ssh') { if (!sshCheck.done) return; }
+        else { if (!agentConn.connected) return; stopWait(); }
+      }
+      nodeStep.value++;
+    };
+    // ---------------- SSH 连接检查 ----------------
+    const sshTasks = [
+      { title: '连接 TCP 端口', ok: '已连通' },
+      { title: '校验主机指纹', ok: '已信任 ED25519 指纹' },
+      { title: '身份认证', ok: '认证成功' },
+      { title: '检查权限（root 或免密 sudo）', ok: '具备 root 权限' },
+      { title: '检测环境（pveversion / nft / ip）', ok: 'PVE 8.3.1 · nftables 1.0.6' },
+    ];
+    const sshCheck = reactive({ idx: 0, done: false, waitHostKey: false });
+    let sshTimer = null;
+    const sshAdvance = () => {
+      clearTimeout(sshTimer);
+      if (sshCheck.idx === 1 && !sshCheck.trusted) { sshCheck.waitHostKey = true; return; }
+      if (sshCheck.idx >= sshTasks.length - 1) {
+        sshCheck.idx = sshTasks.length; sshCheck.done = true; detect.hostname = (nodeForm.name || 'pve') + '01';
+        const n = nodes.find(x => x.id === nodeForm.id); if (n) Object.assign(n, { status: 'pending', lastSeen: '刚刚', pveVer: detect.pve, hostname: detect.hostname });
+        return;
+      }
+      sshCheck.idx++; sshTimer = setTimeout(sshAdvance, 500);
+    };
+    const runSshCheck = () => { Object.assign(sshCheck, { idx: 0, done: false, waitHostKey: false, trusted: false }); sshTimer = setTimeout(sshAdvance, 500); };
+    const trustHostKey = () => { sshCheck.waitHostKey = false; sshCheck.trusted = true; sshAdvance(); };
+    const testSsh = n => ArcoVue.Message.success(`${n.name}：SSH 连接正常（${n.sshHost}:${n.sshPort}，延迟 38 ms）`);
+
+    // ---------------- SSH 凭证（加密保存，可复用） ----------------
+    const creds = reactive([
+      { id: 'c1', name: '新加坡机房 root 密钥', type: 'key', user: 'root', algo: 'ED25519', fp: 'SHA256:9fK2…Qw7e', updated: '2026-10-02 14:20' },
+      { id: 'c2', name: '临时密码', type: 'password', user: 'root', updated: '2026-09-28 09:11' },
+      { id: 'c3', name: '运维账号 sudo', type: 'key', user: 'ops', algo: 'RSA 4096', fp: 'SHA256:x81L…aP0c', updated: '2026-09-15 18:03' },
+    ]);
+    const credOf = id => creds.find(c => c.id === id) || {};
+    const credKw = ref('');
+    const credVisible = ref(false);
+    const credForm = reactive({});
+    const genPub = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIK7v3pQ2mX9cR1tYw4LzN0aHfE6uD5sG2iK8oP1qE pve-forward';
+    const openCred = c => { Object.assign(credForm, c ? { ...c, pwd: '', key: '', pass: '', keySrc: 'paste' } : { id: null, name: '', type: 'key', user: 'root', pwd: '', key: '', pass: '', keySrc: 'paste', remark: '' }); credVisible.value = true; };
+    const saveCred = () => {
+      if (credForm.id) Object.assign(creds.find(c => c.id === credForm.id), { name: credForm.name, type: credForm.type, user: credForm.user, updated: '刚刚' });
+      else creds.push({ id: 'c' + Date.now(), name: credForm.name || '未命名凭证', type: credForm.type, user: credForm.user, algo: 'ED25519', fp: 'SHA256:K7v3…P1qE', updated: '刚刚' });
+      ArcoVue.Message.success('凭证已加密保存');
+    };
+
+    const gw = cidr => prefixOf(cidr) + '.1/' + ((cidr || '').split('/')[1] || '24');
+    const range = (cidr, a, b) => `${prefixOf(cidr)}.${a} – ${prefixOf(cidr)}.${b}`;
+    const netOf = cidr => prefixOf(cidr) + '.0/' + (cidr.split('/')[1] || '24');
+    const bridgeCidr = computed(() => (detect.bridges.find(b => b.name === nodeForm.lan) || {}).cidr || '');
+    const subnetDiffers = computed(() => !!bridgeCidr.value && netOf(bridgeCidr.value) !== nodeForm.subnet);
+    const onBridgeChange = () => { nodeForm.subnet = bridgeCidr.value ? netOf(bridgeCidr.value) : '172.16.0.0/24'; };
+    const redetect = () => ArcoVue.Message.success('Agent 已重新检测：' + nodeForm.wanIp);
+    const nodeSummary = computed(() => [
+      { label: '节点', value: nodeForm.name + (nodeForm.remark ? '（' + nodeForm.remark + '）' : '') },
+      { label: '主机', value: detect.hostname + ' · PVE ' + detect.pve },
+      { label: '连接方式', value: nodeForm.mode === 'ssh' ? 'SSH · ' + nodeForm.sshHost + ':' + nodeForm.sshPort : 'Agent（WSS）' },
+      { label: '公网网口', value: nodeForm.wan },
+      { label: '公网地址', value: nodeForm.wanIp + (nodeForm.wanIp6 ? ' / ' + nodeForm.wanIp6 : '') },
+      { label: '内网网桥', value: nodeForm.lan === '__new' ? nodeForm.newBridge + '（新建）' : nodeForm.lan },
+      { label: '内网网段', value: nodeForm.subnet + (subnetDiffers.value ? (nodeForm.addrMode === 'append' ? '（追加）' : '（替换）') : '') },
+      { label: 'DHCP', value: detect.dhcp ? '沿用 ' + detect.dhcp : nodeForm.dhcp ? '安装 dnsmasq · ' + range(nodeForm.subnet, 100, 250) : '不启用' },
+      { label: '虚拟机分配池', value: range(nodeForm.subnet, 10, 99) },
+      { label: 'IPv6', value: nodeForm.wanIp6 && nodeForm.ipv6 === 'ula' ? nodeForm.subnet6 + ' + NAT' : '不启用' },
+      { label: '保留端口', value: nodeForm.reserved.join(', ') },
+    ]);
+    const applyTasks = computed(() => [
+      nodeForm.mode === 'ssh' ? '通过 SSH 上传配置文件' : '下发节点配置到 Agent',
+      ...(nodeForm.dhcp && !detect.dhcp ? ['安装 dnsmasq 并写入 /etc/dnsmasq.d/pve-forward.conf'] : []),
+      `配置网桥 ${nodeForm.lan === '__new' ? nodeForm.newBridge : nodeForm.lan} 地址并 ifreload -a`,
+      '开启 IPv4' + (nodeForm.ipv6 === 'ula' && nodeForm.wanIp6 ? ' / IPv6' : '') + ' 转发（sysctl）',
+      '加载 nftables 表 inet pve_forward',
+      '上报虚拟机列表',
+      ...(nodeForm.mode === 'ssh' ? ['写入开机加载规则的 systemd 服务'] : []),
+      '节点标记为就绪',
+    ]);
+    const applying = ref(false), applied = ref(false), applyIdx = ref(0);
+    const applyNode = () => {
+      applying.value = true; applyIdx.value = 0;
+      const tick = () => {
+        if (applyIdx.value < applyTasks.value.length - 1) { applyIdx.value++; setTimeout(tick, 450); return; }
+        applied.value = true; applying.value = false;
+        const n = nodes.find(x => x.id === nodeForm.id);
+        if (n) Object.assign(n, { status: 'online', initialized: true, lastSeen: '刚刚', wan: nodeForm.wan, wanIp: nodeForm.wanIp, wanIp6: nodeForm.wanIp6,
+          lan: nodeForm.lan === '__new' ? nodeForm.newBridge : nodeForm.lan, subnet: nodeForm.subnet, subnet6: nodeForm.ipv6 === 'ula' ? nodeForm.subnet6 : '',
+          dhcp: detect.dhcp || (nodeForm.dhcp ? 'dnsmasq' : '无'), reserved: [...nodeForm.reserved], cpu: 6, cores: 24, mem: 18, memTotal: 96, disk: 9, diskTotal: 1.92,
+          load: '0.42 0.38 0.30', uptime: '2 天', netIn: 0.4, netOut: 0.6 });
+      };
+      setTimeout(tick, 450);
+    };
+    const editNode = reactive({});
+    const openNode = n => { Object.assign(editNode, JSON.parse(JSON.stringify(n))); page.value = 'node-edit'; };
+    const cmdVisible = ref(false), cmdNode = reactive({});
+    const showCmd = n => { Object.assign(cmdNode, n, { token: genToken() }); cmdVisible.value = true; };
+
+    // ---------------- 仪表盘 ----------------
+    const scopeRules = computed(() => isAdmin.value ? allRules.value : me.value.rules.map(r => Object.assign(r, { owner: me.value.name })));
+    const stats = computed(() => {
+      const rs = scopeRules.value, err = rs.filter(r => r.enabled && ruleErr(r)).length;
+      const ruleStat = { title: '转发规则', value: rs.length, unit: '条', sub: `正常 ${rs.filter(r => r.enabled && !ruleErr(r)).length} · 异常 ${err} · 停用 ${rs.filter(r => !r.enabled).length}`, icon: 'icon-swap', color: 'rgb(var(--green-6))' };
+      const traffic = { title: '今日流量', value: isAdmin.value ? 8.76 : 4.17, precision: 2, unit: 'GB', sub: isAdmin.value ? '入 2.47 · 出 6.29' : '入 1.12 · 出 3.05', icon: 'icon-cloud-download', color: 'rgb(var(--orange-6))' };
+      return isAdmin.value ? [
+        { title: '在线节点', value: nodes.filter(n => n.status === 'online').length, unit: '/ ' + nodes.length, sub: `离线 ${nodes.filter(n => n.status === 'offline').length} · 待初始化 ${nodes.filter(n => !n.initialized).length}`, icon: 'icon-cloud', color: 'rgb(var(--arcoblue-6))' },
+        { title: '用户', value: users.length, unit: '人', sub: `正常 ${users.filter(u => u.status === '正常').length} · 流量超限 ${users.filter(u => u.status === '流量超限').length}`, icon: 'icon-user-group', color: 'rgb(var(--purple-6))' },
+        ruleStat, traffic,
+      ] : [
+        { title: '我的端口', value: allPorts(me.value).length, unit: '个', sub: `${allocByNode(me.value).length} 个节点 · 已用 ${usedPorts(me.value).length}`, icon: 'icon-tag', color: 'rgb(var(--arcoblue-6))' },
+        { title: '我的虚拟机', value: vmsOf(me.value.name).length, unit: '台', sub: `运行中 ${vmsOf(me.value.name).filter(v => v.status === 'running').length}`, icon: 'icon-desktop', color: 'rgb(var(--purple-6))' },
+        ruleStat, traffic,
+      ];
+    });
+    const chartRange = ref('24h'), chartNode = ref('all');
+    const chart = computed(() => {
+      const W = 800, H = 280, L = 48, R = 12, T = 12, B = 28;
+      const n = chartRange.value === '24h' ? 24 : 7, k = chartNode.value === 'all' ? 1 : chartNode.value === 'hk' ? 0.7 : 0.3;
+      const inS = Array.from({ length: n }, (_, i) => k * (n === 24 ? 60 + 50 * Math.sin((i - 6) / 3.8) ** 2 + (i % 5) * 9 + (i > 18 ? 40 : 0) : 1800 + 600 * Math.sin(i * 1.3) ** 2 + i * 90));
+      const outS = inS.map((v, i) => v * (2.2 + 0.5 * Math.cos(i / 2)));
+      const max = Math.ceil(Math.max(...outS) / 100) * 100;
+      const x = i => L + i * (W - L - R) / (n - 1), y = v => H - B - v / max * (H - T - B);
+      const line = s => s.map((v, i) => (i ? 'L' : 'M') + x(i).toFixed(1) + ' ' + y(v).toFixed(1)).join(' ');
+      const area = s => line(s) + ` L${x(n - 1)} ${H - B} L${x(0)} ${H - B} Z`;
+      const fmt = v => v >= 1000 ? (v / 1000).toFixed(1) + ' GB' : Math.round(v) + ' MB';
+      return { W, H, L, R, inLine: line(inS), outLine: line(outS), inArea: area(inS), outArea: area(outS),
+        ticks: [0, 1, 2, 3, 4].map(q => ({ y: y(max * q / 4), label: fmt(max * q / 4) })),
+        xs: (n === 24 ? [0, 3, 6, 9, 12, 15, 18, 21, 23] : [0, 1, 2, 3, 4, 5, 6]).map(i => ({ x: x(i), label: n === 24 ? String(i).padStart(2, '0') + ':00' : `10-${String(5 + i).padStart(2, '0')}` })) };
+    });
+    const h24 = { 1: 636, 2: 11.0, 3: 12.0, 4: 0.04, 5: 238, 6: 12.3, 7: 0, 8: 0, 9: 30.1, 10: 0 };
+    const trend = { 1: 12.4, 2: -3.1, 3: 0, 4: 5.6, 5: 22.8, 6: -8.2, 7: 0, 8: 0, 9: 3.3, 10: 0 };
+    const fmtMB = v => v >= 1000 ? (v / 1000).toFixed(2) + ' GB' : v + ' MB';
+    const rankProto = ref('all');
+    const ranking = computed(() => scopeRules.value.filter(r => rankProto.value === 'all' || r.proto.includes(rankProto.value))
+      .slice().sort((a, b) => (h24[b.id] || 0) - (h24[a.id] || 0)));
+    const pieBy = ref('node');
+    const pie = computed(() => {
+      const palette = ['#165dff', '#14c9c9', '#ff7d00', '#722ed1', '#00b42a'];
+      const groups = pieBy.value === 'node' ? readyNodes.value.map((n, i) => [n.name, palette[i], r => r.node === n.id])
+        : pieBy.value === 'proto' ? [['TCP', '#165dff', r => r.proto === 'TCP'], ['UDP', '#ff7d00', r => r.proto === 'UDP'], ['TCP + UDP', '#14c9c9', r => r.proto === 'TCP + UDP']]
+        : [['IPv4', '#165dff', r => r.ipver === 'v4'], ['IPv6', '#722ed1', r => r.ipver === 'v6'], ['IPv4 + IPv6', '#00b42a', r => r.ipver === 'both']];
+      const C = 2 * Math.PI * 78, total = scopeRules.value.length;
+      let off = 0;
+      const segs = groups.map(([name, color, f]) => { const value = scopeRules.value.filter(f).length, len = total ? value / total * C : 0;
+        const seg = { name, color, value, len, off }; off += len; return seg; });
+      return { C, total, segs };
+    });
+    const quickOps = computed(() => isAdmin.value ? [
+      { text: '添加规则', icon: 'icon-plus-circle', run: () => openRule() },
+      { text: '添加用户', icon: 'icon-user-add', run: () => openNewUser() },
+      { text: '添加节点', icon: 'icon-cloud', run: () => openNewNode() },
+      { text: '资源监控', icon: 'icon-desktop', run: () => go('monitor') },
+      { text: '虚拟机', icon: 'icon-storage', run: () => go('vms') },
+      { text: '系统设置', icon: 'icon-settings', run: () => go('settings') },
+    ] : [
+      { text: '添加规则', icon: 'icon-plus-circle', run: () => openRule() },
+      { text: '我的规则', icon: 'icon-swap', run: () => go('rules') },
+      { text: '资源监控', icon: 'icon-desktop', run: () => go('monitor') },
+    ]);
+    const recent = computed(() => isAdmin.value
+      ? [{ text: '转发规则', icon: 'icon-swap', key: 'rules' }, { text: '节点列表', icon: 'icon-cloud', key: 'nodes' }, { text: '用户列表', icon: 'icon-user-group', key: 'users' }]
+      : [{ text: '转发规则', icon: 'icon-swap', key: 'rules' }, { text: '资源监控', icon: 'icon-desktop', key: 'monitor' }, { text: '个人资料', icon: 'icon-user', key: 'profile' }]);
+    const events = computed(() => {
+      const list = [
+        ...nodes.filter(n => n.status === 'offline').map(n => ({ who: '*', type: 'red', label: '离线', content: `节点 ${n.name} 已离线 ${n.lastSeen.replace('前', '')}` })),
+        ...allRules.value.filter(r => r.enabled && r.err).map(r => ({ who: r.owner, type: 'red', label: '异常', content: `${r.owner} · ${nodeOf(r.node).name}:${r.port} ${r.err}` })),
+        { who: 'admin', type: 'orangered', label: '告警', content: 'pve-sg 内存使用率 88%，超过阈值 85%' },
+        ...nodes.filter(n => n.status === 'pending').map(n => ({ who: 'admin', type: 'gold', label: '待办', content: `节点 ${n.name} 已连接，等待网络初始化` })),
+        { who: 'carol', type: 'orangered', label: '告警', content: 'carol 流量已达上限 100 GB，规则已自动停用' },
+        { who: 'alice', type: 'cyan', label: '通知', content: 'alice 新增规则 pve-sg:20000 → sg-web:22' },
+      ];
+      return isAdmin.value ? list.filter(e => e.who !== '*' || true) : list.filter(e => e.who === me.value.name);
+    });
+
+    // ---------------- 资源监控 ----------------
+    const monNode = ref('all'), monType = ref('all'), monStatus = ref('all'), monKw = ref(''), monMode = ref('bars'), monGroup = ref(true), monRefresh = ref('5s');
+    const monUpdated = ref(new Date().toLocaleTimeString());
+    setInterval(() => { if (monRefresh.value !== 'off') monUpdated.value = new Date().toLocaleTimeString(); }, 5000);
+    // 公开监控页（无需登录；按设置裁剪可见内容）
+    const isPublic = computed(() => page.value === 'public');
+    const monAll = computed(() => isAdmin.value || isPublic.value);
+    const pub = reactive({ enabled: true, slug: 'k8f2x9qa', access: 'open', pwd: '', title: 'PVE Forward 状态', desc: '节点与虚拟机实时资源状态',
+      refresh: '30 秒', nodes: ['hk', 'sg', 'jp'], showNodes: true, showVms: true, showDetail: true, showIp: false, showOwner: false, onlyShared: false });
+    const pubUnlocked = ref(false), pubPwd = ref(''), pubPwdErr = ref('');
+    const unlockPub = () => { if (pubPwd.value && pubPwd.value === pub.pwd) { pubUnlocked.value = true; pubPwdErr.value = ''; } else pubPwdErr.value = '访问密码不正确'; };
+    const openPublic = () => { pubUnlocked.value = false; pubPwd.value = ''; pubPwdErr.value = ''; monNode.value = 'all'; page.value = 'public'; };
+    const monNodes = computed(() => isPublic.value ? readyNodes.value.filter(n => pub.nodes.includes(n.id)) : readyNodes.value);
+    const pct = (u, t) => t ? Math.round(u / t * 100) : 0;
+    const fmtRate = v => v >= 1 ? v.toFixed(1) + ' MB/s' : Math.round(v * 1024) + ' KB/s';
+    const monVms = computed(() => (isPublic.value ? vms.filter(v => pub.nodes.includes(v.node) && (!pub.onlyShared || v.shared)) : isAdmin.value ? vms : vmsOf(me.value.name))
+      .filter(v => monNode.value === 'all' || v.node === monNode.value)
+      .filter(v => monType.value === 'all' || v.type === monType.value)
+      .filter(v => monStatus.value === 'all' || v.status === monStatus.value)
+      .filter(v => !monKw.value || [v.vmid, v.host, v.v4].join(' ').includes(monKw.value)));
+    const monRows = computed(() => {
+      const list = monVms.value.map(v => Object.assign(v, { key: 'v' + v.id }));
+      if (!monAll.value || !monGroup.value) return list;
+      return monNodes.value.map(n => ({ key: 'n-' + n.id, group: true, node: n, children: list.filter(v => v.node === n.id) })).filter(g => g.children.length);
+    });
+    const monExpanded = ref(['n-hk', 'n-sg', 'n-jp']);
+    const monColumns = computed(() => [
+      { title: '名称', slotName: 'name', width: 190, sortable: { sortDirections: ['ascend', 'descend'] }, dataIndex: 'host' },
+      { title: '类型', slotName: 'type', width: 64 },
+      ...(isPublic.value && !pub.showOwner ? [] : [{ title: '归属', slotName: 'owner', width: 90 }]),
+      { title: '运行时长', slotName: 'uptime', width: 96 },
+      { title: 'CPU', slotName: 'cpu', width: 200, dataIndex: 'cpu', sortable: { sortDirections: ['descend', 'ascend'] } },
+      { title: '内存', slotName: 'mem', width: 200, dataIndex: 'memU', sortable: { sortDirections: ['descend', 'ascend'] } },
+      { title: '磁盘', slotName: 'disk', width: 200 },
+      { title: '磁盘 IO', slotName: 'io', width: 130 },
+      { title: '网络', slotName: 'net', width: 120 },
+      ...(isPublic.value && !pub.showIp ? [] : [{ title: 'IP', slotName: 'ip', width: 130 }]),
+    ]);
+    const monSpan = ({ record, columnIndex }) => {
+      if (!record.group) return;
+      return columnIndex === 0 ? { rowspan: 1, colspan: monColumns.value.length } : { rowspan: 0, colspan: 0 };
+    };
+    const monSummary = computed(() => {
+      const scope = isPublic.value ? monVms.value : isAdmin.value ? vms : vmsOf(me.value.name), run = scope.filter(v => v.status === 'running');
+      const on = monNodes.value.filter(n => n.status === 'online');
+      const avgCpu = on.length ? Math.round(on.reduce((s, n) => s + n.cpu, 0) / on.length) : 0;
+      const memU = on.reduce((s, n) => s + n.memTotal * n.mem / 100, 0), memT = on.reduce((s, n) => s + n.memTotal, 0);
+      return monAll.value ? [
+        { title: '在线节点', value: on.length, unit: '/ ' + monNodes.value.length, sub: '离线 ' + monNodes.value.filter(n => n.status === 'offline').length, color: 'rgb(var(--green-6))' },
+        { title: '运行中', value: run.length, unit: '/ ' + scope.length + ' 台', sub: `VM ${run.filter(v => v.type === 'qemu').length} · CT ${run.filter(v => v.type === 'lxc').length}` },
+        { title: '平均 CPU', value: avgCpu, unit: '%', sub: '在线节点平均', color: lvl(avgCpu) },
+        { title: '内存使用', value: Math.round(memU), unit: '/ ' + memT + ' GB', sub: pct(memU, memT) + '%', color: lvl(pct(memU, memT)) },
+        { title: '磁盘繁忙', value: on.flatMap(n => nodeIo[n.id].disks).filter(d => ['繁忙', '饱和'].includes(busyOf(d.util, d.await).text)).length, unit: '/ ' + on.flatMap(n => nodeIo[n.id].disks).length + ' 块',
+          sub: '最高 IO 等待 ' + Math.max(0, ...on.map(n => nodeIo[n.id].iowait)) + '%', color: on.some(n => nodeIo[n.id].disks.some(d => busyOf(d.util, d.await).text === '饱和')) ? '#f53f3f' : '#ff7d00' },
+        { title: '资源告警', value: run.filter(v => v.cpu >= 85 || pct(v.memU, v.memT) >= 85 || pct(v.diskU, v.diskT) >= 85 || vmBusy(v).text === '饱和').length + on.filter(n => n.mem >= 85).length, unit: '项', sub: 'CPU / 内存 / 磁盘', color: 'rgb(var(--red-6))' },
+      ] : [
+        { title: '我的虚拟机', value: scope.length, unit: '台', sub: '运行中 ' + run.length },
+        { title: 'CPU 合计', value: run.reduce((s, v) => s + v.cpu * v.cores / 100, 0), precision: 1, unit: '核', sub: '共 ' + scope.reduce((s, v) => s + v.cores, 0) + ' 核' },
+        { title: '内存', value: run.reduce((s, v) => s + v.memU, 0), precision: 1, unit: 'GB', sub: '共 ' + scope.reduce((s, v) => s + v.memT, 0) + ' GB' },
+        { title: '磁盘', value: scope.reduce((s, v) => s + v.diskU, 0), unit: 'GB', sub: '共 ' + scope.reduce((s, v) => s + v.diskT, 0) + ' GB' },
+        { title: '网络出向', value: run.reduce((s, v) => s + v.no, 0), precision: 1, unit: 'MB/s', sub: '入向 ' + run.reduce((s, v) => s + v.ni, 0).toFixed(1) + ' MB/s' },
+        { title: '磁盘繁忙', value: run.filter(v => ['繁忙', '饱和'].includes(vmBusy(v).text)).length, unit: '台', sub: '按 IOPS 与延迟判断', color: '#ff7d00' },
+      ];
+    });
+    const monDrawer = ref(false), monVm = ref({}), monRange = ref('1h');
+    const openMonVm = v => { monVm.value = v; monDrawer.value = true; };
+    const monCharts = computed(() => {
+      const v = monVm.value, n = monRange.value === '1h' ? 60 : monRange.value === '24h' ? 96 : 84, on = v.status === 'running';
+      const s = (m, b) => on ? spark(v.id + monRange.value, m, n, b) : Array(n).fill(0);
+      const from = { '1h': '1 小时前', '24h': '24 小时前', '7d': '7 天前' }[monRange.value];
+      return [
+        { title: 'CPU', now: on ? v.cpu + '%' : '-', a: s('cpu', v.cpu), color: '#165dff', from, legend: v.cores + ' 核' },
+        { title: '内存', now: on ? v.memU + ' / ' + v.memT + ' GB' : '-', a: s('mem', pct(v.memU, v.memT)), color: '#722ed1', from, legend: '使用率' },
+        { title: '网络', now: on ? '↓ ' + fmtRate(v.ni) + '  ↑ ' + fmtRate(v.no) : '-', a: s('ni', 30), b: s('no', 55), color: '#00b42a', from, legend: '入 / 出' },
+        { title: '磁盘 IO', now: on ? '读 ' + fmtRate(v.dr) + '  写 ' + fmtRate(v.dw) : '-', a: s('dr', 20), b: s('dw', 35), color: '#14c9c9', from, legend: '读 / 写' },
+        { title: '磁盘 IOPS', now: on ? fmtK(vmIo(v).iops) + ' IOPS' : '-', a: s('iops', Math.min(vmIo(v).iops / 80, 95)), color: '#ff7d00', from, legend: '读 + 写' },
+        { title: '磁盘延迟', now: on ? vmIo(v).lat + ' ms · ' + vmBusy(v).text : '-', a: s('lat', Math.min(vmIo(v).lat * 2, 95)), color: '#f53f3f', from, legend: '平均延迟' },
+      ];
+    });
+
+    // ---------------- 登录 / 原型切换 ----------------
+    const loginForm = reactive({ username: '', password: '' });
+    const enter = admin => { isAdmin.value = admin; currentName.value = admin ? 'admin' : 'alice'; resetQuery(); monNode.value = 'all'; page.value = 'dash'; };
+    const doLogin = () => enter(loginForm.username === 'admin');
+    const openSetup = () => { setupStep.value = 1; page.value = 'setup'; };
+    const switchProto = v => v === 'public' ? openPublic() : v === 'setup' ? openSetup() : v === 'login' ? (page.value = 'login') : enter(v === 'admin');
+
+    return {
+      page, isAdmin, collapsed, me, users, ownerOf, menuKey, go, openKeys, expand,
+      setupStep, setupErr, setupForm, setupNext, agentUrl, agentCmd, copyCmd,
+      nodes, nodeOf, readyNodes, nodeBadge, vms, vmOf, vmsOf, ipverName, hasV, ipLabel, entryLines, exitLines,
+      allRules, ruleErr, allPorts, usedPorts, ruleUsedOn, freePorts, portStat, allocByNode, allocTypeName, totalAllocated,
+      query, resetQuery, density, grouped, visibleRules, errRules, tableRows, expandedKeys, selectedKeys, selectedRules, batchSet, columns, spanMethod,
+      ruleVisible, ruleForm, openRule, onOwnerChange, onRuleNodeChange, v6Allowed, onVmChange, ipverHint,
+      vmKw, vmOnlyFree, vmOwner, vmNode, vmRuleCount, syncPve, vmChoices, selectedVms, vmPreview, vmRows, assignVm, togglePublic, reclaimVm,
+      userForm, allocForm, allocErr, openUser, step, stepErr, openNewUser, nextStep, addAlloc,
+      nodeStep, nodeErr, nodeForm, agentConn, detect, mockConnect, regenToken, openNewNode, resumeNode, initNode, nodeNext,
+      gw, range, bridgeCidr, subnetDiffers, onBridgeChange, redetect, nodeSummary, applyTasks, applying, applied, applyIdx, applyNode,
+      editNode, openNode, cmdVisible, cmdNode, showCmd,
+      sshTasks, sshCheck, trustHostKey, testSsh, creds, credOf, credKw, credVisible, credForm, genPub, openCred, saveCred,
+      stats, chartRange, chartNode, chart, h24, trend, fmtMB, rankProto, ranking, pieBy, pie, quickOps, recent, events,
+      monNode, monType, monStatus, monKw, monMode, monGroup, monRefresh, monUpdated, monNodes, pct, fmtRate, lvl, spark, sparkPath,
+      nodeIo, vmIo, busyOf, vmBusy, fmtK, monRows, monExpanded, monColumns, monSpan, monSummary, monDrawer, monVm, monRange, openMonVm, monCharts,
+      loginForm, doLogin, switchProto, isPublic, monAll, pub, pubUnlocked, pubPwd, pubPwdErr, unlockPub, openPublic,
+    };
+  }
+}).component('mon-cell', MonCell).use(ArcoVue).use(ArcoVueIcon).mount('#app');
+</script>
+</body>
+</html>

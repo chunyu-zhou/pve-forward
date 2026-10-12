@@ -1,0 +1,26 @@
+services:
+  controller:
+    image: ghcr.io/chunyu-zhou/pve-forward:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    ports:
+      - "${BIND_ADDRESS:-0.0.0.0}:${PORT:-5000}:5000"
+    environment:
+      PVE_FORWARD_LISTEN: ":5000"
+      PVE_FORWARD_TLS: "${TLS_MODE:-self}"
+      PVE_FORWARD_PUBLIC_URL: "${PUBLIC_URL:?Set PUBLIC_URL in .env to the external origin including the port}"
+      PVE_FORWARD_ADMIN_USER: "${ADMIN_USER:?Set ADMIN_USER in .env}"
+      PVE_FORWARD_ADMIN_PASSWORD: "${ADMIN_PASSWORD:?Set ADMIN_PASSWORD in .env}"
+      PVE_FORWARD_SITE: "${SITE_NAME:-PVE Forward}"
+    volumes:
+      - controller-data:/var/lib/pve-forward
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    stop_grace_period: 30s
+
+volumes:
+  controller-data:

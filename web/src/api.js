@@ -1,0 +1,158 @@
+import { reactive } from 'vue'
+import { Message } from '@arco-design/web-vue'
+
+// 全局会话状态
+export const session = reactive({ loaded: false, setup: false, site: 'PVE Forward', version: '', user: null, updateAvailable: '' })
+
+export const isAdmin = () => session.user?.role === 'admin'
+
+export class ApiError extends Error {
+  constructor(status, message) {
+    super(message)
+    this.status = status
+  }
+}
+
+async function request(method, url, body, opts = {}) {
+  const headers = { 'X-Requested-With': 'pveforward', ...(opts.headers || {}) }
+  if (body !== undefined) headers['Content-Type'] = 'application/json'
+  const resp = await fetch(url, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), credentials: 'same-origin' })
+  if (opts.raw) return resp
+  const text = await resp.text()
+  let data = null
+  try { data = text ? JSON.parse(text) : null } catch { data = null }
+  if (!resp.ok) {
+    const msg = data?.error || `请求失败（${resp.status}）`
+    if (resp.status === 401 && !opts.allow401 && session.user) {
+      session.user = null
+      location.hash = '#/login'
+    }
+    if (!opts.silent) Message.error(msg)
+    throw new ApiError(resp.status, msg)
+  }
+  return data
+}
+
+export const api = {
+  get: (url, opts) => request('GET', url, undefined, opts),
+  post: (url, body, opts) => request('POST', url, body ?? {}, opts),
+  put: (url, body, opts) => request('PUT', url, body ?? {}, opts),
+  del: (url, opts) => request('DELETE', url, undefined, opts),
+  raw: (method, url, body) => request(method, url, body, { raw: true }),
+}
+
+export async function loadSession() {
+  const b = await api.get('/api/bootstrap')
+  Object.assign(session, { loaded: true, setup: b.setup, site: b.site, version: b.version, user: b.user || null, updateAvailable: b.updateAvailable || '' })
+  document.title = b.site
+}
+
+// 读取 NDJSON 流式响应，逐行回调
+export async function streamNDJSON(url, body, onLine) {
+  const resp = await api.raw('POST', url, body)
+  if (!resp.ok) {
+    let msg = `请求失败（${resp.status}）`
+    try { msg = (await resp.json()).error || msg } catch { /* ignore */ }
+    throw new ApiError(resp.status, msg)
+  }
+  const reader = resp.body.getReader()
+  const dec = new TextDecoder()
+  let buf = ''
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (value) buf += dec.decode(value, { stream: true })
+    let i
+    while ((i = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, i).trim()
+      buf = buf.slice(i + 1)
+      if (line) onLine(JSON.parse(line))
+    }
+    if (done) break
+  }
+}
+
+// ---------------- 格式化 ----------------
+
+export function fmtBytes(b, digits = 1) {
+  b = Number(b) || 0
+  const u = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']
+  let i = 0
+  while (b >= 1024 && i < u.length - 1) { b /= 1024; i++ }
+  return (i === 0 ? b : b.toFixed(digits)) + ' ' + u[i]
+}
+
+export const fmtRate = b => fmtBytes(b) + '/s'
+
+export function fmtK(n) {
+  n = Number(n) || 0
+  return n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(Math.round(n))
+}
+
+export function fmtUptime(s) {
+  s = Number(s) || 0
+  if (s <= 0) return '-'
+  const d = Math.floor(s / 86400)
+  if (d > 0) return d + ' 天'
+  const h = Math.floor(s / 3600)
+  if (h > 0) return h + ' 小时'
+  return Math.max(1, Math.floor(s / 60)) + ' 分钟'
+}
+
+export function fmtAgo(ts) {
+  if (!ts) return '-'
+  const s = Math.floor(Date.now() / 1000 - ts)
+  if (s < 10) return '刚刚'
+  if (s < 60) return s + ' 秒前'
+  if (s < 3600) return Math.floor(s / 60) + ' 分钟前'
+  if (s < 86400) return Math.floor(s / 3600) + ' 小时前'
+  return Math.floor(s / 86400) + ' 天前'
+}
+
+export function fmtTime(ts) {
+  if (!ts) return '-'
+  const d = new Date(ts * 1000)
+  const p = n => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+}
+
+export const pct = (u, t) => (t ? Math.round((u / t) * 100) : 0)
+
+// 使用率颜色
+export const lvl = p => (p >= 85 ? '#f53f3f' : p >= 65 ? '#ff7d00' : '#00b42a')
+
+export const protoName = { tcp: 'TCP', udp: 'UDP', both: 'TCP + UDP' }
+export const ipverName = { v4: 'IPv4', v6: 'IPv6', both: 'IPv4 + IPv6' }
+export const allocKindName = { single: '单个', multi: '多个', range: '范围' }
+
+export const nodeBadge = {
+  online: { badge: 'success', text: '在线' },
+  offline: { badge: 'danger', text: '离线' },
+  pending: { badge: 'warning', text: '待初始化' },
+  waiting: { badge: 'normal', text: '等待连接' },
+}
+
+// 复制文本（HTTP 下 navigator.clipboard 不可用时回退）
+export async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text)
+  } catch {
+    const ta = document.createElement('textarea')
+    ta.value = text
+    document.body.appendChild(ta)
+    ta.select()
+    document.execCommand('copy')
+    ta.remove()
+  }
+  Message.success('已复制')
+}
+
+// 展开端口分配
+export function expandAlloc(a) {
+  if (a.kind === 'range') {
+    const [f, t] = a.spec.split('-').map(Number)
+    const r = []
+    for (let p = f; p <= t; p++) r.push(p)
+    return r
+  }
+  return a.spec.split(',').map(Number)
+}
