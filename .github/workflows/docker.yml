@@ -90,7 +90,12 @@ jobs:
           if ! released "$version"; then
             new_release=true
             printf 'version.json 中的 v%s 尚未发布，验证通过后发布。\n' "$version"
-          elif [[ "$CAN_RELEASE" == true ]]; then
+          elif [[ "$CAN_RELEASE" != true ]]; then
+            printf 'v%s 已发布；本次不发布新版本。\n' "$version"
+          elif [[ -z "$(git diff --name-only "v${version}..HEAD" -- cmd internal web version.go go.mod go.sum Dockerfile .dockerignore install.sh tools/build-release.sh ':(exclude)*.md' 2>/dev/null)" ]]; then
+            # 只改了工作流、文档等：程序没有变化，不发布新版本
+            printf '自 v%s 以来没有程序代码改动，不发布新版本。\n' "$version"
+          else
             base=${version%%-*}
             IFS=. read -r major minor patch <<< "$base"
             if [[ "$version" == *-* ]]; then next=$base; else next="$major.$minor.$((patch + 1))"; fi
@@ -107,8 +112,6 @@ jobs:
             version=$next
             new_release=true
             auto=true
-          else
-            printf 'v%s 已发布；本次不发布新版本。\n' "$version"
           fi
           printf 'version=%s\nnew-release=%s\nauto=%s\n' "$version" "$new_release" "$auto" >> "$GITHUB_OUTPUT"
           printf 'version-json=%s\n' "$(jq -c . version.json)" >> "$GITHUB_OUTPUT"
@@ -413,13 +416,19 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # 每项检查失败都输出 ::error::，原因会显示在运行摘要中
+          fail() { printf '::error::%s\n' "$*"; exit 1; }
           pkg="release/pve-forward-${VERSION}"
-          test "$(jq -er '.version' version.json | sed 's/^v//')" = "$VERSION"
-          # 在线更新会运行下载的程序核对版本；这里先确认产物架构与校验和
-          file "$pkg/pve-forward-linux-amd64" | grep -q 'x86-64'
-          file "$pkg/pve-forward-linux-arm64" | grep -q 'aarch64'
-          test "$("$pkg/pve-forward-linux-amd64" version)" = "$VERSION"
-          (cd "$pkg" && sha256sum -c SHA256SUMS)
+          v=$(jq -er '.version' version.json) || fail "无法读取 version.json：$(head -c 200 version.json)"
+          [[ "${v#v}" == "$VERSION" ]] || fail "version.json 中的版本 $v 与 $VERSION 不一致"
+          # 在线更新会运行下载的程序核对版本；这里先确认产物架构、版本与校验和
+          info=$(file "$pkg/pve-forward-linux-amd64") || fail "找不到 amd64 程序"
+          [[ "$info" == *x86-64* ]] || fail "amd64 程序架构不正确：$info"
+          info=$(file "$pkg/pve-forward-linux-arm64") || fail "找不到 arm64 程序"
+          [[ "$info" == *aarch64* ]] || fail "arm64 程序架构不正确：$info"
+          got=$("$pkg/pve-forward-linux-amd64" version 2>&1) || fail "运行 amd64 程序失败：$got"
+          [[ "$got" == "$VERSION" ]] || fail "程序版本 $got 与 $VERSION 不一致"
+          out=$(cd "$pkg" && sha256sum -c SHA256SUMS 2>&1) || fail "校验和不一致：$out"
           notes=$(jq -r '.notes // ""' version.json)
           date=$(jq -r '.date // ""' version.json)
           {
@@ -428,14 +437,21 @@ jobs:
             printf 'Docker 镜像：%s:%s\n\n' "$IMAGE" "$VERSION"
             printf '控制台一小时内会检测到此版本，可在“系统设置 → 版本更新”中在线更新，或在部署目录执行 docker compose pull && docker compose up -d。\n'
           } > "$RUNNER_TEMP/notes.md"
+          assets=("$pkg/pve-forward-linux-amd64" "$pkg/pve-forward-linux-arm64"
+            "$pkg/pve-forward-agent-linux-amd64" "$pkg/pve-forward-agent-linux-arm64"
+            "$pkg/install.sh" "$pkg/README.md" "$pkg/BUILD-INFO.txt" "$pkg/SHA256SUMS"
+            "release/pve-forward-${VERSION}.tar.gz" "release/pve-forward-${VERSION}.tar.gz.sha256")
+          for a in "${assets[@]}"; do [[ -s "$a" ]] || fail "缺少发布文件 $a"; done
           prerelease=()
           if [[ "$VERSION" == *-* ]]; then prerelease=(--prerelease); fi
-          gh release create "v${VERSION}" --target "$GITHUB_SHA" --title "v${VERSION}" \
-            --notes-file "$RUNNER_TEMP/notes.md" "${prerelease[@]}" \
-            "$pkg/pve-forward-linux-amd64" "$pkg/pve-forward-linux-arm64" \
-            "$pkg/pve-forward-agent-linux-amd64" "$pkg/pve-forward-agent-linux-arm64" \
-            "$pkg/install.sh" "$pkg/README.md" "$pkg/BUILD-INFO.txt" "$pkg/SHA256SUMS" \
-            "release/pve-forward-${VERSION}.tar.gz" "release/pve-forward-${VERSION}.tar.gz.sha256"
+          # 重新运行时 Release 可能已存在：覆盖上传文件即可
+          if gh release view "v${VERSION}" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            out=$(gh release upload "v${VERSION}" --repo "$GITHUB_REPOSITORY" --clobber "${assets[@]}" 2>&1) || fail "上传 Release 文件失败：$out"
+          else
+            out=$(gh release create "v${VERSION}" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "v${VERSION}" \
+              --notes-file "$RUNNER_TEMP/notes.md" "${prerelease[@]}" "${assets[@]}" 2>&1) || fail "创建 Release 失败：$out"
+          fi
+          printf '已发布 v%s\n' "$VERSION"
       # 自动加版本时把新的 version.json 写回仓库，控制台读取它检测新版本。
       # 使用 GITHUB_TOKEN 推送的提交不会再次触发工作流。
       - name: Write version.json back to repository

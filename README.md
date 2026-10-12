@@ -185,7 +185,7 @@ docker compose up -d
 
 版本号保存在仓库根目录的 [version.json](version.json)，程序编译时嵌入它，控制台也读取 GitHub 上的这个文件判断是否有新版本。**一般不需要手动修改**：
 
-- **自动发布**：程序代码推送到 `main` 并通过构建后，GitHub 自动把修订号 +1（如 1.0.1 → 1.0.2），更新说明取自本次的提交信息；依次发布版本镜像（`1.0.2`、`1.0`、`latest`）和 GitHub Release `v1.0.2`，最后由 `github-actions[bot]` 把新版本写回 `version.json`（提交信息为 `chore: 发布 v1.0.2 [skip ci]`）。只改 README 等文档不会发布新版本。
+- **自动发布**：程序代码推送到 `main` 并通过构建后，GitHub 自动把修订号 +1（如 1.0.1 → 1.0.2），更新说明取自本次的提交信息；依次发布版本镜像（`1.0.2`、`1.0`、`latest`）和 GitHub Release `v1.0.2`，最后由 `github-actions[bot]` 把新版本写回 `version.json`（提交信息为 `chore: 发布 v1.0.2 [skip ci]`）。只改 README 等文档或 GitHub 工作流不会发布新版本。
 - **手动指定版本**：想升级次版本或主版本（如 1.1.0、2.0.0），或者自己写更新说明时，修改 `version.json` 后推送即可，GitHub 按该版本发布：
 
   ```json
