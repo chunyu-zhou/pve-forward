@@ -383,7 +383,31 @@ func (s *Server) spa() http.Handler {
 
 // ---------------- 认证 ----------------
 
-const cookieName = "pf_session"
+// 会话 Cookie：HTTPS 与 HTTP 使用不同的名称。浏览器不允许 HTTP 页面覆盖同名的 Secure Cookie，
+// 若共用一个名称，从 HTTPS 切换为 HTTP（或反向代理）后会因旧 Cookie 无法登录。
+const (
+	cookieName     = "pf_session"
+	cookieNameHTTP = "pf_session_http"
+)
+
+func secureRequest(r *http.Request) bool {
+	return r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https"
+}
+
+func sessionCookieName(r *http.Request) string {
+	if secureRequest(r) {
+		return cookieName
+	}
+	return cookieNameHTTP
+}
+
+// sessionToken 返回当前请求的会话令牌，没有时为空。
+func sessionToken(r *http.Request) string {
+	if c, err := r.Cookie(sessionCookieName(r)); err == nil {
+		return c.Value
+	}
+	return ""
+}
 
 func (s *Server) auth(h http.HandlerFunc, admin bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -391,12 +415,12 @@ func (s *Server) auth(h http.HandlerFunc, admin bool) http.Handler {
 			jsonErr(w, http.StatusPreconditionRequired, "控制端尚未初始化")
 			return
 		}
-		c, err := r.Cookie(cookieName)
-		if err != nil {
+		tok := sessionToken(r)
+		if tok == "" {
 			jsonErr(w, http.StatusUnauthorized, "请先登录")
 			return
 		}
-		u, err := s.db.SessionUser(secret.Hash(c.Value))
+		u, err := s.db.SessionUser(secret.Hash(tok))
 		if err != nil {
 			jsonErr(w, http.StatusUnauthorized, "登录已过期，请重新登录")
 			return
@@ -432,7 +456,7 @@ func (s *Server) startSession(w http.ResponseWriter, r *http.Request, uid int64)
 	if err := s.db.CreateSession(secret.Hash(tok), uid, time.Duration(days)*24*time.Hour); err != nil {
 		return err
 	}
-	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: tok, Path: "/", HttpOnly: true, Secure: r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https",
+	http.SetCookie(w, &http.Cookie{Name: sessionCookieName(r), Value: tok, Path: "/", HttpOnly: true, Secure: secureRequest(r),
 		SameSite: http.SameSiteLaxMode, MaxAge: days * 86400})
 	return nil
 }

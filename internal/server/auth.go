@@ -20,8 +20,8 @@ var usernameRe = regexp.MustCompile(`^[A-Za-z0-9_]{3,20}$`)
 func (s *Server) bootstrap(w http.ResponseWriter, r *http.Request) {
 	st := s.settings()
 	res := map[string]any{"setup": s.setupDone(), "site": st.Site, "version": Version}
-	if c, err := r.Cookie(cookieName); err == nil && s.setupDone() {
-		if u, err := s.db.SessionUser(secret.Hash(c.Value)); err == nil {
+	if tok := sessionToken(r); tok != "" && s.setupDone() {
+		if u, err := s.db.SessionUser(secret.Hash(tok)); err == nil {
 			res["user"] = u
 			if u.Role == "admin" {
 				s.rememberOrigin(r)
@@ -167,10 +167,10 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
-	if c, err := r.Cookie(cookieName); err == nil {
-		s.db.DeleteSession(secret.Hash(c.Value))
+	if tok := sessionToken(r); tok != "" {
+		s.db.DeleteSession(secret.Hash(tok))
 	}
-	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: "", Path: "/", MaxAge: -1, HttpOnly: true})
+	http.SetCookie(w, &http.Cookie{Name: sessionCookieName(r), Value: "", Path: "/", MaxAge: -1, HttpOnly: true, Secure: secureRequest(r)})
 	writeJSON(w, map[string]bool{"ok": true})
 }
 
@@ -198,8 +198,7 @@ func (s *Server) changePassword(w http.ResponseWriter, r *http.Request) {
 	h, _ := hashPassword(req.New)
 	s.db.Exec(`UPDATE users SET password_hash=? WHERE id=?`, h, u.ID)
 	// 使其他会话失效
-	c, _ := r.Cookie(cookieName)
-	s.db.Exec(`DELETE FROM sessions WHERE user_id=? AND token_hash<>?`, u.ID, secret.Hash(c.Value))
+	s.db.Exec(`DELETE FROM sessions WHERE user_id=? AND token_hash<>?`, u.ID, secret.Hash(sessionToken(r)))
 	writeJSON(w, map[string]bool{"ok": true})
 }
 
