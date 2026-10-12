@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -180,7 +181,6 @@ func TestBootstrapEnvRejectsInvalidConfiguration(t *testing.T) {
 		{"short password", func(e map[string]string) { e["PVE_FORWARD_ADMIN_PASSWORD"] = "secret" }},
 		{"long password", func(e map[string]string) { e["PVE_FORWARD_ADMIN_PASSWORD"] = strings.Repeat("x", 73) }},
 		{"utf8 byte length", func(e map[string]string) { e["PVE_FORWARD_ADMIN_PASSWORD"] = strings.Repeat("密", 25) }},
-		{"missing public origin", func(e map[string]string) { delete(e, "PVE_FORWARD_PUBLIC_URL") }},
 		{"origin credentials", func(e map[string]string) { e["PVE_FORWARD_PUBLIC_URL"] = "https://user:secret@example.com" }},
 		{"two password sources", func(e map[string]string) { e["PVE_FORWARD_ADMIN_PASSWORD_FILE"] = "missing-secret" }},
 		{"unreadable secret", func(e map[string]string) {
@@ -383,5 +383,83 @@ func TestCertFingerprintUsesRuntimeTLS(t *testing.T) {
 		if got := s.CertFingerprint(); got != tc.want {
 			t.Errorf("stored=%s override=%s got=%q want=%q", tc.stored, tc.override, got, tc.want)
 		}
+	}
+}
+
+// Docker 只配置账号密码时：初始化成功，访问地址在管理员首次访问时记录。
+func TestBootstrapEnvWithoutPublicURL(t *testing.T) {
+	s := newEnvTestServer(t)
+	s.listen = ":5601"
+	env := validBootstrapEnv()
+	delete(env, "PVE_FORWARD_PUBLIC_URL")
+	if err := s.BootstrapFromEnv(envLookup(env)); err != nil {
+		t.Fatal(err)
+	}
+	st := s.settings()
+	if !s.setupDone() || st.URL != "" || st.Port != 5601 || st.TLS != "self" {
+		t.Fatalf("unexpected settings: %+v", st)
+	}
+	env["PVE_FORWARD_TLS"] = "acme"
+	s2 := newEnvTestServer(t)
+	s2.TLSMode = "acme"
+	if err := s2.BootstrapFromEnv(envLookup(env)); err == nil {
+		t.Fatal("acme without a public domain must fail")
+	}
+}
+
+func TestRememberOrigin(t *testing.T) {
+	cases := []struct {
+		name, host, proto, fwdHost, tls string
+		https                           bool
+		wantURL                         string
+		wantPort                        int
+	}{
+		{name: "direct https", host: "203.0.113.10:5601", https: true, wantURL: "https://203.0.113.10", wantPort: 5601},
+		{name: "mapped port", host: "panel.example.com:8443", https: true, wantURL: "https://panel.example.com", wantPort: 8443},
+		{name: "reverse proxy", host: "127.0.0.1:5601", proto: "https", fwdHost: "panel.example.com", tls: "proxy", wantURL: "https://panel.example.com", wantPort: 443},
+		{name: "proxy keeps Host", host: "panel.example.com", proto: "https", tls: "proxy", wantURL: "https://panel.example.com", wantPort: 443},
+		{name: "ipv6", host: "[2001:db8::1]:5601", https: true, wantURL: "https://[2001:db8::1]", wantPort: 5601},
+		{name: "forwarded host ignored without proxy mode", host: "203.0.113.10:5601", fwdHost: "evil.example.com", https: true, wantURL: "https://203.0.113.10", wantPort: 5601},
+		{name: "invalid host", host: "bad host", https: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newEnvTestServer(t)
+			if tc.tls != "" {
+				st := s.settings()
+				st.TLS = tc.tls
+				s.db.SetSettingJSON("settings", st)
+			}
+			r := httptest.NewRequest("GET", "/api/bootstrap", nil)
+			r.Host = tc.host
+			if !tc.https {
+				r.TLS = nil
+			} else if r.TLS == nil {
+				r.TLS = &tls.ConnectionState{}
+			}
+			if tc.proto != "" {
+				r.Header.Set("X-Forwarded-Proto", tc.proto)
+			}
+			if tc.fwdHost != "" {
+				r.Header.Set("X-Forwarded-Host", tc.fwdHost)
+			}
+			s.rememberOrigin(r)
+			st := s.settings()
+			if tc.wantURL == "" {
+				if st.URL != "" {
+					t.Fatalf("should not record %q", st.URL)
+				}
+				return
+			}
+			if st.URL != tc.wantURL || st.Port != tc.wantPort {
+				t.Fatalf("got %s:%d, want %s:%d", st.URL, st.Port, tc.wantURL, tc.wantPort)
+			}
+			// 已设置的地址不会被之后的访问覆盖
+			r.Host = "other.example.com:1234"
+			s.rememberOrigin(r)
+			if s.settings().URL != tc.wantURL {
+				t.Fatal("existing address must not be overwritten")
+			}
+		})
 	}
 }

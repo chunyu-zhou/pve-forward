@@ -24,6 +24,7 @@ func (s *Server) bootstrap(w http.ResponseWriter, r *http.Request) {
 		if u, err := s.db.SessionUser(secret.Hash(c.Value)); err == nil {
 			res["user"] = u
 			if u.Role == "admin" {
+				s.rememberOrigin(r)
 				res["updateAvailable"] = s.loadUpdateStatus().available()
 			}
 		}

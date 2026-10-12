@@ -38,7 +38,7 @@ var Version = pveforward.Version
 var configPath = "/etc/pve-forward-agent/agent.json"
 
 type config struct {
-	Server string `json:"server"` // https://panel.example.com:5000
+	Server string `json:"server"` // https://panel.example.com:5601
 	Pin    string `json:"pin"`    // sha256//base64，自签名证书时使用
 	NodeID int64  `json:"nodeId"`
 	Secret string `json:"secret"`

@@ -84,7 +84,7 @@ type Settings struct {
 }
 
 func (s *Server) settings() Settings {
-	st := Settings{Site: "PVE Forward", Port: 5000, TLS: "self", Interval: 60, OfflineAfter: 180, DefaultReserved: []int{22, 8006},
+	st := Settings{Site: "PVE Forward", Port: 5601, TLS: "self", Interval: 60, OfflineAfter: 180, DefaultReserved: []int{22, 8006},
 		SessionDays: 7, LockAttempts: 5, DiskBusyUtil: 70, DiskSatUtil: 90, DiskBusyAwait: 20, DiskSatAwait: 40,
 		UpdateCheck: true}
 	s.db.SettingJSON("settings", &st)
@@ -401,6 +401,9 @@ func (s *Server) auth(h http.HandlerFunc, admin bool) http.Handler {
 		if admin && u.Role != "admin" {
 			jsonErr(w, http.StatusForbidden, "需要管理员权限")
 			return
+		}
+		if u.Role == "admin" {
+			s.rememberOrigin(r)
 		}
 		// 防 CSRF：写操作要求自定义请求头（跨站表单无法携带）
 		if r.Method != http.MethodGet && r.Header.Get("X-Requested-With") != "pveforward" {

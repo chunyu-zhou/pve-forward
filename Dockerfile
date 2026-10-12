@@ -43,12 +43,14 @@ LABEL org.opencontainers.image.source="https://github.com/chunyu-zhou/pve-forwar
       org.opencontainers.image.title="PVE Forward"
 # 控制台据此显示 Docker 更新方式；在线更新的程序保存在数据卷 updates/ 中
 ENV PVE_FORWARD_RUNTIME=docker
+# 容器内固定监听 5601（与端口映射右侧一致）；系统设置中的端口只表示节点 Agent 连接用的外部端口
+ENV PVE_FORWARD_LISTEN=:5601
 USER 10001:10001
 WORKDIR /var/lib/pve-forward
 VOLUME ["/var/lib/pve-forward"]
-EXPOSE 5000
+EXPOSE 5601
 STOPSIGNAL SIGTERM
-# Keep application defaults (HTTPS with a self-signed certificate on :5000).
+# 默认 HTTPS（自签名证书）监听 5601；节点 Agent 连接地址在管理员首次访问时自动记录。
 # No shell wrapper, systemd, elevated capabilities or privileged container required.
 ENTRYPOINT ["/usr/local/bin/pve-forward"]
 CMD ["run"]

@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -55,16 +56,17 @@ func (s *Server) BootstrapFromEnv(getenv func(string) string) error {
 		return fmt.Errorf("PVE_FORWARD_ADMIN_USER / PVE_FORWARD_ADMIN_PASSWORD 配置无效: %w", err)
 	}
 
-	publicURL := strings.TrimSpace(getenv("PVE_FORWARD_PUBLIC_URL"))
-	if publicURL == "" {
-		return errors.New("首次环境变量初始化必须设置 PVE_FORWARD_PUBLIC_URL 为 Agent 可访问的完整公网 origin（例如 https://panel.example.com:8443）；容器内部监听地址请另设 PVE_FORWARD_LISTEN")
-	}
-	baseURL, port, err := parsePublicOrigin(publicURL)
-	if err != nil {
-		return err
-	}
+	// PVE_FORWARD_PUBLIC_URL 可选：未设置时，管理员第一次用浏览器访问控制台时记录访问地址
+	// （rememberOrigin），节点 Agent 使用该地址连接。
 	st := s.settings()
-	st.URL, st.Port = baseURL, port
+	publicURL := strings.TrimSpace(getenv("PVE_FORWARD_PUBLIC_URL"))
+	if publicURL != "" {
+		baseURL, port, err := parsePublicOrigin(publicURL)
+		if err != nil {
+			return err
+		}
+		st.URL, st.Port = baseURL, port
+	}
 	if site := strings.TrimSpace(getenv("PVE_FORWARD_SITE")); site != "" {
 		st.Site = site
 	}
@@ -76,11 +78,11 @@ func (s *Server) BootstrapFromEnv(getenv func(string) string) error {
 	if st.TLS != "self" && st.TLS != "acme" && st.TLS != "proxy" {
 		return errors.New("PVE_FORWARD_TLS / -tls 必须是 self、acme 或 proxy")
 	}
-	u, _ := url.Parse(baseURL) // Already validated by parsePublicOrigin.
-	if st.TLS != "proxy" && u.Scheme != "https" {
+	u, _ := url.Parse(st.URL) // 已由 parsePublicOrigin 校验，或为空
+	if st.URL != "" && st.TLS != "proxy" && u.Scheme != "https" {
 		return errors.New("PVE_FORWARD_PUBLIC_URL 使用 http 时必须设置 PVE_FORWARD_TLS=proxy（或 -tls proxy）")
 	}
-	if st.TLS == "acme" && net.ParseIP(u.Hostname()) != nil {
+	if st.TLS == "acme" && (st.URL == "" || net.ParseIP(u.Hostname()) != nil) {
 		return errors.New("PVE_FORWARD_TLS=acme 需要 PVE_FORWARD_PUBLIC_URL 使用域名而非 IP")
 	}
 	_, err = s.initializeAdmin(username, password, st)
@@ -88,6 +90,32 @@ func (s *Server) BootstrapFromEnv(getenv func(string) string) error {
 		return nil // Another startup may have completed setup while we validated.
 	}
 	return err
+}
+
+// rememberOrigin 在尚未设置访问地址时（Docker 首次启动未指定 PVE_FORWARD_PUBLIC_URL），
+// 把管理员浏览器访问控制台的地址记录为访问地址，节点 Agent 通过它连接控制端。
+// 只在已登录的管理员请求中调用；之后可在系统设置中修改。
+func (s *Server) rememberOrigin(r *http.Request) {
+	st := s.settings()
+	if st.URL != "" || r.Host == "" {
+		return
+	}
+	scheme := "http"
+	if r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
+		scheme = "https"
+	}
+	host := r.Host
+	if h := r.Header.Get("X-Forwarded-Host"); h != "" && st.TLS == "proxy" {
+		host = strings.TrimSpace(strings.Split(h, ",")[0])
+	}
+	baseURL, port, err := parsePublicOrigin(scheme + "://" + host)
+	if err != nil {
+		return
+	}
+	st.URL, st.Port = baseURL, port
+	if err := s.db.SetSettingJSON("settings", st); err == nil {
+		log.Printf("已记录控制端访问地址 %s:%d（节点 Agent 使用此地址连接，可在系统设置中修改）", baseURL, port)
+	}
 }
 
 func readBootstrapPassword(path string) (string, error) {

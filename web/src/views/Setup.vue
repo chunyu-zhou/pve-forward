@@ -78,7 +78,7 @@ const f = reactive({
   token: '', username: 'admin', password: '', password2: '', site: 'PVE Forward',
   url: `${location.protocol}//${location.hostname}`, port: Number(location.port) || (location.protocol === 'https:' ? 443 : 80), tls: location.protocol === 'https:' ? 'self' : 'proxy',
 })
-if (f.port === 443 || f.port === 80) f.port = 5000
+if (f.port === 443 || f.port === 80) f.port = 5601
 const tlsHint = computed(() => ({
   self: '自动生成证书；Agent 安装命令会附带证书公钥固定值以防中间人',
   acme: '需要使用域名，且本机 80 端口可从公网访问',

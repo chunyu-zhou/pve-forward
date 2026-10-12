@@ -155,13 +155,10 @@ jobs:
             docker run -d --name "$container" \
               --read-only --tmpfs /tmp:rw,noexec,nosuid,size=64m \
               --cap-drop=ALL --security-opt=no-new-privileges \
-              -p 127.0.0.1:15000:5000 \
+              -p 127.0.0.1:15000:5601 \
               -v "$volume:/var/lib/pve-forward" \
               -e PVE_FORWARD_ADMIN_USER="$username" \
               -e PVE_FORWARD_ADMIN_PASSWORD="$1" \
-              -e PVE_FORWARD_LISTEN=:5000 \
-              -e PVE_FORWARD_TLS=self \
-              -e PVE_FORWARD_PUBLIC_URL="$base" \
               pve-forward:smoke >/dev/null
           }
           ready() {
@@ -198,6 +195,7 @@ jobs:
           grep -q '<div id="app"' "$work/index.html"
           login "$password"
           user_id=$(jq -er '.user.id' "$work/me.json")
+          # 未配置 PVE_FORWARD_PUBLIC_URL：管理员首次访问时记录浏览器访问的地址与端口
           curl -kfsS --max-time 10 -b "$work/cookies" "$base/api/settings" > "$work/settings.json"
           jq -e '.settings.url == "https://localhost" and .settings.port == 15000 and .settings.tls == "self"' \
             "$work/settings.json" >/dev/null

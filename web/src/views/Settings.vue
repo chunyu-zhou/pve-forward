@@ -7,8 +7,8 @@
           <a-card class="general-card"><template #title>控制端</template>
             <a-row :gutter="80">
               <a-col :xs="24" :md="8"><a-form-item label="站点名称"><a-input v-model="st.site" /></a-form-item></a-col>
-              <a-col :xs="24" :md="8"><a-form-item label="访问地址" extra="Agent 通过此地址连接；修改后各节点需能访问新地址"><a-input v-model="st.url" /></a-form-item></a-col>
-              <a-col :xs="24" :md="8"><a-form-item label="面板端口" extra="修改后服务会重新监听"><a-input-number v-model="st.port" :min="1" :max="65535" /></a-form-item></a-col>
+              <a-col :xs="24" :md="8"><a-form-item label="访问地址" extra="浏览器与节点 Agent 访问控制端的地址（不含端口）；未填写时自动记录管理员首次访问的地址"><a-input v-model="st.url" placeholder="https://域名或IP" /></a-form-item></a-col>
+              <a-col :xs="24" :md="8"><a-form-item :label="listen ? '访问端口' : '面板端口'" :extra="listen ? `节点 Agent 连接用的外部端口；程序固定监听 ${listen}，修改映射请改 docker compose 中 ports 左侧` : '修改后服务会重新监听'"><a-input-number v-model="st.port" :min="1" :max="65535" /></a-form-item></a-col>
             </a-row>
             <a-row :gutter="80">
               <a-col :xs="24" :md="8"><a-form-item label="HTTPS 证书">
@@ -85,6 +85,7 @@ const pub = ref({})
 const pubPwd = ref('')
 const hasPwd = ref(false)
 const pin = ref('')
+const listen = ref('')
 const reserved = ref([])
 const nodes = ref([])
 const saving = ref(false)
@@ -97,6 +98,7 @@ async function load() {
   pub.value = { ...d.public, slug: d.public.slug || randomSlug() }
   hasPwd.value = d.publicHasPassword
   pin.value = d.pin
+  listen.value = d.listen || ''
   reserved.value = (d.settings.defaultReserved || []).map(String)
   nodes.value = n.nodes.filter(x => x.initialized)
   pubPwd.value = ''

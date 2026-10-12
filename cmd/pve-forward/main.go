@@ -26,7 +26,7 @@ import (
 func main() {
 	fs := flag.NewFlagSet("pve-forward", flag.ExitOnError)
 	dataDir := fs.String("data", "/var/lib/pve-forward", "数据目录")
-	listen := fs.String("listen", "", "监听地址（覆盖系统设置中的端口），如 :5000")
+	listen := fs.String("listen", "", "监听地址（覆盖系统设置中的端口），如 :5601")
 	tlsMode := fs.String("tls", "", "证书方式（覆盖系统设置）：self | acme | proxy（HTTP，由反向代理处理 HTTPS）")
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, `PVE Forward 控制端 %s

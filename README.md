@@ -20,7 +20,7 @@
 
 ### 方案一：参数直接写在 compose 文件中（无需 .env）
 
-在服务器上新建部署目录（如 `/opt/pve-forward`），创建 `docker-compose.yml`，把下面的端口、地址、账号和密码改成自己的值：
+在服务器上新建部署目录（如 `/opt/pve-forward`），创建 `docker-compose.yml`，只需修改管理员账号和密码：
 
 ```yaml
 services:
@@ -29,14 +29,10 @@ services:
     container_name: pve-forward
     restart: unless-stopped
     ports:
-      - "8443:5000"                 # 宿主机端口:容器端口，只改冒号左边
+      - "5601:5601"
     environment:
-      PVE_FORWARD_LISTEN: ":5000"   # 容器内监听端口，保持不变
-      PVE_FORWARD_TLS: "self"       # self 自签名 HTTPS；放在反向代理后改为 proxy
-      PVE_FORWARD_PUBLIC_URL: "https://203.0.113.10:8443"  # 浏览器和 PVE 节点访问控制端的地址，端口与上面左边一致
       PVE_FORWARD_ADMIN_USER: "admin"
-      PVE_FORWARD_ADMIN_PASSWORD: "ChangeMe-2026"          # 8-72 位；密码中的 $ 要写成 $$
-      PVE_FORWARD_SITE: "PVE Forward"
+      PVE_FORWARD_ADMIN_PASSWORD: "ChangeMe-2026"   # 8-72 位；密码中的 $ 要写成 $$
     volumes:
       - pve-forward-data:/var/lib/pve-forward
     security_opt:
@@ -70,11 +66,12 @@ docker compose up -d
 docker compose logs --tail=100 controller
 ```
 
-然后用浏览器打开 `PVE_FORWARD_PUBLIC_URL` 的地址，用上面的管理员账号登录。说明：
+用浏览器打开 `https://服务器IP:5601`（自签名证书，浏览器提示不安全时选择继续访问），用上面的管理员账号登录。说明：
 
+- **访问地址自动记录**：管理员第一次登录时，控制端记录浏览器访问的地址和端口（如 `https://203.0.113.10:5601`），添加节点时生成的 Agent 安装命令就使用这个地址。所以第一次请用**节点也能访问的地址**打开（公网 IP 或域名，不要用 `localhost`）；之后可在“系统设置 → 访问地址”中修改。
+- **只想换端口**：只改 `ports` 冒号左边，如 `"8443:5601"`，然后用 `https://服务器IP:8443` 访问；冒号右边固定为 5601。已经部署后再改端口，请同时在“系统设置”中改“访问端口”，否则节点 Agent 会连接旧端口。
+- **账号、密码只在第一次启动（数据卷为空）时生效**。之后修改不会改变已有账号，请在控制台“个人中心”改密码。首次启动成功后，可以删掉 `PVE_FORWARD_ADMIN_PASSWORD` 这一行再执行一次 `docker compose up -d`。
 - 文件中写有管理员密码，已用 `chmod 600` 限制只有 root 可读；不要把这个文件提交到 Git。
-- **账号、密码、站点名称和公网地址只在第一次启动（数据卷为空）时生效**。之后修改这些值不会改变已有账号，请在控制台“个人中心”改密码、在“系统设置”改访问地址。首次启动成功后，可以把 `PVE_FORWARD_ADMIN_PASSWORD` 这一行删掉，再执行一次 `docker compose up -d`。
-- `ports` 和 `PVE_FORWARD_TLS` 每次启动都生效；修改端口时请同时在“系统设置”中改访问地址的端口，否则节点 Agent 会连接旧端口。
 - 镜像只在 GitHub 构建，这里只会拉取，不会在服务器上构建。之后更新镜像：
 
   ```bash
@@ -84,6 +81,25 @@ docker compose logs --tail=100 controller
   ```bash
   docker compose up -d
   ```
+
+### 只绑定本机 127.0.0.1（配合反向代理）
+
+如果控制端只允许本机访问、由宿主机上的 Nginx / Caddy 提供 HTTPS 对外服务，把端口写成：
+
+```yaml
+    ports:
+      - "127.0.0.1:5601:5601"
+    environment:
+      PVE_FORWARD_ADMIN_USER: "admin"
+      PVE_FORWARD_ADMIN_PASSWORD: "ChangeMe-2026"
+      PVE_FORWARD_TLS: "proxy"   # 由反向代理提供 HTTPS，控制端改为 HTTP
+```
+
+- `127.0.0.1:` 前缀表示只监听宿主机本地回环地址，其他机器（包括 PVE 节点）无法直接访问 5601 端口。
+- 反向代理到 `http://127.0.0.1:5601`，并转发 `Host`、`X-Forwarded-Proto` 和 WebSocket（见下文 Nginx 示例）。
+- **必须**加 `PVE_FORWARD_TLS: "proxy"`：否则控制端仍使用自签名证书，节点 Agent 会按该证书的公钥做校验，与反向代理的证书不一致而无法连接。
+- 首次通过反向代理的地址（如 `https://panel.example.com`）登录，访问地址会记录为该地址，节点通过反向代理连接控制端。
+- 如果只是想自己通过 SSH 隧道临时访问、不接入任何节点，可以不加 `PVE_FORWARD_TLS`，直接 `ssh -L 5601:127.0.0.1:5601 服务器` 后访问 `https://localhost:5601`；但这样记录的访问地址是 `localhost`，接入节点前需在“系统设置”中改成节点可访问的地址。
 
 ### 方案二：使用 .env 配置
 
@@ -98,19 +114,15 @@ cp .env.example .env
 ```dotenv
 IMAGE_TAG=latest
 BIND_ADDRESS=0.0.0.0
-PORT=8443
-PUBLIC_URL=https://panel.example.com:8443
-TLS_MODE=self
+PORT=5601
 SITE_NAME='PVE Forward'
 ADMIN_USER=admin
 ADMIN_PASSWORD='填写独立的高强度密码'
 ```
 
-- `PORT` 是**宿主机映射端口**，容器内固定监听 5000。示例为 `8443:5000`。
-- `PUBLIC_URL` 是浏览器和 PVE Agent 实际可达的完整外部地址，需包含非标准端口；不要填写容器名或 `localhost`（除非仅做本机试验），不支持路径、查询参数或内嵌账号密码。
-- `TLS_MODE=self` 默认直接提供自签名 HTTPS，首次访问须核验并信任证书。`proxy` 为明文 HTTP，只应用在可信反代后，不要直接公网暴露。
+- `PORT` 是宿主机端口，容器内固定为 5601；`BIND_ADDRESS=127.0.0.1` 表示只绑定本机（配合反向代理时还需在 `compose.yaml` 的 environment 中加 `PVE_FORWARD_TLS: "proxy"`，见上一节）。
 - 管理员用户名为 3–20 位字母、数字或下划线；密码 8–72 字节。密码用单引号包裹，避免 `$` 被 Compose 插值。`.env` 已被 Git 忽略，不要提交真实密码。
-- **账号、密码、站点及公网地址仅在数据卷首次初始化时使用**，成功后直接进入登录页，不再需要网页 setup token。重启、拉取新镜像或修改初始化密码变量都不会覆盖已有管理员；请在个人中心修改密码。已有部署的公网地址在系统设置中修改，同时保持 Docker 的端口/TLS 配置一致。
+- 账号和密码仅在数据卷首次初始化时使用，访问地址在管理员首次登录时自动记录，规则同方案一。
 
 ```bash
 chmod 600 .env
@@ -136,9 +148,9 @@ docker compose logs --tail=100 controller
 
 | 容器环境变量 | 作用 |
 | --- | --- |
-| `PVE_FORWARD_LISTEN` | 实际监听地址，Compose 设置为 `:5000`，每次启动生效 |
-| `PVE_FORWARD_TLS` | `self` / `proxy` / `acme`，每次启动生效 |
-| `PVE_FORWARD_PUBLIC_URL` | 首次初始化的外部完整 URL，与内部监听端口独立 |
+| `PVE_FORWARD_TLS` | 可选，`self`（默认，自签名 HTTPS）/ `proxy`（HTTP，由反向代理提供 HTTPS）/ `acme`，每次启动生效 |
+| `PVE_FORWARD_PUBLIC_URL` | 可选，首次初始化时直接指定访问地址（如 `https://panel.example.com:8443`）；不设置则在管理员首次登录时自动记录 |
+| `PVE_FORWARD_LISTEN` | 镜像内已固定为 `:5601`，一般不需要设置 |
 | `PVE_FORWARD_ADMIN_USER` | 首次管理员用户名 |
 | `PVE_FORWARD_ADMIN_PASSWORD` | 首次管理员密码，与 PASSWORD_FILE 二选一 |
 | `PVE_FORWARD_ADMIN_PASSWORD_FILE` | 首次管理员密码文件路径 |
@@ -196,7 +208,7 @@ docker compose up -d
 
 ## Docker 的 HTTPS 反代部署
 
-已有 Nginx/Caddy 时：设置 `TLS_MODE=proxy`，`PUBLIC_URL=https://panel.example.com`（外部 443），在宿主机反代场景设置 `BIND_ADDRESS=127.0.0.1`，反代到 `http://127.0.0.1:5000`。若反代也是容器，可加入同一 Docker 网络并反代到 `http://controller:5000`，无需公开后端端口。容器内部始终监听 `:5000`，不要改为仅监听容器 loopback。
+已有 Nginx/Caddy 时：端口绑定 `127.0.0.1:5601:5601`，environment 加 `PVE_FORWARD_TLS: "proxy"`，反代到 `http://127.0.0.1:5601`（见上文“只绑定本机”）。若反代也是容器，可加入同一 Docker 网络并反代到 `http://pve-forward:5601`，此时可以去掉 `ports`，不公开后端端口。容器内部始终监听 `:5601`。
 
 反代须支持 WSS/Upgrade 并保留 Agent Authorization；后面的 Nginx 片段同样适用。示例 Compose 仅映射业务端口，直接 ACME 还需要额外开放容器的 TCP 80，并处理非 root 低端口绑定；推荐由反代自动管理公网证书。
 
@@ -262,7 +274,7 @@ sudo bash ./install.sh --release-dir "$PWD"
 
 ### 首次访问和令牌
 
-不提供任何覆盖参数时，实际程序默认监听 `:5000`、TLS 为 `self`：访问 `https://控制端IP:5000`，不是 HTTP。初始自签名证书会触发浏览器警告，请从可信服务器日志核对指纹，不要盲目信任。
+不提供任何覆盖参数时，实际程序默认监听 `:5601`、TLS 为 `self`：访问 `https://控制端IP:5601`，不是 HTTP。初始自签名证书会触发浏览器警告，请从可信服务器日志核对指纹，不要盲目信任。
 
 ```bash
 sudo systemctl status pve-forward.service --no-pager
@@ -284,25 +296,25 @@ sudo systemctl start pve-forward.service
 
 | 连接/模式 | 端口/要求 |
 | --- | --- |
-| 控制端默认 | 入站 TCP 5000，HTTPS 自签名；浏览器和 Agent 共用 |
+| 控制端默认 | 入站 TCP 5601，HTTPS 自签名；浏览器和 Agent 共用 |
 | ACME | 公网域名指向控制端、入站 TCP 80 用于 HTTP-01；HTTPS 使用设置的监听端口，常用 443 |
-| 反向代理 | 常用公网 443 → 本机 HTTP `127.0.0.1:5000`；WSS 同走公网入口 |
+| 反向代理 | 常用公网 443 → 本机 HTTP `127.0.0.1:5601`；WSS 同走公网入口 |
 | SSH 节点 | 控制端 → PVE 的 SSH 端口（默认通常 22） |
 | Agent 节点 | PVE 主动出站 HTTPS/WSS 到控制端；不需要额外开放 Agent 入站端口 |
-| 转发流量 | 客户端 → PVE 公网端口（管理员分配的 TCP/UDP 端口），不是控制端 5000 |
+| 转发流量 | 客户端 → PVE 公网端口（管理员分配的 TCP/UDP 端口），不是控制端 5601 |
 
 程序 `-listen`、`-tls` 覆盖数据库设置。默认安装不设置这两个覆盖参数，因此网页修改端口/TLS 可生效。首次安装反代模式可用：
 
 ```bash
-sudo bash ./install.sh --release-dir "$PWD" --listen 127.0.0.1:5000 --tls proxy
+sudo bash ./install.sh --release-dir "$PWD" --listen 127.0.0.1:5601 --tls proxy
 ```
 
-**proxy 模式后端是明文 HTTP，必须限制在 loopback/可信专用链路，不得直接暴露公网。** 浏览器也应通过 HTTPS 反代入口初始化。网页里仍填写外部 `https://panel.example.com`、端口 `443`、TLS `proxy`；若填写后端 5000，生成的 Agent 命令会指向错误入口。已有安装升级不接受上述覆盖参数；保留原 unit，可用 `sudo systemctl edit pve-forward.service` 重设 ExecStart（保留同一 `-data` 和二进制路径）：
+**proxy 模式后端是明文 HTTP，必须限制在 loopback/可信专用链路，不得直接暴露公网。** 浏览器也应通过 HTTPS 反代入口初始化。网页里仍填写外部 `https://panel.example.com`、端口 `443`、TLS `proxy`；若填写后端 5601，生成的 Agent 命令会指向错误入口。已有安装升级不接受上述覆盖参数；保留原 unit，可用 `sudo systemctl edit pve-forward.service` 重设 ExecStart（保留同一 `-data` 和二进制路径）：
 
 ```ini
 [Service]
 ExecStart=
-ExecStart=/opt/pve-forward/current/pve-forward run -data /var/lib/pve-forward -listen 127.0.0.1:5000 -tls proxy
+ExecStart=/opt/pve-forward/current/pve-forward run -data /var/lib/pve-forward -listen 127.0.0.1:5601 -tls proxy
 ```
 
 然后 `sudo systemctl daemon-reload && sudo systemctl restart pve-forward.service`。网页 TLS 模式应与覆盖值一致；当前自签名 pin 的提供还依赖数据库中的 TLS 设置。不要更改安装器固定的数据路径、服务用户或关闭文件保护而不制定独立迁移方案。
@@ -321,7 +333,7 @@ server {
     ssl_certificate     /path/to/fullchain.pem;
     ssl_certificate_key /path/to/privkey.pem;
     location / {
-        proxy_pass http://127.0.0.1:5000;
+        proxy_pass http://127.0.0.1:5601;
         proxy_http_version 1.1;
         proxy_set_header Host $http_host;
         proxy_set_header X-Forwarded-Proto https;
