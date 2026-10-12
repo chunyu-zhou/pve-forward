@@ -24,7 +24,8 @@
             </a-row>
           </a-card>
           <a-card class="general-card"><template #title>连接方式</template>
-            <a-form-item label="方式"><a-radio-group v-model="f.mode" type="button"><a-radio value="agent">Agent（WSS）</a-radio><a-radio value="ssh">SSH</a-radio></a-radio-group>
+            <a-alert v-if="agentWhy" type="warning" title="无法改用 Agent 方式" style="margin-bottom:16px">{{ agentWhy }}</a-alert>
+            <a-form-item label="方式"><a-radio-group v-model="f.mode" type="button"><a-radio value="agent" :disabled="!!agentWhy">Agent（WSS）</a-radio><a-radio value="ssh">SSH</a-radio></a-radio-group>
               <template #extra>{{ f.mode !== n.mode ? (f.mode === 'agent' ? '保存后请在节点上执行安装命令' : '保存后需测试连接并确认主机指纹') : '' }}</template></a-form-item>
             <a-form v-if="f.mode === 'ssh'" :model="f" :label-col-props="{ span: 4 }" :wrapper-col-props="{ span: 14 }" style="max-width:860px">
               <SSHFields :f="f" :err="{}" :creds="creds" edit @new-cred="$router.push('/credentials')" />
@@ -69,11 +70,14 @@ const creds = ref([])
 const saving = ref(false)
 const f = reactive({})
 const portHint = computed(() => portPolicyHint(f.portRange, f.reservedPorts))
+// 已是 Agent 方式的节点不受影响；SSH 节点在访问地址不是 HTTPS 时不能改为 Agent
+const agentWhy = ref('')
 
 onMounted(async () => {
   const [d, c] = await Promise.all([api.get(`/api/nodes/${props.id}`), api.get('/api/credentials')])
   n.value = d.node
   creds.value = c
+  agentWhy.value = d.node.mode === 'agent' ? '' : d.agentUnavailable || ''
   const x = d.node
   Object.assign(f, { name: x.name, remark: x.remark, mode: x.mode, sshHost: x.sshHost, sshPort: x.sshPort || 22, sshAuth: x.sshAuth || 'password', sshUser: x.sshUser || 'root',
     sshPassword: '', sshKey: '', sshPassphrase: '', credId: x.credId || undefined, wanIp4: x.net.wanIp4, wanIp6: x.net.wanIp6,

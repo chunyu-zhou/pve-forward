@@ -3,7 +3,7 @@
     <a-card class="general-card">
       <template #title>添加用户</template>
       <div class="step-wrapper">
-        <a-steps :current="step" style="width: 760px; max-width: 100%" line-less class="steps">
+        <a-steps :current="step" style="width: 760px; max-width: 100%" class="steps">
           <a-step description="用户名与配额">账号信息</a-step>
           <a-step description="按节点分配端口">端口分配</a-step>
           <a-step description="选择 PVE 虚拟机">虚拟机</a-step>

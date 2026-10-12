@@ -163,14 +163,14 @@ jobs:
           build-args: GO_VERSION=${{ steps.go-version.outputs.version }}
           cache-from: type=gha,scope=pve-forward
           cache-to: type=gha,mode=max,scope=pve-forward-verify
-      - name: Smoke HTTPS initialization, persistence and both agent downloads
+      - name: Smoke initialization, persistence and both agent downloads
         shell: bash
         run: |
           set -euo pipefail
           work=$(mktemp -d)
           container="pf-smoke-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           volume="${container}-data"
-          base=https://localhost:15000
+          base=http://localhost:15000
           username=ci_admin
           password=$(openssl rand -hex 24)
           replacement=$(openssl rand -hex 24)
@@ -232,7 +232,8 @@ jobs:
           user_id=$(jq -er '.user.id' "$work/me.json")
           # 未配置 PVE_FORWARD_PUBLIC_URL：管理员首次访问时记录浏览器访问的地址与端口
           curl -kfsS --max-time 10 -b "$work/cookies" "$base/api/settings" > "$work/settings.json"
-          jq -e '.settings.url == "https://localhost" and .settings.port == 15000 and .settings.tls == "self"' \
+          # 默认以 HTTP 提供服务（不生成自签名证书）；经 HTTP 访问时 Agent 方式不可用
+          jq -e '.settings.url == "http://localhost" and .settings.port == 15000 and .settings.tls == "proxy" and (.agentUnavailable | length > 0)' \
             "$work/settings.json" >/dev/null
           for arch in amd64 arm64; do
             binary="pve-forward-agent-linux-$arch"
@@ -292,7 +293,7 @@ jobs:
           login "$password"
           test "$(docker exec "$container" awk '/^Uid:/ { print $2 }' /proc/1/status)" = "$(id -u)"
           test "$(stat -c '%u' "$nasdir/master.key")" = "$(id -u)"
-          printf 'HTTPS bootstrap, login, persistent user/key, host-directory ownership, owner fallback and amd64/arm64 downloads passed.\n'
+          printf 'Bootstrap, login, persistent user/key, host-directory ownership, owner fallback and amd64/arm64 downloads passed.\n'
       - name: Set up QEMU for target runtime package installation
         uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
         with:

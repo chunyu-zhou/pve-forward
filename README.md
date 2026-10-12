@@ -64,10 +64,11 @@ docker compose up -d
 docker compose logs --tail=100 controller
 ```
 
-用浏览器打开 `https://服务器IP:5601`（自签名证书，浏览器提示不安全时选择继续访问），用上面的管理员账号登录。说明：
+用浏览器打开 `http://服务器IP:5601`，用上面的管理员账号登录。控制端默认以 **HTTP** 提供服务，不生成自签名证书，HTTPS 由你自行配置的反向代理（Nginx / Caddy 等）提供，见下一节。说明：
 
-- **访问地址自动记录**：管理员第一次登录时，控制端记录浏览器访问的地址和端口（如 `https://203.0.113.10:5601`），添加节点时生成的 Agent 安装命令就使用这个地址。所以第一次请用**节点也能访问的地址**打开（公网 IP 或域名，不要用 `localhost`）；之后可在“系统设置 → 访问地址”中修改。
-- **只想换端口**：只改 `ports` 冒号左边，如 `"8443:5601"`，然后用 `https://服务器IP:8443` 访问；冒号右边固定为 5601。已经部署后再改端口，请同时在“系统设置”中改“访问端口”，否则节点 Agent 会连接旧端口。
+- **Agent 需要 HTTPS**：节点 Agent 通过 WSS 连接控制端，访问地址必须是 `https://`。只用 HTTP 访问时，添加节点只能选择 SSH 方式（页面会提示原因）；配置好反向代理后即可使用 Agent。
+- **访问地址自动记录**：管理员第一次登录时，控制端记录浏览器访问的地址和端口（如经反向代理访问时为 `https://panel.example.com`），添加节点时生成的 Agent 安装命令就使用这个地址。所以第一次请用**节点也能访问的地址**打开（公网 IP 或域名，不要用 `localhost`）；之后可在“系统设置 → 访问地址”中修改。
+- **只想换端口**：只改 `ports` 冒号左边，如 `"8080:5601"`，然后用 `http://服务器IP:8080` 访问；冒号右边固定为 5601。已经部署后再改端口，请同时在“系统设置”中改“访问端口”，否则节点 Agent 会连接旧端口。
 - **账号、密码只在第一次启动（数据卷为空）时生效**。之后修改不会改变已有账号，请在控制台“个人中心”改密码。首次启动成功后，可以删掉 `PVE_FORWARD_ADMIN_PASSWORD` 这一行再执行一次 `docker compose up -d`。
 - 文件中写有管理员密码，已用 `chmod 600` 限制只有 root 可读；不要把这个文件提交到 Git。
 - 镜像只在 GitHub 构建，这里只会拉取，不会在服务器上构建。之后更新镜像：
@@ -90,14 +91,13 @@ docker compose logs --tail=100 controller
     environment:
       PVE_FORWARD_ADMIN_USER: "admin"
       PVE_FORWARD_ADMIN_PASSWORD: "ChangeMe-2026"
-      PVE_FORWARD_TLS: "proxy"   # 由反向代理提供 HTTPS，控制端改为 HTTP
 ```
 
 - `127.0.0.1:` 前缀表示只监听宿主机本地回环地址，其他机器（包括 PVE 节点）无法直接访问 5601 端口。
 - 反向代理到 `http://127.0.0.1:5601`，并转发 `Host`、`X-Forwarded-Proto` 和 WebSocket（见下文 Nginx 示例）。
-- **必须**加 `PVE_FORWARD_TLS: "proxy"`：否则控制端仍使用自签名证书，节点 Agent 会按该证书的公钥做校验，与反向代理的证书不一致而无法连接。
-- 首次通过反向代理的地址（如 `https://panel.example.com`）登录，访问地址会记录为该地址，节点通过反向代理连接控制端。
-- 如果只是想自己通过 SSH 隧道临时访问、不接入任何节点，可以不加 `PVE_FORWARD_TLS`，直接 `ssh -L 5601:127.0.0.1:5601 服务器` 后访问 `https://localhost:5601`；但这样记录的访问地址是 `localhost`，接入节点前需在“系统设置”中改成节点可访问的地址。
+- 首次通过反向代理的地址（如 `https://panel.example.com`）登录，访问地址会记录为该地址，节点 Agent 通过反向代理以 WSS 连接控制端。
+- 如果只是想自己通过 SSH 隧道临时访问，可以 `ssh -L 5601:127.0.0.1:5601 服务器` 后访问 `http://localhost:5601`；但这样记录的访问地址是 `localhost`，接入节点前需在“系统设置”中改成节点可访问的 https 地址。
+- 不使用反向代理、又想直接用 HTTPS 时，可加 `PVE_FORWARD_TLS: "self"` 使用自签名证书（Agent 安装命令会附带证书公钥固定值）。
 
 ### 方案二：使用 .env 配置
 
@@ -158,7 +158,7 @@ docker compose logs --tail=100 controller
 
 | 容器环境变量 | 作用 |
 | --- | --- |
-| `PVE_FORWARD_TLS` | 可选，`self`（默认，自签名 HTTPS）/ `proxy`（HTTP，由反向代理提供 HTTPS）/ `acme`，每次启动生效 |
+| `PVE_FORWARD_TLS` | 可选，`proxy`（默认，HTTP，由反向代理提供 HTTPS）/ `self`（自签名 HTTPS）/ `acme`，每次启动生效 |
 | `PVE_FORWARD_PUBLIC_URL` | 可选，首次初始化时直接指定访问地址（如 `https://panel.example.com:8443`）；不设置则在管理员首次登录时自动记录 |
 | `PVE_FORWARD_LISTEN` | 镜像内已固定为 `:5601`，一般不需要设置 |
 | `PUID` / `PGID` | 可选，容器内运行用户，默认 `10001` / `10001`；数据目录所有者会被改为它 |
@@ -292,7 +292,7 @@ sudo bash ./install.sh --release-dir "$PWD"
 
 ### 首次访问和令牌
 
-不提供任何覆盖参数时，实际程序默认监听 `:5601`、TLS 为 `self`：访问 `https://控制端IP:5601`，不是 HTTP。初始自签名证书会触发浏览器警告，请从可信服务器日志核对指纹，不要盲目信任。
+不提供任何覆盖参数时，程序默认监听 `:5601`、以 HTTP 提供服务（不生成自签名证书）：访问 `http://控制端IP:5601`。请自行配置反向代理提供 HTTPS；节点使用 Agent 方式时访问地址必须是 https。也可在初始化时选择“自签名”或 Let's Encrypt。
 
 ```bash
 sudo systemctl status pve-forward.service --no-pager
@@ -314,7 +314,7 @@ sudo systemctl start pve-forward.service
 
 | 连接/模式 | 端口/要求 |
 | --- | --- |
-| 控制端默认 | 入站 TCP 5601，HTTPS 自签名；浏览器和 Agent 共用 |
+| 控制端默认 | 入站 TCP 5601，HTTP；HTTPS 由反向代理提供，浏览器和 Agent 共用 |
 | ACME | 公网域名指向控制端、入站 TCP 80 用于 HTTP-01；HTTPS 使用设置的监听端口，常用 443 |
 | 反向代理 | 常用公网 443 → 本机 HTTP `127.0.0.1:5601`；WSS 同走公网入口 |
 | SSH 节点 | 控制端 → PVE 的 SSH 端口（默认通常 22） |

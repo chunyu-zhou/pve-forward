@@ -136,7 +136,9 @@ type VMInfo struct {
 	Type       string  `json:"type"` // qemu | lxc
 	Name       string  `json:"name"`
 	Status     string  `json:"status"`
-	MAC        string  `json:"mac"` // 接在内网网桥上的网卡；为空表示未接入
+	MAC        string  `json:"mac"`           // 接在内网网桥上的网卡；为空表示未接入
+	IP4        string  `json:"ip4,omitempty"` // 当前实际使用的内网地址（静态配置、DHCP 租约或邻居表）；未识别为空
+	IP6        string  `json:"ip6,omitempty"`
 	CPU        float64 `json:"cpu"` // 0-100（相对分配的核数）
 	Cores      int     `json:"cores"`
 	MemUsed    uint64  `json:"memUsed"`

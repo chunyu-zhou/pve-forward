@@ -20,8 +20,8 @@
         <a-table-column title="MAC" :width="150"><template #cell="{ record }"><span v-if="record.mac" class="mono">{{ record.mac }}</span><span v-else class="muted">未接入内网网桥</span></template></a-table-column>
         <a-table-column title="内网 IP"><template #cell="{ record }">
           <template v-if="record.ipv4"><span class="mono">{{ record.ipv4 }}</span><span v-if="record.ipv6" class="muted mono"> / {{ record.ipv6 }}</span></template>
-          <template v-else-if="preview[record.id]"><span class="mono" style="color:rgb(var(--arcoblue-6))">{{ preview[record.id] }}</span> <a-tag size="small" color="arcoblue">保存后分配</a-tag></template>
-          <span v-else class="muted">勾选后自动分配</span></template></a-table-column>
+          <a-tooltip v-else content="虚拟机开机并获得地址后自动识别（DHCP 租约、宿主机邻居表或 LXC 静态配置）">
+            <span class="muted">尚未识别到 IP</span></a-tooltip></template></a-table-column>
         <a-table-column title="归属" :width="160"><template #cell="{ record }">
           <a-tag v-if="record.userId && record.userId !== userId" size="small">{{ record.owner }}</a-tag>
           <span v-else-if="record.userId" class="muted">当前用户</span><span v-else class="muted">未分配</span>
@@ -31,7 +31,7 @@
     </a-table>
     <a-alert style="margin-top:12px">
       已选 {{ selected.length }} 台<template v-if="selected.length">：{{ selected.map(v => `${v.nodeName}/${v.vmid} ${v.name}`).join('，') }}</template>。
-      保存后按虚拟机网卡 MAC 自动分配内网 IP 并写入 DHCP 静态绑定；归属其他用户的虚拟机不可选；取消已被规则使用的虚拟机，对应规则会停止生效。
+      用户使用所选虚拟机现有的内网 IP，不会重新分配；由本系统管理 DHCP 时会固定该地址。归属其他用户的虚拟机不可选；取消已被规则使用的虚拟机，对应规则会停止生效。
     </a-alert>
   </div>
 </template>
@@ -55,31 +55,6 @@ const rows = computed(() => props.vms
   .filter(v => !kw.value || `${v.vmid} ${v.name} ${v.mac}`.toLowerCase().includes(kw.value.toLowerCase()))
   .map(v => ({ ...v, disabled: (!!v.userId && v.userId !== props.userId) || !v.mac })))
 const selected = computed(() => props.modelValue.map(id => props.vms.find(v => v.id === id)).filter(Boolean))
-
-// 预览将分配的地址：节点分配池 .10 – .99 中按顺序取空闲地址
-const preview = computed(() => {
-  const out = {}
-  const used = new Map()
-  for (const v of props.vms) if (v.ipv4) { if (!used.has(v.nodeId)) used.set(v.nodeId, new Set()); used.get(v.nodeId).add(v.ipv4) }
-  for (const v of selected.value) {
-    if (v.ipv4) continue
-    const n = props.nodes.find(x => x.id === v.nodeId)
-    const cidr = n?.net?.cidr4
-    if (!cidr) continue
-    const [base, bits] = cidr.split('/')
-    const parts = base.split('.').map(Number)
-    const start = ((parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3]) >>> 0
-    const size = 2 ** (32 - Number(bits))
-    if (!used.has(v.nodeId)) used.set(v.nodeId, new Set())
-    const set = used.get(v.nodeId)
-    for (let h = 10; h <= 99 && h < size - 1; h++) {
-      const a = start + h
-      const ip = [a >>> 24, (a >>> 16) & 255, (a >>> 8) & 255, a & 255].join('.')
-      if (!set.has(ip)) { set.add(ip); out[v.id] = ip; break }
-    }
-  }
-  return out
-})
 
 async function sync() {
   syncing.value = true

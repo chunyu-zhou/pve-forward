@@ -6,7 +6,6 @@ import (
 	"math"
 	"net/http"
 
-	"pveforward/internal/nodeops"
 	"pveforward/internal/ports"
 	"pveforward/internal/store"
 )
@@ -341,40 +340,10 @@ func (s *Server) assignVM(tx *sql.Tx, v *store.VM, uid *int64, shared bool) erro
 	if v.MAC == "" {
 		return bad("虚拟机 %d 没有接入内网网桥 %s 的网卡", v.VMID, n.Net.Bridge)
 	}
-	ip4, ip6 := v.IPv4, v.IPv6
-	if ip4 == "" {
-		ip4, err = nextFreeIP(tx, n)
-		if err != nil {
-			return err
-		}
-		ip6 = nodeops.V6For(n.Net.CIDR6, ip4)
-	}
-	_, err = tx.Exec(`UPDATE vms SET user_id=?, shared=?, ipv4=?, ipv6=? WHERE id=?`, uid, shared, ip4, ip6, v.ID)
+	// 内网地址属于虚拟机本身（节点上报的当前地址），分配时不改变；尚未识别到地址时，
+	// 虚拟机开机并获得地址后自动记录
+	_, err = tx.Exec(`UPDATE vms SET user_id=?, shared=? WHERE id=?`, uid, shared, v.ID)
 	return err
-}
-
-func nextFreeIP(tx *sql.Tx, n *store.Node) (string, error) {
-	pool, err := nodeops.VMPool(n.Net.CIDR4)
-	if err != nil {
-		return "", err
-	}
-	used := map[string]bool{}
-	rows, err := tx.Query(`SELECT ipv4 FROM vms WHERE node_id=? AND ipv4<>''`, n.ID)
-	if err != nil {
-		return "", err
-	}
-	for rows.Next() {
-		var ip string
-		rows.Scan(&ip)
-		used[ip] = true
-	}
-	rows.Close()
-	for a := pool.Start; a.Compare(pool.End) <= 0; a = a.Next() {
-		if !used[a.String()] {
-			return a.String(), nil
-		}
-	}
-	return "", bad("节点 %s 的虚拟机分配池 %s – %s 已用尽", n.Name, pool.Start, pool.End)
 }
 
 func (s *Server) deleteUser(w http.ResponseWriter, r *http.Request) {

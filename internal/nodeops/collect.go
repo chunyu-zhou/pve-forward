@@ -26,14 +26,30 @@ type sample struct {
 	disks   map[string][5]uint64 // reads, writes, sectorsR, sectorsW, msIO; 另记 msRW
 	diskRW  map[string]uint64
 	net     [2]uint64
-	vmNet   map[int][4]uint64 // netin, netout, diskread, diskwrite
+	vmNet   map[int]vmCounter
 	vmIOs   map[int]uint64
 }
+
+// vmCounter 为虚拟机网络与磁盘计数器（netin, netout, diskread, diskwrite）。
+// 这些计数器来自 pvesh，PVE 大约每 10 秒才更新一次：计数器未变化时沿用上次的速率与基准，
+// 否则采集间隔较短时速率会时而为 0。
+type vmCounter struct {
+	v    [4]uint64
+	t    time.Time
+	rate [4]float64
+}
+
+// vmStale 为计数器未更新时沿用上次速率的最长时间。
+const vmStale = 30 * time.Second
 
 func collectScript(st *proto.DesiredState) string {
 	wan := "lo"
 	if st != nil && ValidIface(st.Net.WANIface) {
 		wan = st.Net.WANIface
+	}
+	vmip := ""
+	if st != nil && ValidIface(st.Net.Bridge) {
+		vmip = vmIPScript(st.Net.Bridge)
 	}
 	var health strings.Builder
 	if st != nil {
@@ -70,7 +86,7 @@ for d in /sys/fs/cgroup/qemu.slice/*.scope /sys/fs/cgroup/lxc/*; do [ -f "$d/io.
 echo '##nft'; nft -j list table inet ` + TableName + ` 2>/dev/null
 echo '##listen'; ss -Hlntu 2>/dev/null | awk '{print $5}'
 echo '##conntrack'; conntrack -L 2>/dev/null | awk '{d="";for(i=1;i<=NF;i++){if($i~/^dport=/){d=substr($i,7);break}} if(d!="")c[d]++} END{for(k in c)print k,c[k]}'
-echo '##health'
+` + vmip + `echo '##health'
 ` + health.String() + `wait
 `
 }
@@ -92,7 +108,7 @@ func (c *Collector) Collect(ctx context.Context, ex Executor, st *proto.DesiredS
 
 func parseCollect(s map[string]string, prev *sample, now time.Time, st *proto.DesiredState) (*proto.Report, *sample) {
 	rep := &proto.Report{Time: now, Counters: map[int64]proto.Counter{}, Conns: map[int64]int{}, Health: map[int64]string{}}
-	cur := &sample{t: now, disks: map[string][5]uint64{}, diskRW: map[string]uint64{}, vmNet: map[int][4]uint64{}, vmIOs: map[int]uint64{}}
+	cur := &sample{t: now, disks: map[string][5]uint64{}, diskRW: map[string]uint64{}, vmNet: map[int]vmCounter{}, vmIOs: map[int]uint64{}}
 	dt := 0.0
 	if prev != nil {
 		dt = now.Sub(prev.t).Seconds()
@@ -226,6 +242,10 @@ func parseCollect(s map[string]string, prev *sample, now time.Time, st *proto.De
 	}
 	cg := parseCgroupIO(s["cgio"])
 	host := strings.TrimSpace(s["hostname"])
+	var addrs vmAddrs
+	if st != nil {
+		addrs = parseVMAddrs(s, st.Net.CIDR4, st.Net.CIDR6)
+	}
 	var res []struct {
 		Type      string  `json:"type"`
 		VMID      int     `json:"vmid"`
@@ -256,10 +276,29 @@ func parseCollect(s map[string]string, prev *sample, now time.Time, st *proto.De
 		vm := proto.VMInfo{VMID: r.VMID, Type: r.Type, Name: r.Name, Status: r.Status, Cores: int(r.MaxCPU),
 			CPU: round1(r.CPU * 100), MemUsed: r.Mem, MemTotal: r.MaxMem, DiskUsed: r.Disk, DiskTotal: r.MaxDisk, Uptime: r.Uptime}
 		vm.MAC = pickMAC(c, bridge)
-		cur.vmNet[r.VMID] = [4]uint64{r.NetIn, r.NetOut, r.DiskRead, r.DiskWrite}
+		// 虚拟机当前实际使用的内网地址：静态配置优先，其次 DHCP 租约与邻居表
+		vm.IP4, vm.IP6 = staticAddrs(c, bridge)
+		if vm.IP4 == "" && vm.MAC != "" {
+			vm.IP4 = addrs.v4[vm.MAC]
+		}
+		if vm.IP6 == "" && vm.MAC != "" {
+			vm.IP6 = addrs.v6[vm.MAC]
+		}
+		vc := vmCounter{v: [4]uint64{r.NetIn, r.NetOut, r.DiskRead, r.DiskWrite}, t: now}
 		if p, ok := prevVM(prev, r.VMID); ok && r.Status == "running" {
-			vm.NetIn, vm.NetOut = rate(r.NetIn, p[0]), rate(r.NetOut, p[1])
-			vm.DiskR, vm.DiskW = rate(r.DiskRead, p[2]), rate(r.DiskWrite, p[3])
+			if vc.v == p.v && now.Sub(p.t) < vmStale {
+				vc = p // 计数器尚未更新：保留基准，沿用上次的速率
+			} else if d := now.Sub(p.t).Seconds(); d > 0 {
+				for i := range vc.v {
+					if vc.v[i] >= p.v[i] {
+						vc.rate[i] = float64(vc.v[i]-p.v[i]) / d
+					}
+				}
+			}
+		}
+		cur.vmNet[r.VMID] = vc
+		if r.Status == "running" {
+			vm.NetIn, vm.NetOut, vm.DiskR, vm.DiskW = vc.rate[0], vc.rate[1], vc.rate[2], vc.rate[3]
 		}
 		if io, ok := cg[r.VMID]; ok {
 			cur.vmIOs[r.VMID] = io.ios
@@ -479,9 +518,9 @@ func prevDisk(p *sample, name string) ([5]uint64, bool) {
 	return v, ok
 }
 
-func prevVM(p *sample, id int) ([4]uint64, bool) {
+func prevVM(p *sample, id int) (vmCounter, bool) {
 	if p == nil {
-		return [4]uint64{}, false
+		return vmCounter{}, false
 	}
 	v, ok := p.vmNet[id]
 	return v, ok

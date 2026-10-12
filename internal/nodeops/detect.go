@@ -219,7 +219,7 @@ type vmConf struct {
 	Nets  []vmNet
 }
 
-type vmNet struct{ MAC, Bridge string }
+type vmNet struct{ MAC, Bridge, IP4, IP6 string } // IP4 / IP6：LXC 配置中的静态地址
 
 var qemuMacRe = regexp.MustCompile(`(?:^|,)(?:virtio|e1000e?|rtl8139|vmxnet3|ne2k_pci|pcnet|i82551|i82557b|i82559er|ne2k_isa)=([0-9A-Fa-f:]{17})`)
 var lxcMacRe = regexp.MustCompile(`(?:^|,)hwaddr=([0-9A-Fa-f:]{17})`)
@@ -257,6 +257,14 @@ func parseConfs(text string) []vmConf {
 			}
 			if mm := re.FindStringSubmatch(m[1]); mm != nil {
 				n.MAC = strings.ToLower(mm[1])
+			}
+			if cur.Type == "lxc" {
+				if ip := lxcIP4Re.FindStringSubmatch(m[1]); ip != nil {
+					n.IP4 = ip[1]
+				}
+				if ip := lxcIP6Re.FindStringSubmatch(m[1]); ip != nil {
+					n.IP6 = ip[1]
+				}
 			}
 			cur.Nets = append(cur.Nets, n)
 		}

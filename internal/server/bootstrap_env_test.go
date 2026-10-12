@@ -192,6 +192,7 @@ func TestBootstrapEnvRejectsInvalidConfiguration(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			s := newEnvTestServer(t)
+			s.TLSMode = "self" // 默认已改为 proxy（HTTP）；这里检查 HTTPS 模式下的校验
 			env := validBootstrapEnv()
 			tc.edit(env)
 			err := s.BootstrapFromEnv(envLookup(env))
@@ -396,7 +397,7 @@ func TestBootstrapEnvWithoutPublicURL(t *testing.T) {
 		t.Fatal(err)
 	}
 	st := s.settings()
-	if !s.setupDone() || st.URL != "" || st.Port != 5601 || st.TLS != "self" {
+	if !s.setupDone() || st.URL != "" || st.Port != 5601 || st.TLS != "proxy" {
 		t.Fatalf("unexpected settings: %+v", st)
 	}
 	env["PVE_FORWARD_TLS"] = "acme"
@@ -419,7 +420,7 @@ func TestRememberOrigin(t *testing.T) {
 		{name: "reverse proxy", host: "127.0.0.1:5601", proto: "https", fwdHost: "panel.example.com", tls: "proxy", wantURL: "https://panel.example.com", wantPort: 443},
 		{name: "proxy keeps Host", host: "panel.example.com", proto: "https", tls: "proxy", wantURL: "https://panel.example.com", wantPort: 443},
 		{name: "ipv6", host: "[2001:db8::1]:5601", https: true, wantURL: "https://[2001:db8::1]", wantPort: 5601},
-		{name: "forwarded host ignored without proxy mode", host: "203.0.113.10:5601", fwdHost: "evil.example.com", https: true, wantURL: "https://203.0.113.10", wantPort: 5601},
+		{name: "forwarded host ignored without proxy mode", host: "203.0.113.10:5601", fwdHost: "evil.example.com", tls: "self", https: true, wantURL: "https://203.0.113.10", wantPort: 5601},
 		{name: "invalid host", host: "bad host", https: true},
 	}
 	for _, tc := range cases {

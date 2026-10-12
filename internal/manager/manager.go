@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"pveforward/internal/nodeops"
 	"pveforward/internal/proto"
 	"pveforward/internal/secret"
 	"pveforward/internal/sshx"
@@ -606,6 +607,14 @@ func (m *Manager) process(n *store.Node, r *runtime, st *proto.DesiredState, rep
 	r.mu.Unlock()
 
 	if n.Initialized {
+		// 由本系统管理 DHCP 且启用 IPv6 时，虚拟机的 IPv6 由 IPv4 推导（与 DHCP 保留一致）
+		if n.Net.DHCP == "managed" && n.Net.CIDR6 != "" {
+			for i := range rep.VMs {
+				if v := &rep.VMs[i]; v.IP4 != "" && v.IP6 == "" {
+					v.IP6 = nodeops.V6For(n.Net.CIDR6, v.IP4)
+				}
+			}
+		}
 		changed, err := m.db.SyncVMs(n.ID, rep.VMs)
 		if err != nil {
 			log.Printf("同步虚拟机失败: %v", err)
@@ -670,7 +679,7 @@ func (m *Manager) BuildState(n *store.Node) (*proto.DesiredState, error) {
 	vmByID := map[int64]*store.VM{}
 	for _, v := range vms {
 		vmByID[v.ID] = v
-		if v.MAC != "" && v.IPv4 != "" && v.Present && (v.UserID != nil || v.Shared) {
+		if v.MAC != "" && v.IPv4 != "" && v.Present {
 			st.Hosts = append(st.Hosts, proto.DHCPHost{MAC: v.MAC, IP4: v.IPv4, IP6: v.IPv6, Name: fmt.Sprintf("vm%d", v.VMID)})
 		}
 	}

@@ -78,7 +78,7 @@ func (s *Server) setup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.TLS != "self" && req.TLS != "acme" && req.TLS != "proxy" {
-		req.TLS = "self"
+		req.TLS = "proxy"
 	}
 	if req.TLS == "acme" && net.ParseIP(u.Hostname()) != nil {
 		jsonErr(w, http.StatusBadRequest, "Let's Encrypt 需要使用域名")

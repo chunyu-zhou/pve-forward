@@ -11,7 +11,7 @@
         <template #title>初始化控制端</template>
         <template #extra><span class="muted">PVE 节点在初始化完成后，于「PVE 节点 → 添加节点」中接入</span></template>
         <div class="step-wrapper" style="padding:40px 0 48px">
-          <a-steps :current="step" style="width: 640px; max-width: 100%" line-less class="steps">
+          <a-steps :current="step" style="width: 640px; max-width: 100%" class="steps">
             <a-step description="令牌与管理员账号">验证</a-step>
             <a-step description="访问地址与端口">控制端设置</a-step>
             <a-step description="初始化完成">完成</a-step>
@@ -37,7 +37,7 @@
               <a-input v-model="f.url" placeholder="https://panel.example.com" /></a-form-item>
             <a-form-item label="面板端口" extra="Web 与 Agent 连接共用此端口"><a-input-number v-model="f.port" :min="1" :max="65535" /></a-form-item>
             <a-form-item label="HTTPS 证书">
-              <a-radio-group v-model="f.tls"><a-radio value="self">自签名（默认）</a-radio><a-radio value="acme">Let's Encrypt</a-radio><a-radio value="proxy">由反向代理处理</a-radio></a-radio-group>
+              <a-radio-group v-model="f.tls"><a-radio value="proxy">由反向代理处理（默认）</a-radio><a-radio value="self">自签名</a-radio><a-radio value="acme">Let's Encrypt</a-radio></a-radio-group>
               <template #extra>{{ tlsHint }}</template>
             </a-form-item>
             <a-form-item><a-space><a-button type="secondary" @click="step--">上一步</a-button><a-button type="primary" :loading="busy" @click="submit">完成初始化</a-button></a-space></a-form-item>
@@ -76,9 +76,8 @@ const err = reactive({})
 const result = reactive({ restart: false })
 const f = reactive({
   token: '', username: 'admin', password: '', password2: '', site: 'PVE Forward',
-  url: `${location.protocol}//${location.hostname}`, port: Number(location.port) || (location.protocol === 'https:' ? 443 : 80), tls: location.protocol === 'https:' ? 'self' : 'proxy',
+  url: `${location.protocol}//${location.hostname}`, port: Number(location.port) || (location.protocol === 'https:' ? 443 : 80), tls: 'proxy',
 })
-if (f.port === 443 || f.port === 80) f.port = 5601
 const tlsHint = computed(() => ({
   self: '自动生成证书；Agent 安装命令会附带证书公钥固定值以防中间人',
   acme: '需要使用域名，且本机 80 端口可从公网访问',

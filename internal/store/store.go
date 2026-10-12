@@ -558,22 +558,41 @@ func (d *DB) SyncVMs(nodeID int64, list []proto.VMInfo) (bool, error) {
 	for _, v := range list {
 		seen[v.VMID] = true
 		var id int64
-		var mac string
-		err := tx.QueryRow(`SELECT id,mac FROM vms WHERE node_id=? AND vmid=?`, nodeID, v.VMID).Scan(&id, &mac)
+		var mac, ip4, ip6 string
+		err := tx.QueryRow(`SELECT id,mac,ipv4,ipv6 FROM vms WHERE node_id=? AND vmid=?`, nodeID, v.VMID).Scan(&id, &mac, &ip4, &ip6)
 		if errors.Is(err, sql.ErrNoRows) {
-			if _, err := tx.Exec(`INSERT INTO vms(node_id,vmid,type,name,status,mac,synced_at) VALUES(?,?,?,?,?,?,?)`,
-				nodeID, v.VMID, v.Type, v.Name, v.Status, v.MAC, ts); err != nil {
+			r, err := tx.Exec(`INSERT INTO vms(node_id,vmid,type,name,status,mac,synced_at) VALUES(?,?,?,?,?,?,?)`,
+				nodeID, v.VMID, v.Type, v.Name, v.Status, v.MAC, ts)
+			if err != nil {
 				return false, err
 			}
-			continue
+			id, _ = r.LastInsertId()
 		} else if err != nil {
 			return false, err
+		} else {
+			if mac != v.MAC {
+				changed = true
+			}
+			if _, err := tx.Exec(`UPDATE vms SET type=?,name=?,status=?,mac=?,present=1,synced_at=? WHERE id=?`, v.Type, v.Name, v.Status, v.MAC, ts, id); err != nil {
+				return false, err
+			}
 		}
-		if mac != v.MAC {
+		// 虚拟机当前实际使用的地址：识别到时记录（已有虚拟机沿用原来的 IP）；未识别到（如已关机）时保留上次的记录
+		if v.IP4 != "" && (v.IP4 != ip4 || (v.IP6 != "" && v.IP6 != ip6)) {
+			if v.IP6 == "" {
+				v.IP6 = ip6
+				if ip4 != v.IP4 {
+					v.IP6 = ""
+				}
+			}
+			// 同一地址只属于一台虚拟机：清除其他虚拟机上过期的记录
+			if _, err := tx.Exec(`UPDATE vms SET ipv4='', ipv6='' WHERE node_id=? AND id<>? AND ipv4=?`, nodeID, id, v.IP4); err != nil {
+				return false, err
+			}
+			if _, err := tx.Exec(`UPDATE vms SET ipv4=?, ipv6=? WHERE id=?`, v.IP4, v.IP6, id); err != nil {
+				return false, err
+			}
 			changed = true
-		}
-		if _, err := tx.Exec(`UPDATE vms SET type=?,name=?,status=?,mac=?,present=1,synced_at=? WHERE id=?`, v.Type, v.Name, v.Status, v.MAC, ts, id); err != nil {
-			return false, err
 		}
 	}
 	rows, err := tx.Query(`SELECT vmid FROM vms WHERE node_id=? AND present=1`, nodeID)

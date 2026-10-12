@@ -4,7 +4,7 @@
       <template #title>{{ id ? '节点接入' : '添加节点' }}<span v-if="f.name" class="muted" style="margin-left:8px">{{ f.name }}</span></template>
       <template #extra><span class="muted">网络配置由 Agent 或 SSH 在节点上检测与执行，确认前不会改动节点</span></template>
       <div class="step-wrapper" style="padding:40px 0 48px">
-        <a-steps :current="step" style="width: 940px; max-width: 100%" line-less class="steps">
+        <a-steps :current="step" style="width: 940px; max-width: 100%" class="steps">
           <a-step description="名称与连接方式">节点信息</a-step>
           <a-step :description="f.mode === 'ssh' ? '测试 SSH 连接' : '在 PVE 上安装 Agent'">建立连接</a-step>
           <a-step description="公网网口与地址">公网网络</a-step>
@@ -23,12 +23,15 @@
           <a-form-item label="保留端口" extra="不会分配给用户，支持单个与范围，如 22,8006,3000-3100">
             <a-input v-model="f.reservedPorts" placeholder="22,8006" allow-clear /></a-form-item>
           <a-form-item label="连接方式">
+            <a-space direction="vertical" fill style="width:100%">
+            <a-alert v-if="agentWhy" type="warning" title="无法使用 Agent 方式">{{ agentWhy }}</a-alert>
             <a-radio-group v-model="f.mode" direction="vertical" style="width:100%">
-              <a-radio value="agent" class="nic-radio"><div class="nic-item"><b>Agent（WSS）</b><a-tag size="small" color="green">推荐</a-tag>
+              <a-radio value="agent" class="nic-radio" :disabled="!!agentWhy"><div class="nic-item"><b>Agent（WSS）</b><a-tag size="small" color="green">推荐</a-tag>
                 <span class="muted">在 PVE 上安装 Agent，主动连接控制端；PVE 无需开放端口，适合内网 / NAT</span></div></a-radio>
               <a-radio value="ssh" class="nic-radio"><div class="nic-item"><b>SSH</b>
                 <span class="muted">控制端通过 SSH 管理，PVE 无需安装程序；需能从控制端访问 PVE 的 SSH 端口</span></div></a-radio>
             </a-radio-group>
+            </a-space>
           </a-form-item>
           <template v-if="f.mode === 'ssh'">
             <SSHFields :f="f" :err="err" :creds="creds" @new-cred="$router.push('/credentials')" />
@@ -183,6 +186,8 @@ let timer
 
 const net = reactive({ wanIface: '', wanIp4: '', wanIp6: '', cidr4: '', addrMode: 'append', dhcp: true, dns: ['223.5.5.5', '1.1.1.1'] })
 const portHint = computed(() => portPolicyHint(f.portRange, f.reservedPorts))
+// 访问地址不是 HTTPS 时不能使用 Agent（WSS）方式
+const agentWhy = ref('')
 const bridgeChoice = ref('')
 const newBridge = ref('vmbr9')
 const ipv6Mode = ref('ula')
@@ -197,11 +202,14 @@ onMounted(async () => {
   if (!nodeId.value) {
     const d = await api.get('/api/settings')
     Object.assign(f, { portRange: d.settings.defaultPortRange, reservedPorts: d.settings.defaultReservedPorts })
+    agentWhy.value = d.agentUnavailable || ''
+    if (agentWhy.value) f.mode = 'ssh'
     return
   }
   // 继续接入已存在的节点
   const d = await api.get(`/api/nodes/${nodeId.value}`)
   const n = d.node
+  agentWhy.value = n.mode === 'agent' ? '' : d.agentUnavailable || ''
   Object.assign(f, { name: n.name, remark: n.remark, portRange: n.ports.range, reservedPorts: n.ports.reserved, mode: n.mode, sshHost: n.sshHost, sshPort: n.sshPort, sshAuth: n.sshAuth || 'password', sshUser: n.sshUser, credId: n.credId || undefined })
   step.value = 2
   if (n.mode === 'ssh') await runSSHTest()

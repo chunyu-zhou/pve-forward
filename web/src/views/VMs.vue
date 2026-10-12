@@ -71,7 +71,7 @@ const rows = computed(() => vms.value.filter(v => (!q.node || v.nodeId === q.nod
 
 async function act(v, action, userId) {
   const r = await api.put(`/api/vms/${v.id}`, { action, userId })
-  Message.success(action === 'assign' ? `已分配，IP ${r.ipv4}` : '操作成功')
+  Message.success(action === 'assign' ? (r.ipv4 ? `已分配，IP ${r.ipv4}` : '已分配；虚拟机尚未识别到 IP，开机获得地址后自动记录') : '操作成功')
   load()
 }
 async function syncAll() {

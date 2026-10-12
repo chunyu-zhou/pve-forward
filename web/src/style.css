@@ -140,3 +140,11 @@ body { font-family: Inter, -apple-system, BlinkMacSystemFont, "PingFang SC", "Mi
 .update-notes { margin-top: 4px; white-space: pre-wrap; color: var(--color-text-2); }
 .update-way { height: 100%; padding: 16px; border: 1px solid var(--color-border-2); border-radius: 4px; }
 .update-way-title { font-weight: 500; color: var(--color-text-1); margin-bottom: 6px; }
+
+/* 监控：虚拟机磁盘列（容量 | 读写 | 状态与 IOPS） */
+.disk-cell { display: flex; align-items: center; gap: 16px; font-size: 12px; line-height: 1.6; }
+.disk-cell .dc-size { width: 104px; flex: none; }
+.disk-cell .dc-io { display: flex; align-items: center; gap: 12px; }
+.disk-cell .dc-rw { width: 110px; flex: none; }
+.disk-cell .dc-st { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
+.node-active td { background: rgb(var(--primary-1)) !important; }

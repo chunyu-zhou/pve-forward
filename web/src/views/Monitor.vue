@@ -35,8 +35,13 @@
       </a-grid>
     </a-card>
 
-    <!-- 节点卡片 -->
-    <a-grid v-if="data.nodes.length" class="node-grid" :cols="{ xs: 1, sm: 1, md: 2, lg: 2, xl: 3, xxl: 3 }" :col-gap="16" :row-gap="16" style="margin-bottom:16px">
+    <!-- 节点：列表 / 方块 -->
+    <a-card v-if="data.nodes.length" class="general-card" title="节点" style="margin-bottom:16px" :body-style="nodeView === 'card' ? { background: 'var(--color-fill-2)', padding: '0' } : undefined">
+      <template #extra>
+        <a-radio-group v-model="nodeView" type="button" size="small">
+          <a-radio value="list"><icon-list /> 列表</a-radio><a-radio value="card"><icon-apps /> 方块</a-radio></a-radio-group>
+      </template>
+    <a-grid v-if="nodeView === 'card'" class="node-grid" :cols="{ xs: 1, sm: 1, md: 2, lg: 2, xl: 3, xxl: 3 }" :col-gap="16" :row-gap="16">
       <a-grid-item v-for="n in data.nodes" :key="n.id">
         <a-card class="general-card node-card" :class="{ offline: n.status !== 'online', active: nodeFilter === n.id }" hoverable @click="nodeFilter = nodeFilter === n.id ? 0 : n.id">
           <template #title><a-space><span>{{ n.name }}</span><a-badge :status="nodeBadge[n.status]?.badge" :text="nodeBadge[n.status]?.text" /></a-space></template>
@@ -90,6 +95,29 @@
         </a-card>
       </a-grid-item>
     </a-grid>
+      <a-table v-else row-key="id" :data="data.nodes" :columns="nodeColumns" :pagination="false" :bordered="false" size="small"
+               :scroll="pub ? undefined : { x: nodeColumns.reduce((t, c) => t + c.width, 0) }" :class="{ 'pub-table': pub }"
+               :row-class="n => 'mon-row' + (nodeFilter === n.id ? ' node-active' : '')" @row-click="n => (nodeFilter = nodeFilter === n.id ? 0 : n.id)">
+        <template #nname="{ record: n }">
+          <div class="lines"><a-space :size="6"><b style="font-weight:500">{{ n.name }}</b><a-badge :status="nodeBadge[n.status]?.badge" :text="nodeBadge[n.status]?.text" /></a-space>
+            <div class="muted" style="font-size:12px">{{ n.status === 'online' && n.metrics ? '运行 ' + fmtUptime(n.metrics.uptime) : '最后心跳 ' + fmtAgo(n.lastSeen) }}</div></div>
+        </template>
+        <template #ncpu="{ record: n }"><MonCell :on="!!(n.status === 'online' && n.metrics)" mode="bars" :pct="n.metrics?.cpu || 0" :text="num(n.metrics?.cpu) + '%'" :sub="(n.metrics?.cores || 0) + ' 核'" /></template>
+        <template #nmem="{ record: n }"><MonCell :on="!!(n.status === 'online' && n.metrics)" mode="bars" :pct="pct(n.metrics?.memUsed, n.metrics?.memTotal)" :text="pct(n.metrics?.memUsed, n.metrics?.memTotal) + '%'" :sub="fmtBytes(n.metrics?.memUsed, 0) + ' / ' + fmtBytes(n.metrics?.memTotal, 0)" /></template>
+        <template #nstore="{ record: n }"><MonCell :on="!!(n.status === 'online' && n.metrics)" mode="bars" :pct="pct(n.metrics?.diskUsed, n.metrics?.diskTotal)" :text="pct(n.metrics?.diskUsed, n.metrics?.diskTotal) + '%'" :sub="fmtBytes(n.metrics?.diskUsed) + ' / ' + fmtBytes(n.metrics?.diskTotal)" /></template>
+        <template #ndisks="{ record: n }">
+          <div v-if="n.status === 'online' && n.metrics && n.disks.length" class="lines" style="font-size:12px">
+            <div v-for="d in n.disks" :key="d.dev"><span class="mono">{{ d.dev }}</span>
+              <a-tag size="small" :color="busy(d.util, d.await).tag" style="margin-left:4px">{{ busy(d.util, d.await).text }} {{ num(d.util) }}%</a-tag>
+              <span class="muted mono" style="margin-left:4px">{{ fmtK(d.rIops + d.wIops) }} IOPS · {{ num(d.await) }} ms</span></div>
+            <div class="muted">IO 等待 {{ num(n.metrics.iowait) }}%</div>
+          </div><span v-else class="muted">-</span>
+        </template>
+        <template #nnet="{ record: n }"><div v-if="n.status === 'online' && n.metrics" class="updown"><div class="d"><icon-arrow-down /> {{ fmtRate(n.metrics.netIn) }}</div><div class="u"><icon-arrow-up /> {{ fmtRate(n.metrics.netOut) }}</div></div><span v-else class="muted">-</span></template>
+        <template #nload="{ record: n }"><span v-if="n.status === 'online' && n.metrics" class="mono">{{ num(n.metrics.load[0]) }}</span><span v-else class="muted">-</span></template>
+        <template #nvms="{ record: n }"><span><b>{{ data.vms.filter(v => v.nodeId === n.id && v.status === 'running').length }}</b> / {{ data.vms.filter(v => v.nodeId === n.id).length }}</span></template>
+      </a-table>
+    </a-card>
 
     <!-- 虚拟机与容器 -->
     <a-card v-if="!pub || page.showVms" class="general-card" :title="admin || pub ? '虚拟机与容器' : '我的虚拟机'">
@@ -97,7 +125,7 @@
         <a-space v-if="!pub">
           <span class="muted">更新于 {{ updatedText }}</span>
           <a-badge v-if="refresh === 3" status="processing" text="实时" />
-          <a-select v-model="refresh" size="small" style="width:130px" :options="[{ label: '实时刷新（3 秒）', value: 3 }, { label: '自动刷新 10s', value: 10 }, { label: '自动刷新 30s', value: 30 }, { label: '自动刷新 60s', value: 60 }, { label: '暂停刷新', value: 0 }]" />
+          <a-select v-model="refresh" size="small" style="width:170px" :options="[{ label: '实时刷新（3 秒）', value: 3 }, { label: '自动刷新 10s', value: 10 }, { label: '自动刷新 30s', value: 30 }, { label: '自动刷新 60s', value: 60 }, { label: '暂停刷新', value: 0 }]" />
         </a-space>
       </template>
       <a-row justify="space-between" align="center" style="margin-bottom:16px" :gutter="8">
@@ -129,12 +157,20 @@
         <template #uptime="{ record }"><span :class="{ muted: record.status !== 'running' }">{{ record.status === 'running' ? fmtUptime(record.uptime) : '-' }}</span></template>
         <template #cpu="{ record }"><MonCell :on="record.status === 'running'" :mode="mode" :pct="record.cpu" :text="num(record.cpu) + '%'" :sub="record.cores + ' 核'" :history="hist('v' + record.id, 'cpu')" /></template>
         <template #mem="{ record }"><MonCell :on="record.status === 'running'" :mode="mode" :pct="pct(record.memUsed, record.memTotal)" :text="pct(record.memUsed, record.memTotal) + '%'" :sub="fmtBytes(record.memUsed) + ' / ' + fmtBytes(record.memTotal, 0)" :history="hist('v' + record.id, 'mem')" /></template>
-        <template #disk="{ record }"><MonCell v-if="record.diskTotal && record.type === 'lxc' && record.status !== 'offline'" :on="true" mode="bars" :pct="pct(record.diskUsed, record.diskTotal)" :text="pct(record.diskUsed, record.diskTotal) + '%'" :sub="fmtBytes(record.diskUsed) + ' / ' + fmtBytes(record.diskTotal, 0)" />
-          <span v-else-if="record.diskTotal" class="muted">{{ fmtBytes(record.diskTotal, 0) }}</span><span v-else class="muted">-</span></template>
-        <template #io="{ record }"><div v-if="record.status === 'running'" class="updown">
-          <a-tooltip :content="`读 ${fmtRate(record.diskR)} · 写 ${fmtRate(record.diskW)}；IO 压力 ${num(record.ioPressure)}%`">
-            <div><a-tag size="small" :color="vmBusy(record).tag">{{ vmBusy(record).text }}</a-tag> <span class="mono">{{ fmtK(record.iops) }} IOPS</span></div></a-tooltip>
-          <div class="muted">读 {{ fmtRate(record.diskR) }}</div></div><span v-else class="muted">-</span></template>
+        <template #disk="{ record }"><div class="disk-cell">
+          <div class="dc-size">
+            <template v-if="record.diskTotal && record.type === 'lxc' && record.status !== 'offline'">
+              <div>{{ pct(record.diskUsed, record.diskTotal) }}%</div><div class="muted">{{ fmtBytes(record.diskUsed) }} / {{ fmtBytes(record.diskTotal, 0) }}</div></template>
+            <template v-else-if="record.diskTotal"><div>{{ fmtBytes(record.diskTotal, 0) }}</div><div class="muted">容量</div></template>
+            <span v-else class="muted">-</span>
+          </div>
+          <a-tooltip v-if="record.status === 'running'" :content="`IO 压力 ${num(record.ioPressure)}%（等待磁盘 IO 的时间占比）`">
+            <div class="dc-io">
+              <div class="dc-rw"><div>读 {{ fmtRate(record.diskR) }}</div><div>写 {{ fmtRate(record.diskW) }}</div></div>
+              <div class="dc-st"><a-tag size="small" :color="vmBusy(record).tag">{{ vmBusy(record).text }}</a-tag><span class="mono muted">{{ fmtK(record.iops) }} IOPS</span></div>
+            </div>
+          </a-tooltip>
+        </div></template>
         <template #net="{ record }"><div v-if="record.status === 'running'" class="updown"><div class="d"><icon-arrow-down /> {{ fmtRate(record.netIn) }}</div><div class="u"><icon-arrow-up /> {{ fmtRate(record.netOut) }}</div></div><span v-else class="muted">-</span></template>
         <template #ip="{ record }"><div class="lines"><div class="mono">{{ record.ipv4 || '-' }}</div><div v-if="record.ipv6" class="mono muted">{{ record.ipv6 }}</div></div></template>
         <template #empty><a-empty :description="data.updated ? '没有虚拟机' : '加载中…'" /></template>
@@ -181,6 +217,22 @@ const gateTitle = ref('状态页')
 const pwd = ref('')
 const pwdErr = ref('')
 const refresh = ref(Number(localStorage.getItem('pf-monitor-refresh') ?? 30))
+// 节点显示方式：列表（默认）或方块
+const nodeView = ref(localStorage.getItem('pf-monitor-nodeview') || 'list')
+watch(nodeView, v => localStorage.setItem('pf-monitor-nodeview', v))
+const nodeColumns = computed(() => {
+  const cols = [
+    { title: '节点', slotName: 'nname', width: 190 },
+    { title: 'CPU', slotName: 'ncpu', width: 190 },
+    { title: '内存', slotName: 'nmem', width: 200 },
+    { title: '存储', slotName: 'nstore', width: 210 },
+    { title: '磁盘', slotName: 'ndisks', width: 320 },
+    { title: '网络', slotName: 'nnet', width: 120 },
+    { title: '负载', slotName: 'nload', width: 70 },
+    { title: '虚拟机', slotName: 'nvms', width: 80 },
+  ]
+  return pub.value ? cols.map(({ width, ...c }) => c) : cols
+})
 const kw = ref('')
 const nodeFilter = ref(0)
 const typeFilter = ref('')
@@ -313,8 +365,7 @@ const allColumns = computed(() => [
   { title: '运行时长', slotName: 'uptime', width: 96 },
   { title: 'CPU', slotName: 'cpu', width: 200, dataIndex: 'cpu', sortable: { sortDirections: ['descend', 'ascend'] } },
   { title: '内存', slotName: 'mem', width: 210, dataIndex: 'memUsed', sortable: { sortDirections: ['descend', 'ascend'] } },
-  { title: '磁盘', slotName: 'disk', width: 190 },
-  { title: '磁盘 IO', slotName: 'io', width: 150, dataIndex: 'iops', sortable: { sortDirections: ['descend', 'ascend'] } },
+  { title: '磁盘 / IO', slotName: 'disk', width: 340, dataIndex: 'iops', sortable: { sortDirections: ['descend', 'ascend'] } },
   { title: '网络', slotName: 'net', width: 120 },
   ...(showIp.value ? [{ title: 'IP', slotName: 'ip', width: 150 }] : []),
 ])

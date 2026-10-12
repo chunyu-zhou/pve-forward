@@ -166,7 +166,7 @@ sleep 3
 systemctl is-active --quiet "$SERVICE"
 STOPPED=0
 printf '\nInstalled: %s\nBackup: %s\n' "$TARGET" "$BACKUP"
-printf '%s\n' 'Default first access: https://<controller-IP>:5601 (self-signed, unless overridden).' \
+printf '%s\n' 'Default first access: http://<controller-IP>:5601 (plain HTTP; put a TLS reverse proxy in front, Agent nodes require https).' \
   'Initialization token: sudo cat /var/lib/pve-forward/setup-token' \
   'Logs: sudo journalctl -u pve-forward.service -n 80 --no-pager' \
   'The token file is removed after setup. This installer never resets it.' \

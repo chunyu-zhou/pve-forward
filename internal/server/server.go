@@ -87,7 +87,7 @@ type Settings struct {
 }
 
 func (s *Server) settings() Settings {
-	st := Settings{Site: "PVE Forward", Port: 5601, TLS: "self", Interval: 60, OfflineAfter: 180, DefaultPortRange: "10000-60000", DefaultReservedPorts: "22,8006",
+	st := Settings{Site: "PVE Forward", Port: 5601, TLS: "proxy", Interval: 60, OfflineAfter: 180, DefaultPortRange: "10000-60000", DefaultReservedPorts: "22,8006",
 		SessionDays: 7, LockAttempts: 5, DiskBusyUtil: 70, DiskSatUtil: 90, DiskBusyAwait: 20, DiskSatAwait: 40,
 		UpdateCheck: true}
 	s.db.SettingJSON("settings", &st)

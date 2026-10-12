@@ -68,7 +68,7 @@ func (s *Server) getNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	st := s.mgr.Status(n.ID)
-	writeJSON(w, map[string]any{"node": s.nodeOut(n), "detect": st.Detect})
+	writeJSON(w, map[string]any{"node": s.nodeOut(n), "detect": st.Detect, "agentUnavailable": s.agentUnavailable()})
 }
 
 type nodeIn struct {
@@ -97,9 +97,28 @@ type nodeIn struct {
 var hostRe = regexp.MustCompile(`^[A-Za-z0-9.:-]{1,253}$`)
 
 // applyConn 校验并写入连接参数；返回是否需要重启节点循环。
+// agentUnavailable 返回不能使用 Agent 方式的原因；为空表示可以使用。
+// Agent 通过 WSS 主动连接控制端，访问地址必须是 HTTPS。
+func (s *Server) agentUnavailable() string {
+	st := s.settings()
+	switch {
+	case st.URL == "":
+		return "尚未设置控制端访问地址，请在「系统设置」中填写 https:// 开头的访问地址"
+	case !strings.HasPrefix(st.URL, "https://"):
+		return "控制端访问地址 " + st.URL + " 不是 HTTPS。Agent 通过 WSS 连接控制端，需要 HTTPS：请先配置反向代理（Nginx / Caddy 等）提供 HTTPS，再在「系统设置」中把访问地址改为 https:// 开头的地址；或改用 SSH 方式接入"
+	}
+	return ""
+}
+
 func (s *Server) applyConn(n *store.Node, in *nodeIn) (bool, error) {
 	if in.Mode != "agent" && in.Mode != "ssh" {
 		return false, bad("连接方式无效")
+	}
+	// 新建或改为 Agent 方式时检查（已接入的 Agent 节点不受影响）
+	if in.Mode == "agent" && (n.ID == 0 || n.Mode != "agent") {
+		if why := s.agentUnavailable(); why != "" {
+			return false, bad("%s", why)
+		}
 	}
 	changed := n.Mode != in.Mode
 	n.Mode = in.Mode

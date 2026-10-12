@@ -445,7 +445,8 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 	hasPwd := p.PwdHash != ""
 	p.PwdHash = ""
 	writeJSON(w, map[string]any{"settings": s.settings(), "public": p, "publicHasPassword": hasPwd, "pin": s.CertFingerprint(), "version": Version,
-		"listen": s.listen, "tlsFixed": s.TLSMode})
+		"agentUnavailable": s.agentUnavailable(),
+		"listen":           s.listen, "tlsFixed": s.TLSMode})
 }
 
 var slugRe = regexp.MustCompile(`^[A-Za-z0-9_-]{4,64}$`)

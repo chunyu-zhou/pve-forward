@@ -51,7 +51,7 @@ WORKDIR /var/lib/pve-forward
 VOLUME ["/var/lib/pve-forward"]
 EXPOSE 5601
 STOPSIGNAL SIGTERM
-# 默认 HTTPS（自签名证书）监听 5601；节点 Agent 连接地址在管理员首次访问时自动记录。
+# 默认以 HTTP 监听 5601（不生成自签名证书，HTTPS 由反向代理提供）；访问地址在管理员首次访问时自动记录。
 # No shell wrapper, systemd, elevated capabilities or privileged container required.
 ENTRYPOINT ["/usr/local/bin/pve-forward"]
 CMD ["run"]

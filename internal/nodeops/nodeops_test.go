@@ -251,3 +251,29 @@ func TestParseCollect(t *testing.T) {
 		t.Errorf("健康 %v", rep.Health)
 	}
 }
+
+// pvesh 的虚拟机计数器约 10 秒更新一次：两次采集之间未更新时沿用上次的速率，而不是变为 0。
+func TestVMRateKeepsLastWhenCountersStale(t *testing.T) {
+	st := testState()
+	t0 := time.Unix(1000, 0)
+	_, s1 := parseCollect(sections([]byte(collectOut(1000, 100, 1000))), nil, t0, st)
+	rep, s2 := parseCollect(sections([]byte(collectOut(2000, 200, 11000))), s1, t0.Add(10*time.Second), st)
+	if rep.VMs[0].NetIn != 1000 {
+		t.Fatalf("首次速率 %v", rep.VMs[0].NetIn)
+	}
+	// 3 秒后计数器未变：沿用 1000，而不是 0
+	rep, s3 := parseCollect(sections([]byte(collectOut(3000, 300, 11000))), s2, t0.Add(13*time.Second), st)
+	if rep.VMs[0].NetIn != 1000 {
+		t.Fatalf("计数器未更新时 %v", rep.VMs[0].NetIn)
+	}
+	// 计数器更新：按距上次真正变化的时间计算（10 秒前的基准）
+	rep, _ = parseCollect(sections([]byte(collectOut(4000, 400, 31000))), s3, t0.Add(20*time.Second), st)
+	if rep.VMs[0].NetIn != 2000 {
+		t.Fatalf("更新后 %v", rep.VMs[0].NetIn)
+	}
+	// 长时间未变化（虚拟机确实没有流量）：速率归零
+	rep, _ = parseCollect(sections([]byte(collectOut(3000, 300, 11000))), s2, t0.Add(50*time.Second), st)
+	if rep.VMs[0].NetIn != 0 {
+		t.Fatalf("长时间未变化 %v", rep.VMs[0].NetIn)
+	}
+}

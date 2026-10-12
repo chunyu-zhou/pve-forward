@@ -152,7 +152,7 @@ name: web01
 net0: virtio=BC:24:11:00:00:01,bridge=vmbr1
 #lxc 102
 hostname: vpn01
-net0: name=eth0,bridge=vmbr1,hwaddr=BC:24:11:00:00:02
+net0: name=eth0,bridge=vmbr1,hwaddr=BC:24:11:00:00:02,ip=10.0.0.8/24,gw=10.0.0.1
 ##cgio
 ##nft
 NFT
@@ -160,6 +160,8 @@ NFT
 0.0.0.0:22
 0.0.0.0:20009
 ##conntrack
+##leases
+1760000000 bc:24:11:00:00:01 10.0.0.57 web01 *
 ##health
 `
 
@@ -327,6 +329,10 @@ func TestEndToEnd(t *testing.T) {
 	if len(vms) != 2 || vms[0].MAC != "bc:24:11:00:00:01" {
 		t.Fatalf("虚拟机 %+v", vms)
 	}
+	// 已有虚拟机沿用原来的内网地址（DHCP 租约 / LXC 静态地址），而不是重新分配
+	if vms[0].IPv4 != "10.0.0.57" || vms[1].IPv4 != "10.0.0.8" || !strings.HasSuffix(vms[0].IPv6, "::57") {
+		t.Fatalf("虚拟机原有地址 %+v %+v", vms[0], vms[1])
+	}
 	vmWeb, vmVPN := vms[0].ID, vms[1].ID
 
 	// ---- 用户与端口分配 ----
@@ -367,8 +373,8 @@ func TestEndToEnd(t *testing.T) {
 		t.Fatalf("修改端口策略 %+v", upd.Node.Ports)
 	}
 	admin.do("GET", "/api/vms", nil, 200, &vms)
-	if vms[0].IPv4 != "10.0.0.10" || vms[0].Owner != "alice" || !strings.HasSuffix(vms[0].IPv6, "::10") {
-		t.Fatalf("自动分配 IP %+v", vms[0])
+	if vms[0].IPv4 != "10.0.0.57" || vms[0].Owner != "alice" || !strings.HasSuffix(vms[0].IPv6, "::57") {
+		t.Fatalf("分配后应沿用原有地址 %+v", vms[0])
 	}
 	// 公共虚拟机
 	admin.do("PUT", fmt.Sprintf("/api/vms/%d", vmVPN), map[string]any{"action": "share"}, 200, nil)
@@ -409,19 +415,20 @@ func TestEndToEnd(t *testing.T) {
 	// 规则已下发到节点
 	waitFor(t, "规则下发", func() bool { return strings.Contains(fake.nft(), "dport 20001") })
 	nft := fake.nft()
-	for _, want := range []string{`tcp dport 20000 counter dnat ip to 10.0.0.10:22`, `udp dport 20000 counter dnat ip to 10.0.0.10:22`,
+	for _, want := range []string{`tcp dport 20000 counter dnat ip to 10.0.0.57:22`, `udp dport 20000 counter dnat ip to 10.0.0.57:22`,
 		`dnat ip6 to [`, `udp dport 20001 counter dnat ip to 10.0.0.`, `ip saddr 10.0.0.0/24 masquerade`} {
 		if !strings.Contains(nft, want) {
 			t.Fatalf("规则缺少 %q\n%s", want, nft)
 		}
 	}
-	if !strings.Contains(fake.hosts, "bc:24:11:00:00:01,10.0.0.10,") {
+	// 由本系统管理 DHCP：所有已识别地址的虚拟机都写入保留，续租后仍为原来的地址
+	if !strings.Contains(fake.hosts, "bc:24:11:00:00:01,10.0.0.57,") || !strings.Contains(fake.hosts, "bc:24:11:00:00:02,10.0.0.8,") {
 		t.Fatalf("DHCP 绑定 %q", fake.hosts)
 	}
 
 	var rules []ruleOut
 	ua.do("GET", "/api/rules", nil, 200, &rules)
-	if len(rules) != 2 || rules[0].Entry4 != "203.0.113.10" || rules[0].Target4 != "10.0.0.10" {
+	if len(rules) != 2 || rules[0].Entry4 != "203.0.113.10" || rules[0].Target4 != "10.0.0.57" {
 		t.Fatalf("用户规则 %+v", rules)
 	}
 	ub := newClient(t, ts.URL)
