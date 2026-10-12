@@ -12,8 +12,6 @@ services:
       - controller-data:/var/lib/pve-forward
     security_opt:
       - no-new-privileges:true
-    cap_drop:
-      - ALL
     read_only: true
     tmpfs:
       - /tmp:size=16m,mode=1777

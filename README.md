@@ -37,8 +37,6 @@ services:
       - pve-forward-data:/var/lib/pve-forward
     security_opt:
       - no-new-privileges:true
-    cap_drop:
-      - ALL
     read_only: true
     tmpfs:
       - /tmp:size=16m,mode=1777
@@ -142,7 +140,7 @@ docker compose logs --tail=100 controller
 
 ### 持久化、安全与升级
 
-命名卷 `controller-data` 挂载整个 `/var/lib/pve-forward`，保存 SQLite/WAL、主密钥及证书。镜像以 UID/GID `10001:10001` 非 root 运行，不需要 `privileged`、宿主网络或 `NET_ADMIN`。若改用 bind mount，先确保目录由该 UID/GID 读写；旧数据库必须和原 `master.key` 一起迁移。不要单独挂载 `data.db`，不要用 `docker compose down -v` 升级（这会删除数据卷）。
+命名卷 `controller-data` 挂载整个 `/var/lib/pve-forward`，保存 SQLite/WAL、主密钥及证书。容器以 root 启动后，自动把数据目录的所有者改为 UID/GID `10001:10001` 并降为该用户运行，不需要 `privileged`、宿主网络或 `NET_ADMIN`。也可以挂载宿主机目录（如 `/opt/pve-forward/data:/var/lib/pve-forward`），所有者会被自动修正。**不要在 compose 中设置 `cap_drop: ALL`**，否则无法修正所有者和降权；启用 SELinux 的主机挂载宿主机目录时需加 `:z`。旧数据库必须和原 `master.key` 一起迁移。不要单独挂载 `data.db`，不要用 `docker compose down -v` 升级（这会删除数据卷）。
 
 支持直接给容器传入 `PVE_FORWARD_ADMIN_PASSWORD_FILE=/run/secrets/admin_password` 读取 Docker secret；使用此方式时从 Compose environment 删除 `PVE_FORWARD_ADMIN_PASSWORD`，同时配置 secrets 挂载。不要同时设置两种密码来源。Docker 环境变量可被有 Docker 管理权限的人查看，secret 方式更适合正式部署。
 

@@ -146,7 +146,7 @@ jobs:
             if [[ $status -ne 0 ]]; then docker logs "$container" 2>&1 || true; fi
             docker rm -f "$container" >/dev/null 2>&1 || true
             docker volume rm "$volume" >/dev/null 2>&1 || true
-            rm -rf "$work"
+            sudo rm -rf "$work"
             exit "$status"
           }
           trap cleanup EXIT
@@ -154,7 +154,7 @@ jobs:
           start() {
             docker run -d --name "$container" \
               --read-only --tmpfs /tmp:rw,noexec,nosuid,size=64m \
-              --cap-drop=ALL --security-opt=no-new-privileges \
+              --security-opt=no-new-privileges \
               -p 127.0.0.1:15000:5601 \
               -v "$volume:/var/lib/pve-forward" \
               -e PVE_FORWARD_ADMIN_USER="$username" \
@@ -186,8 +186,9 @@ jobs:
           }
           start "$password"
           ready
-          # PID 1 is the controller directly; image and volume work without root/capabilities.
-          test "$(docker exec "$container" id -u)" = 10001
+          # PID 1 is the controller directly.
+          # 容器以 root 启动后降为 10001 运行
+          test "$(docker exec "$container" awk '/^Uid:/ { print $2 }' /proc/1/status)" = 10001
           test "$(docker exec "$container" cat /proc/1/comm)" = pve-forward
           docker exec "$container" test -s /var/lib/pve-forward/master.key
           test "$(docker exec "$container" stat -c '%u' /var/lib/pve-forward)" = 10001
@@ -228,7 +229,23 @@ jobs:
             -H 'Content-Type: application/json' -H 'X-Requested-With: pveforward' \
             --data-binary "@$work/replacement.json" "$base/api/login")
           test "$code" = 401
-          printf 'HTTPS bootstrap, login, persistent user/key and amd64/arm64 downloads passed.\n'
+          # 挂载宿主机目录（所有者不是 10001、权限 0700）：容器自动修正所有者后正常启动
+          docker rm -f "$container" >/dev/null
+          hostdir="$work/hostdata"
+          mkdir -m 700 "$hostdir"
+          docker run -d --name "$container" \
+            --read-only --tmpfs /tmp:rw,noexec,nosuid,size=64m --security-opt=no-new-privileges \
+            -p 127.0.0.1:15000:5601 -v "$hostdir:/var/lib/pve-forward" \
+            -e PVE_FORWARD_ADMIN_USER="$username" -e PVE_FORWARD_ADMIN_PASSWORD="$password" \
+            pve-forward:smoke >/dev/null
+          ready
+          login "$password"
+          test "$(sudo stat -c '%u:%g' "$hostdir/master.key")" = 10001:10001
+          # docker exec 默认以 root 执行维护命令，也必须降权，不能留下 root 所有的数据库文件
+          docker exec "$container" pve-forward reset-password "$username" "$replacement" >/dev/null
+          test -z "$(sudo find "$hostdir" ! -uid 10001)"
+          login "$replacement"
+          printf 'HTTPS bootstrap, login, persistent user/key, host-directory ownership and amd64/arm64 downloads passed.\n'
       - name: Set up QEMU for target runtime package installation
         uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
         with:

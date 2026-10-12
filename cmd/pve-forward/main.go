@@ -60,6 +60,10 @@ func main() {
 		fs.Usage()
 		os.Exit(2)
 	}
+	// Docker 镜像以 root 启动：修正数据目录所有者后降为 10001 运行（在访问数据目录之前）
+	if err := dropPrivileges(*dataDir); err != nil {
+		log.Fatal(err)
+	}
 	// Only the server command reads env. Maintenance commands must still work
 	// when a container has stale or incomplete bootstrap configuration.
 	if cmd == "run" {
@@ -70,14 +74,14 @@ func main() {
 		update.Launch(*dataDir, server.Version)
 	}
 	if err := os.MkdirAll(*dataDir, 0o700); err != nil {
-		log.Fatal(err)
+		log.Fatal(permissionHint(*dataDir, err))
 	}
 	if abs, err := filepath.Abs(*dataDir); err == nil {
 		*dataDir = abs
 	}
 	box, err := openMasterKey(*dataDir)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal(permissionHint(*dataDir, err))
 	}
 	db, err := store.Open(*dataDir)
 	if err != nil {
@@ -174,6 +178,15 @@ func applyRuntimeEnv(fs *flag.FlagSet, getenv func(string) string) error {
 	default:
 		return errors.New("PVE_FORWARD_TLS / -tls 必须是 self、acme 或 proxy")
 	}
+}
+
+// permissionHint 为数据目录的权限错误附加处理办法。
+func permissionHint(dataDir string, err error) error {
+	if !errors.Is(err, os.ErrPermission) {
+		return err
+	}
+	return fmt.Errorf("%w\n数据目录 %s 没有读写权限（当前 UID %d）。Docker 部署请使用最新镜像并删除 compose 中的 cap_drop: ALL；"+
+		"宿主机目录也可以手动执行 chown -R 10001:10001 <宿主机目录>；启用 SELinux 的主机请在挂载后加 :z", err, dataDir, os.Getuid())
 }
 
 // Open the key before creating a database: an existing database without its

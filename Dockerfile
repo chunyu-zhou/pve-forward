@@ -45,7 +45,8 @@ LABEL org.opencontainers.image.source="https://github.com/chunyu-zhou/pve-forwar
 ENV PVE_FORWARD_RUNTIME=docker
 # 容器内固定监听 5601（与端口映射右侧一致）；系统设置中的端口只表示节点 Agent 连接用的外部端口
 ENV PVE_FORWARD_LISTEN=:5601
-USER 10001:10001
+# 以 root 启动：程序先把数据目录（命名卷或宿主机目录）的所有者改为 10001，再降为 10001 运行，
+# 因此挂载任意已有目录都不会出现 permission denied。降权后进程不持有任何特权。
 WORKDIR /var/lib/pve-forward
 VOLUME ["/var/lib/pve-forward"]
 EXPOSE 5601
