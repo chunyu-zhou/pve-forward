@@ -550,10 +550,14 @@ func (s *Server) certNotify(ctx context.Context) {
 
 // ---------------- Web 入口 ----------------
 
-// webPorts 返回节点已启用的 Web 端口（这些端口不能再用于端口转发或分配给用户）。
+// webPorts 返回宿主机上由 Web 转发占用的端口（这些端口不能再用于端口转发或分配给用户）。
+// 入口虚拟机模式下 Web 端口在虚拟机内，不占用宿主机端口。
 func (s *Server) webPorts(nodeID int64) map[int]bool {
 	w, _, _ := s.db.NodeWeb(nodeID)
 	res := map[int]bool{}
+	if w.Mode == "vm" {
+		return res
+	}
 	for _, p := range w.Ports() {
 		res[p] = true
 	}
@@ -691,8 +695,11 @@ func (s *Server) buildWeb(n *store.Node, in webIn) (store.NodeWeb, error) {
 	if seen[webcfg.StatusPort] {
 		return w, bad("端口 %d 由系统内部使用", webcfg.StatusPort)
 	}
-	// 端口不能已分配给用户（与端口转发规则的冲突由 webConflicts 处理）
+	// 宿主机运行时，端口不能已分配给用户（与端口转发规则的冲突由 webConflicts 处理）
 	for _, p := range w.Ports() {
+		if w.Mode == "vm" {
+			break
+		}
 		var holder string
 		if s.db.QueryRow(`SELECT u.username FROM allocated_ports a JOIN users u ON u.id=a.user_id WHERE a.node_id=? AND a.port=?`, n.ID, p).Scan(&holder) == nil {
 			return w, bad("端口 %d 已分配给用户 %s，请先收回分配", p, holder)
@@ -772,6 +779,9 @@ type webConflict struct {
 // webConflicts 返回 Web 端口上已有的端口转发规则。
 func (s *Server) webConflicts(n *store.Node, w store.NodeWeb) []webConflict {
 	var res []webConflict
+	if w.Mode == "vm" {
+		return nil // 入口虚拟机模式不使用宿主机端口
+	}
 	rules, _ := s.db.Rules(0, n.ID)
 	for _, rl := range rules {
 		if !w.HasPort(rl.Port) {

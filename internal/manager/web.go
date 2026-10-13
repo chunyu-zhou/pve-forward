@@ -275,27 +275,14 @@ func (m *Manager) WebOp(ctx context.Context, nodeID int64, req *proto.WebReq) (*
 	return res, err
 }
 
-// webState 补充期望状态：统计接口地址、入口虚拟机的端口转发、站点目标。
+// webState 补充期望状态：统计接口地址、站点目标。
 func (m *Manager) webState(n *store.Node, st *proto.DesiredState, vmByID map[int64]*store.VM) {
 	w, ws, err := m.db.NodeWeb(n.ID)
 	if err != nil || !w.Enabled {
 		return
 	}
 	st.WebStatus = m.webStatusURL(w, ws)
-	// 入口虚拟机模式：宿主机把 Web 端口转发到入口虚拟机（部署完成后才生效）
-	if w.Mode == "vm" && ws.Location == w.Location() {
-		if v := vmByID[w.VMID]; v != nil && v.Present && v.IPv4 != "" {
-			used := map[int]bool{}
-			for _, r := range st.Rules {
-				used[r.Port] = true
-			}
-			for _, p := range w.Ports() {
-				if !used[p] {
-					st.Rules = append(st.Rules, proto.Rule{ID: -int64(p), Port: p, Proto: "tcp", IPVer: "v4", Target4: v.IPv4, TargetPort: p, Public: true})
-				}
-			}
-		}
-	}
+	// 入口虚拟机模式下，公网端口如何到达入口虚拟机由管理员自行配置（如端口转发规则），这里不生成转发
 	sites, err := m.db.Sites(0, n.ID)
 	if err != nil {
 		return

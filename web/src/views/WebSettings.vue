@@ -106,7 +106,7 @@
                     <div class="box hl">{{ e.node.name }} {{ e.node.wanIp4 }}<div class="muted">宿主机 OpenResty 按域名分流</div></div><span class="arrow">→</span>
                   </template>
                   <template v-else>
-                    <div class="box">{{ e.node.name }} {{ e.node.wanIp4 }}<div class="muted">nftables 转发 Web 端口</div></div><span class="arrow">→</span>
+                    <div class="box dashed">{{ e.node.name }} {{ e.node.wanIp4 }}<div class="muted">公网端口自行转发到入口虚拟机</div></div><span class="arrow">→</span>
                     <div class="box hl">{{ vmLabel(e, forms[e.node.id].vmId) || '入口虚拟机' }}<div class="muted">虚拟机内 OpenResty 按域名分流</div></div><span class="arrow">→</span>
                   </template>
                   <div class="box">目标虚拟机内网 IP:端口</div>
@@ -143,7 +143,11 @@
                       <a-button class="copy" size="mini" @click="copyText(pubkeys[e.node.id])">复制</a-button></div>
                     <a-button v-else size="mini" style="margin-top:8px" :loading="pubkeys[e.node.id] === null" @click="loadPubkey(e)">获取宿主机公钥</a-button>
                   </a-alert>
-                  <a-alert type="info" style="margin-bottom:16px">入口虚拟机停止时，该节点的全部 Web 转发都会中断，建议使用开机自启、不常重启的虚拟机。客户端真实 IP 通过 X-Forwarded-For / X-Real-IP 传给目标虚拟机。</a-alert>
+                  <a-alert type="info" style="margin-bottom:16px">
+                    OpenResty 在入口虚拟机内监听下面的 Web 端口，并按域名转发到用户的虚拟机；本系统不会改动宿主机端口。公网如何到达入口虚拟机由你自行配置（例如在端口转发中添加公共规则，把公网 80 / 443 转发到入口虚拟机）。
+                    <div v-if="vmEntryRules(e).length" style="margin-top:4px">当前宿主机端口转发：{{ vmEntryRules(e).map(r => `${r.port} → ${vmLabel(e, r.vmId) || '虚拟机'}:${r.targetPort}`).join('；') }}</div>
+                    <div style="margin-top:4px">入口虚拟机停止时，该节点的全部 Web 转发都会中断，建议使用开机自启、不常重启的虚拟机。</div>
+                  </a-alert>
                 </a-form>
                 <a-form :model="forms[e.node.id]" layout="vertical">
                   <a-row :gutter="40">
@@ -153,9 +157,6 @@
                       <a-select v-model="forms[e.node.id].default" :options="allPorts(e).map(p => ({ label: `${forms[e.node.id].https.includes(p) ? 'HTTPS' : 'HTTP'} ${p}`, value: p }))" /></a-form-item></a-col>
                   </a-row>
                 </a-form>
-                <a-alert v-if="autoConflicts(e).length" type="info" style="margin-bottom:8px">
-                  宿主机端口 {{ autoConflicts(e).map(c => c.port).join('、') }} 的端口转发规则已指向该入口虚拟机的同一端口，部署时由 Web 转发自动接管（流量不中断）。
-                </a-alert>
                 <a-alert v-if="conflicts(e).length" type="warning" style="margin-bottom:8px" title="以下宿主机端口正被端口转发规则使用，部署时将由 Web 转发接管（删除这些规则）">
                   <div v-for="c in conflicts(e)" :key="c.id" class="conflict-row">
                     <span>端口 <b class="mono">{{ c.port }}</b>「{{ c.remark || c.port }}」（{{ c.owner }}）→ <span class="mono">{{ vmLabel(e, c.vmId) || '虚拟机' }}:{{ c.targetPort }}</span></span>
@@ -169,7 +170,7 @@
               </template>
               <span v-else class="muted">{{ e.node.initialized ? '未启用：该节点上不能添加 Web 转发' : '节点尚未完成网络初始化' }}</span>
               <a-row justify="space-between" align="center" style="margin-top:16px">
-                <span class="muted">{{ forms[e.node.id].enabled ? 'Web 端口自动成为该节点的保留端口，不能再用于端口转发或分配给用户。' : e.state.location ? '保存后将停止该节点的 Web 转发（站点保留，重新启用后恢复）' : '' }}</span>
+                <span class="muted">{{ forms[e.node.id].enabled ? (forms[e.node.id].mode === 'host' ? 'Web 端口自动成为该节点的保留端口，不能再用于端口转发或分配给用户。' : '') : e.state.location ? '保存后将停止该节点的 Web 转发（站点保留，重新启用后恢复）' : '' }}</span>
                 <a-space>
                   <a-button v-if="forms[e.node.id].enabled" :loading="checking === e.node.id" @click="check(e)"><template #icon><icon-check-circle /></template>检测环境</a-button>
                   <a-popconfirm v-if="forms[e.node.id].enabled && conflicts(e).length" type="warning" @ok="deploy(e, true)"
@@ -452,11 +453,10 @@ function dropPort(e, p) {
   f.httpText = f.http.map(String); f.httpsText = f.https.map(String)
   if (f.default === p) f.default = allPorts(e)[0]
 }
-// 宿主机上与 Web 端口冲突的端口转发规则；入口虚拟机模式下，原本就转发到入口虚拟机同一端口的规则部署时自动接管
-const autoTake = (e, r) => forms[e.node.id].mode === 'vm' && r.vmId === forms[e.node.id].vmId && r.targetPort === r.port && r.proto !== 'udp'
-const allConflicts = e => (forms[e.node.id]?.enabled ? e.rules.filter(r => allPorts(e).includes(r.port)) : [])
-const conflicts = e => allConflicts(e).filter(r => !autoTake(e, r))
-const autoConflicts = e => allConflicts(e).filter(r => autoTake(e, r))
+// 宿主机运行时，与 Web 端口冲突的端口转发规则（入口虚拟机模式不使用宿主机端口）
+const conflicts = e => (forms[e.node.id]?.enabled && forms[e.node.id].mode === 'host' ? e.rules.filter(r => allPorts(e).includes(r.port)) : [])
+// 入口虚拟机模式：宿主机上与 Web 端口同号的端口转发（仅展示，便于核对公网是否已转发到入口虚拟机）
+const vmEntryRules = e => e.rules.filter(r => allPorts(e).includes(r.port))
 function webBody(e) {
   const f = forms[e.node.id]
   return { enabled: f.enabled, mode: f.mode, vmId: f.vmId || 0, deploy: f.deploy, sshUser: f.sshUser, sshPort: f.sshPort, sshAuth: f.sshAuth, sshSecret: f.sshSecret, credId: f.credId || 0,
@@ -500,6 +500,7 @@ async function deploy(e, takeOver = false) {
 .mode-cards .d { font-size: 12px; color: var(--color-text-3); line-height: 1.7; white-space: normal; }
 .flow { display: flex; align-items: center; justify-content: center; gap: 12px; padding: 16px; background: var(--color-fill-1); border-radius: 4px; font-size: 13px; flex-wrap: wrap; }
 .flow .box { padding: 8px 12px; background: var(--color-bg-2); border: 1px solid var(--color-border-2); border-radius: 4px; text-align: center; line-height: 1.6; }
+.flow .box.dashed { border-style: dashed; }
 .flow .box.hl { border-color: rgb(var(--primary-6)); background: rgb(var(--primary-1)); }
 .flow .arrow { color: var(--color-text-3); }
 .checks { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 24px; padding: 12px 16px; margin-top: 8px; background: var(--color-fill-1); border-radius: 4px; font-size: 13px; }

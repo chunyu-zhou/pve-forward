@@ -447,11 +447,11 @@ func testWebForward(t *testing.T, srv *Server, mgr *manager.Manager, admin, alic
 	if fake.webConf("host", "nginx.conf") != "" || !strings.Contains(fake.ops(), "remove host") {
 		t.Fatalf("原位置应停止 %s", fake.ops())
 	}
-	for _, p := range []int{80, 443, 8080} {
-		if want := fmt.Sprintf("tcp dport %d counter dnat ip to 10.0.0.8:%d", p, p); !strings.Contains(fake.nft(), want) {
-			t.Fatalf("缺少 Web 端口转发 %q\n%s", want, fake.nft())
-		}
+	// 入口虚拟机模式不改动宿主机端口：不生成转发，Web 端口也可以用于端口转发
+	if strings.Contains(fake.nft(), "dnat ip to 10.0.0.8:80") {
+		t.Fatalf("入口虚拟机模式不应生成宿主机转发\n%s", fake.nft())
 	}
+	admin.do("POST", "/api/rules", map[string]any{"userId": me.User.ID, "nodeId": nid, "port": 80, "proto": "tcp", "ipVer": "v4", "vmId": vmVPN, "targetPort": 80, "remark": "入口"}, 200, nil)
 	var entries []webEntryOut
 	admin.do("GET", "/api/web-entries", nil, 200, &entries)
 	if len(entries) != 1 || entries[0].State.Location != fmt.Sprintf("vm:%d", vmVPN) || entries[0].Web.SSHSecretEnc != nil || entries[0].State.Hash != "" {
@@ -471,9 +471,9 @@ func testWebForward(t *testing.T, srv *Server, mgr *manager.Manager, admin, alic
 		t.Fatal(body)
 	}
 
-	// 停用 Web 转发：移除虚拟机上的配置与端口转发
+	// 停用 Web 转发：移除虚拟机上的配置；管理员自己添加的端口转发规则保留
 	stream = admin.do("POST", fmt.Sprintf("/api/nodes/%d/web", nid), map[string]any{"enabled": false, "http": []int{80, 8080}, "https": []int{443}, "default": 80}, 200, nil)
-	if !strings.Contains(stream, `"done":true`) || !strings.Contains(fake.ops(), "remove vm:10.0.0.8") || strings.Contains(fake.nft(), "dnat ip to 10.0.0.8:80") {
+	if !strings.Contains(stream, `"done":true`) || !strings.Contains(fake.ops(), "remove vm:10.0.0.8") || !strings.Contains(fake.nft(), "dnat ip to 10.0.0.8:80") {
 		t.Fatalf("停用 %s\n%s", stream, fake.ops())
 	}
 	t.Logf("Web 转发流程完成：%s", fake.ops())

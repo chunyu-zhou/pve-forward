@@ -682,9 +682,6 @@ func (m *Manager) process(n *store.Node, r *runtime, st *proto.DesiredState, rep
 	r.mu.Lock()
 	newErr := map[int64]string{}
 	for _, rule := range st.Rules {
-		if rule.ID < 0 {
-			continue // 入口虚拟机模式下由系统生成的 Web 端口转发
-		}
 		msg := rep.Health[rule.ID]
 		if strings.HasPrefix(msg, "目标不可达") {
 			r.fails[rule.ID]++
