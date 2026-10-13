@@ -183,6 +183,7 @@ type User struct {
 	ID           int64  `json:"id"`
 	Username     string `json:"username"`
 	PasswordHash string `json:"-"`
+	AuthVersion  int64  `json:"-"`
 	Role         string `json:"role"`
 	Enabled      bool   `json:"enabled"`
 	QuotaBytes   int64  `json:"quotaBytes"`
@@ -199,11 +200,11 @@ func (u *User) OverQuota() bool { return u.QuotaBytes > 0 && u.UsedBytes >= u.Qu
 // Active 用户的规则是否应生效
 func (u *User) Active() bool { return u.Enabled && !u.OverQuota() }
 
-const userCols = `id,username,password_hash,role,enabled,quota_bytes,used_bytes,max_rules,remark,created_at,totp_enabled`
+const userCols = `id,username,password_hash,role,enabled,quota_bytes,used_bytes,max_rules,remark,created_at,totp_enabled,auth_version`
 
 func scanUser(r interface{ Scan(...any) error }) (*User, error) {
 	u := &User{}
-	err := r.Scan(&u.ID, &u.Username, &u.PasswordHash, &u.Role, &u.Enabled, &u.QuotaBytes, &u.UsedBytes, &u.MaxRules, &u.Remark, &u.CreatedAt, &u.TwoFA)
+	err := r.Scan(&u.ID, &u.Username, &u.PasswordHash, &u.Role, &u.Enabled, &u.QuotaBytes, &u.UsedBytes, &u.MaxRules, &u.Remark, &u.CreatedAt, &u.TwoFA, &u.AuthVersion)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -253,6 +254,46 @@ func (d *DB) CreateUser(tx *sql.Tx, u *User) error {
 func (d *DB) CreateSession(tokenHash string, uid int64, ttl time.Duration) error {
 	_, err := d.Exec(`INSERT INTO sessions(token_hash,user_id,expires_at) VALUES(?,?,?)`, tokenHash, uid, time.Now().Add(ttl).Unix())
 	return err
+}
+
+var ErrAuthChanged = errors.New("认证状态已变化，请重新登录")
+var ErrOTPRequired = errors.New("需要两步验证码")
+var ErrOTPInvalid = errors.New("两步验证码不正确")
+
+// CreateAuthenticatedSession 将凭据快照校验、验证码消费及新会话写入放入同一写事务。
+func (d *DB) CreateAuthenticatedSession(tokenHash string, u *User, ttl time.Duration, hasCode bool, verify func([]byte, int64) (int64, bool)) error {
+	tx, err := d.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var version int64
+	var password string
+	var enabled, twoFA bool
+	var enc []byte
+	var last int64
+	if err := tx.QueryRow(`SELECT auth_version,password_hash,enabled,totp_enabled,totp_secret_enc,totp_last FROM users WHERE id=?`, u.ID).Scan(&version, &password, &enabled, &twoFA, &enc, &last); err != nil {
+		return err
+	}
+	if version != u.AuthVersion || password != u.PasswordHash || enabled != u.Enabled || twoFA != u.TwoFA {
+		return ErrAuthChanged
+	}
+	if twoFA {
+		if !hasCode {
+			return ErrOTPRequired
+		}
+		step, ok := verify(enc, last)
+		if !ok {
+			return ErrOTPInvalid
+		}
+		if _, err := tx.Exec(`UPDATE users SET totp_last=? WHERE id=?`, step, u.ID); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(`INSERT INTO sessions(token_hash,user_id,expires_at) VALUES(?,?,?)`, tokenHash, u.ID, time.Now().Add(ttl).Unix()); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (d *DB) SessionUser(tokenHash string) (*User, error) {

@@ -51,7 +51,7 @@ func (s *Server) post2FASetup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	secret := totp.NewSecret()
-	if err := s.db.SetTOTPPending(u.ID, s.box.Seal(secret)); err != nil {
+	if err := s.db.SetTOTPPending(u, s.box.Seal(secret), secretbox.Hash(sessionToken(r))); err != nil {
 		fail(w, err)
 		return
 	}
@@ -78,7 +78,7 @@ func (s *Server) post2FAEnable(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusTooManyRequests, "尝试次数过多，请 15 分钟后再试")
 		return
 	}
-	enc, err := s.db.TOTPPending(u.ID)
+	enc, err := s.db.TOTPPending(u.ID, secretbox.Hash(sessionToken(r)))
 	if err != nil || len(enc) == 0 {
 		jsonErr(w, http.StatusBadRequest, "请先生成二维码")
 		return
@@ -147,7 +147,7 @@ func (s *Server) post2FADisable(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusBadRequest, "验证码不正确")
 		return
 	}
-	if err := s.db.DisableVerifiedTOTP(u.ID, enc, step, secretbox.Hash(sessionToken(r))); err != nil {
+	if err := s.db.DisableVerifiedTOTP(u, enc, step, secretbox.Hash(sessionToken(r))); err != nil {
 		if errors.Is(err, store.ErrTOTPChanged) {
 			jsonErr(w, http.StatusConflict, err.Error())
 		} else {

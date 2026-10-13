@@ -30,11 +30,16 @@ type Provider interface {
 	// Records 返回主机记录为 sub 的全部解析（任意类型）。
 	Records(ctx context.Context, zone, sub string) ([]Record, error)
 	// Create 新建记录并设置备注。腾讯云、华为云、Cloudflare 在创建请求中直接设置；
-	// 阿里云与 DNSPod 的创建接口没有备注参数，创建后立即调用备注接口设置。
+	// 阿里云与 DNSPod 仅创建记录，调用方持久化任务后通过 AsyncRemarkProvider 补写备注。
 	Create(ctx context.Context, zone, sub, typ, value, remark string) (string, error)
 	// Update 修改记录的值与备注。
 	Update(ctx context.Context, zone, id, sub, typ, value, remark string) error
 	Delete(ctx context.Context, zone, id string) error
+}
+
+// AsyncRemarkProvider 用于创建接口不支持备注的服务商，重试只更新备注。
+type AsyncRemarkProvider interface {
+	SetRemark(ctx context.Context, zone, id, remark string) error
 }
 
 // Field 为服务商参数。

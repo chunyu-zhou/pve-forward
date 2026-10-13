@@ -53,6 +53,7 @@ type Server struct {
 	restart chan struct{}
 	limiter *limiter
 
+	dnsMu  sync.Mutex
 	certMu sync.Mutex
 	certFP string
 
@@ -117,6 +118,7 @@ func (s *Server) Run(ctx context.Context) error {
 	go s.updateLoop(ctx)
 	go s.confirmUpdate(ctx)
 	go s.certNotify(ctx)
+	go s.dnsRemarkLoop(ctx)
 	for {
 		srv, extra, err := s.serve()
 		if err != nil {

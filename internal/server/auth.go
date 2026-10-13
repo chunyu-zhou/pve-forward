@@ -13,6 +13,7 @@ import (
 
 	"pveforward/internal/secret"
 	"pveforward/internal/store"
+	"pveforward/internal/totp"
 )
 
 var usernameRe = regexp.MustCompile(`^[A-Za-z0-9_]{3,20}$`)
@@ -159,25 +160,37 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusForbidden, "账号已被禁用，请联系管理员")
 		return
 	}
-	// 两步验证：密码正确后再要求验证码（未填写时提示输入，不计入失败次数）
-	if u.TwoFA {
-		if req.Code == "" {
-			writeJSON(w, map[string]bool{"need2fa": true})
-			return
-		}
-		if !s.check2FA(u, req.Code) {
-			s.limiter.Fail(key)
-			w.Header().Set("Content-Type", "application/json; charset=utf-8")
-			w.WriteHeader(http.StatusUnauthorized)
-			writeJSON(w, map[string]any{"error": "两步验证码不正确", "need2fa": true})
-			return
-		}
+	tok := secret.RandomToken(32)
+	days := st.SessionDays
+	if days <= 0 {
+		days = 7
 	}
-	s.limiter.Reset(key)
-	if err := s.startSession(w, r, u.ID); err != nil {
+	err = s.db.CreateAuthenticatedSession(secret.Hash(tok), u, time.Duration(days)*24*time.Hour, req.Code != "", func(enc []byte, last int64) (int64, bool) {
+		plain, err := s.box.Open(enc)
+		if err != nil {
+			return 0, false
+		}
+		return totp.Verify(plain, req.Code, time.Now(), last)
+	})
+	switch {
+	case errors.Is(err, store.ErrOTPRequired):
+		writeJSON(w, map[string]bool{"need2fa": true})
+		return
+	case errors.Is(err, store.ErrOTPInvalid):
+		s.limiter.Fail(key)
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusUnauthorized)
+		writeJSON(w, map[string]any{"error": err.Error(), "need2fa": true})
+		return
+	case errors.Is(err, store.ErrAuthChanged):
+		jsonErr(w, http.StatusUnauthorized, err.Error())
+		return
+	case err != nil:
 		fail(w, err)
 		return
 	}
+	s.limiter.Reset(key)
+	http.SetCookie(w, &http.Cookie{Name: sessionCookieName(r), Value: tok, Path: "/", HttpOnly: true, Secure: secureRequest(r), SameSite: http.SameSiteLaxMode, MaxAge: days * 86400})
 	writeJSON(w, map[string]any{"user": u})
 }
 

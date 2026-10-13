@@ -674,7 +674,12 @@ func (s *Server) buildWeb(n *store.Node, in webIn) (store.NodeWeb, error) {
 	if w.Mode != "vm" {
 		w.Mode, w.VMID = "host", 0
 	}
-	if !w.Enabled && w.Deploy == "" { w.Deploy = old.Deploy; if w.Deploy == "" { w.Deploy = "binary" } }
+	if !w.Enabled && w.Deploy == "" {
+		w.Deploy = old.Deploy
+		if w.Deploy == "" {
+			w.Deploy = "binary"
+		}
+	}
 	if w.Deploy == "auto" {
 		w.Deploy = "binary"
 	} // 旧客户端显式兼容

@@ -81,9 +81,6 @@ func Test2FA(t *testing.T) {
 	// 管理员重置用户的两步验证
 	u, _ := db.UserByName("admin")
 	enc := box.Seal(setup.Secret)
-	if err := db.SetTOTPPending(u.ID, enc); err != nil {
-		t.Fatal(err)
-	}
 	if _, err := db.Exec(`UPDATE users SET totp_secret_enc=?, totp_enabled=1, totp_last=0 WHERE id=?`, enc, u.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -120,20 +117,43 @@ func TestTOTPStateTransitions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	u1, err := db.User(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u2, err := db.User(2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CreateSession("one", 1, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CreateSession("two", 2, time.Hour); err != nil {
+		t.Fatal(err)
+	}
 	a, b := []byte("first encrypted secret"), []byte("second encrypted secret")
-	if err := db.SetTOTPPending(1, a); err != nil {
+	if err := db.SetTOTPPending(u1, a, "one"); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.SetTOTPPending(1, b); err != nil {
+	if err := db.SetTOTPPending(u1, b, "one"); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.EnableTOTP(1, a, 1, ""); !errors.Is(err, store.ErrTOTPChanged) {
+	if err := db.CreateSession("other", 1, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.TOTPPending(1, "other"); err == nil {
+		t.Fatal("pending secret visible to another session")
+	}
+	if err := db.EnableTOTP(1, b, 1, "other"); !errors.Is(err, store.ErrTOTPChanged) {
+		t.Fatalf("cross-session enrollment accepted: %v", err)
+	}
+	if err := db.EnableTOTP(1, a, 1, "one"); !errors.Is(err, store.ErrTOTPChanged) {
 		t.Fatalf("stale enrollment: %v", err)
 	}
-	if err := db.EnableTOTP(1, b, 1, ""); err != nil {
+	if err := db.EnableTOTP(1, b, 1, "one"); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.SetTOTPPending(1, a); !errors.Is(err, store.ErrTOTPChanged) {
+	if err := db.SetTOTPPending(u1, a, "one"); !errors.Is(err, store.ErrTOTPChanged) {
 		t.Fatalf("overwrite enabled binding: %v", err)
 	}
 	if db.UseTOTPStep(1, a, 2) {
@@ -142,16 +162,16 @@ func TestTOTPStateTransitions(t *testing.T) {
 	if !db.UseTOTPStep(1, b, 2) || db.UseTOTPStep(1, b, 2) {
 		t.Fatal("replay protection")
 	}
-	if err := db.DisableVerifiedTOTP(1, a, 3, ""); !errors.Is(err, store.ErrTOTPChanged) {
+	if err := db.DisableVerifiedTOTP(u1, a, 3, "one"); !errors.Is(err, store.ErrTOTPChanged) {
 		t.Fatalf("stale disable: %v", err)
 	}
-	if err := db.SetTOTPPending(2, a); err != nil {
+	if err := db.SetTOTPPending(u2, a, "two"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`UPDATE users SET totp_pending_expires=1 WHERE id=2`); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.EnableTOTP(2, a, 1, ""); !errors.Is(err, store.ErrTOTPChanged) {
+	if err := db.EnableTOTP(2, a, 1, "two"); !errors.Is(err, store.ErrTOTPChanged) {
 		t.Fatalf("expired enrollment: %v", err)
 	}
 	if _, _, enabled, err := db.TOTP(2); err != nil || enabled {
@@ -162,6 +182,72 @@ func TestTOTPStateTransitions(t *testing.T) {
 	}
 	if db.UseTOTPStep(1, b, 3) {
 		t.Fatal("accepted disabled binding")
+	}
+}
+
+func TestAuthenticatedSessionRejectsStaleSnapshot(t *testing.T) {
+	for _, change := range []string{
+		`UPDATE users SET totp_enabled=1,totp_secret_enc=x'01' WHERE id=1`,
+		`UPDATE users SET password_hash='replacement' WHERE id=1`,
+		`UPDATE users SET enabled=0 WHERE id=1`,
+	} {
+		t.Run(change, func(t *testing.T) {
+			db, err := store.Open(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			if _, err := db.Exec(`INSERT INTO users(id,username,password_hash,created_at) VALUES(1,'alice','original',0)`); err != nil {
+				t.Fatal(err)
+			}
+			before, err := db.User(1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.Exec(change); err != nil {
+				t.Fatal(err)
+			}
+			err = db.CreateAuthenticatedSession("stale", before, time.Hour, false, nil)
+			if !errors.Is(err, store.ErrAuthChanged) {
+				t.Fatalf("stale authentication accepted: %v", err)
+			}
+			var count int
+			if err := db.QueryRow(`SELECT COUNT(*) FROM sessions`).Scan(&count); err != nil || count != 0 {
+				t.Fatalf("sessions=%d err=%v", count, err)
+			}
+		})
+	}
+}
+
+func TestAuthenticatedSessionRollsBackOTP(t *testing.T) {
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`INSERT INTO users(id,username,password_hash,created_at,totp_enabled,totp_secret_enc) VALUES(1,'alice','hash',0,1,x'01')`); err != nil {
+		t.Fatal(err)
+	}
+	u, err := db.User(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CreateSession("duplicate", 1, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	verify := func(_ []byte, last int64) (int64, bool) { return 10, last < 10 }
+	if err := db.CreateAuthenticatedSession("duplicate", u, time.Hour, true, verify); err == nil {
+		t.Fatal("expected session insert failure")
+	}
+	_, last, _, err := db.TOTP(1)
+	if err != nil || last != 0 {
+		t.Fatalf("OTP consumed despite rollback: %d %v", last, err)
+	}
+	if err := db.CreateAuthenticatedSession("valid", u, time.Hour, true, verify); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CreateAuthenticatedSession("replay", u, time.Hour, true, verify); !errors.Is(err, store.ErrOTPInvalid) {
+		t.Fatalf("replay accepted: %v", err)
 	}
 }
 

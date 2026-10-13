@@ -15,6 +15,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
+	"pveforward/internal/secret"
 	"regexp"
 	"strings"
 	"sync"
@@ -34,6 +36,123 @@ var (
 	sshWrapRe = regexp.MustCompile(`printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d \| ssh [^\n]* [a-z_][a-z0-9_.-]*@([0-9.]+) `)
 	webFileRe = regexp.MustCompile(`printf '%s' '([A-Za-z0-9+/=]*)' \| base64 -d > "\$D\.tmp/([^"]+)"`)
 )
+
+func TestDNSRemarkRetry(t *testing.T) {
+	dir := t.TempDir()
+	db, err := store.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { db.Close() }()
+	box, err := secret.Open(filepath.Join(dir, "master.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	queries := []string{
+		`INSERT INTO users(id,username,password_hash,created_at) VALUES(1,'alice','test',0)`,
+		`INSERT INTO nodes(id,name,mode,created_at) VALUES(1,'node','ssh',0)`,
+		`INSERT INTO vms(id,node_id,vmid,type,synced_at) VALUES(1,1,100,'qemu',0)`,
+		`INSERT INTO dns_providers(id,name,type,created_at) VALUES(1,'test','dnspod',0)`,
+		`INSERT INTO web_domains(id,name,provider_id,created_at) VALUES(1,'example.com',1,0)`,
+		`INSERT INTO sites(id,user_id,node_id,port,vm_id,target_port,remark,created_at) VALUES(1,1,1,80,1,80,'original',0)`,
+		`INSERT INTO site_hosts(id,site_id,sub,domain_id,host) VALUES(1,1,'dev',1,'dev.example.com')`,
+	}
+	for _, q := range queries {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := db.Exec(`UPDATE dns_providers SET secret_enc=? WHERE id=1`, box.Seal(`{"id":"test","token":"test"}`)); err != nil {
+		t.Fatal(err)
+	}
+	created, remarks := 0, 0
+	failRemark, failUpdate := true, false
+	var note string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.ParseForm()
+		switch r.URL.Path {
+		case "/Record.List":
+			if created == 0 {
+				fmt.Fprint(w, `{"status":{"code":"1"},"records":[]}`)
+			} else {
+				fmt.Fprint(w, `{"status":{"code":"1"},"records":[{"id":"1","name":"dev","type":"A","value":"203.0.113.10"}]}`)
+			}
+		case "/Record.Create":
+			created++
+			fmt.Fprint(w, `{"status":{"code":"1"},"record":{"id":"1"}}`)
+		case "/Record.Modify":
+			if failUpdate {
+				fmt.Fprint(w, `{"status":{"code":"7","message":"update denied"}}`)
+			} else {
+				fmt.Fprint(w, `{"status":{"code":"1"}}`)
+			}
+		case "/Record.Remark":
+			remarks++
+			if failRemark {
+				fmt.Fprint(w, `{"status":{"code":"7","message":"remark denied"}}`)
+			} else {
+				note = r.Form.Get("remark")
+				fmt.Fprint(w, `{"status":{"code":"1"}}`)
+			}
+		default:
+			t.Errorf("unexpected request %s", r.URL.Path)
+		}
+	}))
+	defer ts.Close()
+	old, existed := dnsapi.Endpoints["dnspod"]
+	dnsapi.Endpoints["dnspod"] = ts.URL
+	defer func() {
+		if existed {
+			dnsapi.Endpoints["dnspod"] = old
+		} else {
+			delete(dnsapi.Endpoints, "dnspod")
+		}
+	}()
+	s := New(db, box, manager.New(db, box), dir, nil, "")
+	site, err := db.Site(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.syncSiteDNS(context.Background(), site, "203.0.113.10", false)
+	if created != 1 || remarks != 0 {
+		t.Fatalf("create=%d remark=%d", created, remarks)
+	}
+	s.processDNSRemarks(context.Background())
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM dns_remark_jobs`).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("lost failed job %d %v", count, err)
+	}
+	var dnsError string
+	if err := db.QueryRow(`SELECT dns_error FROM site_hosts WHERE id=1`).Scan(&dnsError); err != nil || !strings.Contains(dnsError, "remark denied") {
+		t.Fatalf("error not persisted %q %v", dnsError, err)
+	}
+	// 模拟重启及待处理期间编辑备注：恢复任务应采用最新备注。
+	if _, err := db.Exec(`UPDATE sites SET remark='latest' WHERE id=1`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err = store.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s = New(db, box, manager.New(db, box), dir, nil, "")
+	failRemark = false
+	s.processDNSRemarks(context.Background())
+	if err := db.QueryRow(`SELECT COUNT(*) FROM dns_remark_jobs`).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("job not cleared %d %v", count, err)
+	}
+	if created != 1 || note != "latest(alice)" {
+		t.Fatalf("duplicate create or stale remark: %d %q", created, note)
+	}
+	// 同IP不能把API修改失败变成成功。
+	failUpdate = true
+	_, err = s.upsertA(context.Background(), &store.SiteHost{DomainID: 1, Sub: "dev", Host: "dev.example.com", RecordID: "1"}, "203.0.113.10", "latest(alice)")
+	if err == nil || !strings.Contains(err.Error(), "update denied") {
+		t.Fatalf("swallowed update error: %v", err)
+	}
+}
 
 // webRun 模拟 Web 转发脚本（检测、安装、下发、移除）。入口虚拟机的脚本经 ssh 包装，解开后按虚拟机处理。
 func (f *fakeNode) webRun(script string) ([]byte, bool, error) {
@@ -335,14 +454,22 @@ func testWebForward(t *testing.T, srv *Server, mgr *manager.Manager, admin, alic
 		old := webCfg[key]
 		webCfg[key] = value
 		admin.do("POST", fmt.Sprintf("/api/nodes/%d/web/check", nid), webCfg, 400, nil)
-		if old == nil { delete(webCfg, key) } else { webCfg[key] = old }
+		if old == nil {
+			delete(webCfg, key)
+		} else {
+			webCfg[key] = old
+		}
 	}
 	// 切换 Docker：带显式镜像，不下载/上传二进制包。
 	webCfg["deploy"], webCfg["image"] = "docker", "registry.example.com:5000/openresty:test"
-	before := fake.ops()
+	beforeDocker := fake.ops()
 	stream = admin.do("POST", fmt.Sprintf("/api/nodes/%d/web", nid), webCfg, 200, nil)
-	if !strings.Contains(stream, `"done":true`) || strings.Contains(stream, `"error"`) { t.Fatalf("Docker 部署 %s", stream) }
-	if added := strings.TrimPrefix(fake.ops(), before); added != "; check host; install host; apply host" { t.Fatalf("Docker 操作 %s", added) }
+	if !strings.Contains(stream, `"done":true`) || strings.Contains(stream, `"error"`) {
+		t.Fatalf("Docker 部署 %s", stream)
+	}
+	if added := strings.TrimPrefix(fake.ops(), beforeDocker); added != "; check host; install host; apply host" {
+		t.Fatalf("Docker 操作 %s", added)
+	}
 	webCfg["deploy"] = "binary"
 	delete(webCfg, "image")
 

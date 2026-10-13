@@ -105,6 +105,14 @@ func exercise(t *testing.T, p Provider, f *fakeDNS) {
 	if err != nil || id == "" {
 		t.Fatalf("Create %q %v", id, err)
 	}
+	if async, ok := p.(AsyncRemarkProvider); ok {
+		if n := f.noteOf(id); n != "" {
+			t.Fatalf("创建时不应同步补备注: %q", n)
+		}
+		if err := async.SetRemark(ctx, "example.com", id, "前端开发(alice)"); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if n := f.noteOf(id); n != "前端开发(alice)" {
 		t.Fatalf("新建时的备注 %q", n)
 	}
@@ -113,6 +121,14 @@ func exercise(t *testing.T, p Provider, f *fakeDNS) {
 	}
 	if err := p.Update(ctx, "example.com", id, "dev", "A", "203.0.113.11", "测试环境(alice)"); err != nil {
 		t.Fatalf("Update %v", err)
+	}
+	if async, ok := p.(AsyncRemarkProvider); ok {
+		if n := f.noteOf(id); n != "前端开发(alice)" {
+			t.Fatalf("更新时不应同步补备注: %q", n)
+		}
+		if err := async.SetRemark(ctx, "example.com", id, "测试环境(alice)"); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if n := f.noteOf(id); n != "测试环境(alice)" {
 		t.Fatalf("修改后的备注 %q", n)

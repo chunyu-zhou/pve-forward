@@ -106,10 +106,10 @@ func (d *dnspod) Create(ctx context.Context, zone, sub, typ, value, remark strin
 		return "", err
 	}
 	id := r.Record.ID.String()
-	return id, d.remark(ctx, zone, id, remark)
+	return id, nil
 }
 
-func (d *dnspod) remark(ctx context.Context, zone, id, remark string) error {
+func (d *dnspod) SetRemark(ctx context.Context, zone, id, remark string) error {
 	if remark == "" {
 		return nil
 	}
@@ -123,7 +123,7 @@ func (d *dnspod) Update(ctx context.Context, zone, id, sub, typ, value, remark s
 	if err := d.call(ctx, "Record.Modify", url.Values{"domain": {zone}, "record_id": {id}, "sub_domain": {sub}, "record_type": {typ}, "record_line": {"默认"}, "value": {value}}, nil); err != nil {
 		return err
 	}
-	return d.remark(ctx, zone, id, remark)
+	return nil
 }
 
 func (d *dnspod) Delete(ctx context.Context, zone, id string) error {
@@ -232,10 +232,10 @@ func (a *aliyun) Create(ctx context.Context, zone, sub, typ, value, remark strin
 	if err := a.call(ctx, "AddDomainRecord", map[string]string{"DomainName": zone, "RR": sub, "Type": typ, "Value": value}, &r); err != nil {
 		return "", err
 	}
-	return r.RecordId, a.remark(ctx, r.RecordId, remark)
+	return r.RecordId, nil
 }
 
-func (a *aliyun) remark(ctx context.Context, id, remark string) error {
+func (a *aliyun) SetRemark(ctx context.Context, zone, id, remark string) error {
 	if remark == "" {
 		return nil
 	}
@@ -250,7 +250,7 @@ func (a *aliyun) Update(ctx context.Context, zone, id, sub, typ, value, remark s
 	if err != nil && !strings.Contains(err.Error(), "DomainRecordDuplicate") { // 记录值未变化时仍更新备注
 		return err
 	}
-	return a.remark(ctx, id, remark)
+	return nil
 }
 
 func (a *aliyun) Delete(ctx context.Context, zone, id string) error {

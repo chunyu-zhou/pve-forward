@@ -35,6 +35,9 @@ CREATE TABLE IF NOT EXISTS site_hosts(
   sub TEXT NOT NULL, domain_id INTEGER NOT NULL REFERENCES web_domains(id), host TEXT UNIQUE NOT NULL,
   record_id TEXT NOT NULL DEFAULT '', record_ip TEXT NOT NULL DEFAULT '', dns_error TEXT NOT NULL DEFAULT '',
   pos INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS dns_remark_jobs(
+ host_id INTEGER PRIMARY KEY REFERENCES site_hosts(id) ON DELETE CASCADE,
+ record_id TEXT NOT NULL, remark TEXT NOT NULL, error TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS site_traffic(
   site_id INTEGER NOT NULL REFERENCES sites(id) ON DELETE CASCADE, hour INTEGER NOT NULL,
   requests INTEGER NOT NULL DEFAULT 0, bytes_up INTEGER NOT NULL DEFAULT 0, bytes_down INTEGER NOT NULL DEFAULT 0,
@@ -571,8 +574,25 @@ func (d *DB) SaveSite(s *Site) ([]*SiteHost, error) {
 }
 
 // SetHostDNS 记录域名的解析结果。
-func (d *DB) SetHostDNS(id int64, recordID, ip, errMsg string) {
-	d.Exec(`UPDATE site_hosts SET record_id=?, record_ip=?, dns_error=? WHERE id=?`, recordID, ip, errMsg, id)
+func (d *DB) SetHostDNS(id int64, recordID, ip, errMsg string) error {
+	_, err := d.Exec(`UPDATE site_hosts SET record_id=?, record_ip=?, dns_error=? WHERE id=?`, recordID, ip, errMsg, id)
+	return err
+}
+
+// QueueDNSRemark 同一事务保存解析ID和备注任务，重启后仍可重试。
+func (d *DB) QueueDNSRemark(id int64, recordID, ip, remark string) error {
+	tx, err := d.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`UPDATE site_hosts SET record_id=?,record_ip=?,dns_error='解析已创建，备注等待后台同步' WHERE id=?`, recordID, ip, id); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`INSERT INTO dns_remark_jobs(host_id,record_id,remark) VALUES(?,?,?) ON CONFLICT(host_id) DO UPDATE SET record_id=excluded.record_id,remark=excluded.remark,error=''`, id, recordID, remark); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // AddSiteTraffic 累加站点的请求数与流量（同时累加到用户已用流量与节点小时统计）。

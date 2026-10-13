@@ -232,12 +232,19 @@ func (s *Server) writeUser(id int64, in *userIn) ([]int64, error) {
 			return nil, err
 		}
 		if in.Password != "" {
-			if len(in.Password) < 8 {
-				return nil, bad("密码至少 8 位")
+			if len(in.Password) < 8 || len(in.Password) > 72 {
+				return nil, bad("密码须为 8–72 字节")
 			}
-			h, _ := hashPassword(in.Password)
-			tx.Exec(`UPDATE users SET password_hash=? WHERE id=?`, h, id)
-			tx.Exec(`DELETE FROM sessions WHERE user_id=?`, id)
+			h, err := hashPassword(in.Password)
+			if err != nil {
+				return nil, err
+			}
+			if _, err := tx.Exec(`UPDATE users SET password_hash=?,totp_pending_enc=NULL,totp_pending_expires=0 WHERE id=?`, h, id); err != nil {
+				return nil, err
+			}
+			if _, err := tx.Exec(`DELETE FROM sessions WHERE user_id=?`, id); err != nil {
+				return nil, err
+			}
 		}
 		if !in.Enabled {
 			tx.Exec(`DELETE FROM sessions WHERE user_id=?`, id)
@@ -410,13 +417,33 @@ func (s *Server) userAction(w http.ResponseWriter, r *http.Request) {
 		}
 		s.mgr.PushUser(u.ID)
 	case "reset-password":
-		if len(req.Password) < 8 {
-			jsonErr(w, http.StatusBadRequest, "密码至少 8 位")
+		if len(req.Password) < 8 || len(req.Password) > 72 {
+			jsonErr(w, http.StatusBadRequest, "密码须为 8–72 字节")
 			return
 		}
-		h, _ := hashPassword(req.Password)
-		s.db.Exec(`UPDATE users SET password_hash=? WHERE id=?`, h, u.ID)
-		s.db.Exec(`DELETE FROM sessions WHERE user_id=?`, u.ID)
+		h, err := hashPassword(req.Password)
+		if err != nil {
+			fail(w, err)
+			return
+		}
+		tx, err := s.db.Begin()
+		if err != nil {
+			fail(w, err)
+			return
+		}
+		defer tx.Rollback()
+		if _, err := tx.Exec(`UPDATE users SET password_hash=?,totp_pending_enc=NULL,totp_pending_expires=0 WHERE id=?`, h, u.ID); err != nil {
+			fail(w, err)
+			return
+		}
+		if _, err := tx.Exec(`DELETE FROM sessions WHERE user_id=?`, u.ID); err != nil {
+			fail(w, err)
+			return
+		}
+		if err := tx.Commit(); err != nil {
+			fail(w, err)
+			return
+		}
 	case "reset-2fa": // 用户丢失手机时由管理员解除
 		if err := s.db.DisableTOTP(u.ID); err != nil {
 			fail(w, err)

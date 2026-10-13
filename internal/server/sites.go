@@ -479,19 +479,29 @@ type dnsResult struct {
 }
 
 // dnsRemark 返回解析记录的备注：站点备注(所属用户名)。
-func (s *Server) dnsRemark(site *store.Site) string {
-	name := ""
-	if u, err := s.db.User(site.UserID); err == nil {
-		name = u.Username
+func (s *Server) dnsRemark(site *store.Site) (string, error) {
+	u, err := s.db.User(site.UserID)
+	if err != nil {
+		return "", err
 	}
-	return site.Remark + "(" + name + ")"
+	return site.Remark + "(" + u.Username + ")", nil
 }
 
 // syncSiteDNS 为站点的域名添加或更新 A 记录（指向节点公网 IP，备注为 站点备注(用户名)）。
 // force 为 true 时即使地址未变也更新（备注变化）。
 func (s *Server) syncSiteDNS(ctx context.Context, site *store.Site, ip string, force bool) []dnsResult {
+	s.dnsMu.Lock()
+	defer s.dnsMu.Unlock()
 	res := []dnsResult{}
-	remark := s.dnsRemark(site)
+	fresh, err := s.db.Site(site.ID)
+	if err != nil {
+		return []dnsResult{{Error: err.Error()}}
+	}
+	site = fresh
+	remark, err := s.dnsRemark(site)
+	if err != nil {
+		return []dnsResult{{Error: err.Error()}}
+	}
 	for _, h := range site.Hosts {
 		if !force && h.RecordID != "" && h.RecordIP == ip && h.DNSError == "" {
 			continue
@@ -501,7 +511,18 @@ func (s *Server) syncSiteDNS(ctx context.Context, site *store.Site, ip string, f
 		if err != nil {
 			msg = err.Error()
 		}
-		s.db.SetHostDNS(h.ID, recordID, ip, msg)
+		cl, _, providerErr := s.dnsFor(h.DomainID)
+		_, async := cl.(dnsapi.AsyncRemarkProvider)
+		var saveErr error
+		if err == nil && providerErr == nil && async {
+			saveErr = s.db.QueueDNSRemark(h.ID, recordID, ip, remark)
+			msg = "解析已创建，备注等待后台同步"
+		} else {
+			saveErr = s.db.SetHostDNS(h.ID, recordID, ip, msg)
+		}
+		if saveErr != nil {
+			msg = "保存解析同步状态失败: " + saveErr.Error()
+		}
 		h.RecordID, h.RecordIP, h.DNSError = recordID, ip, msg
 		res = append(res, dnsResult{Host: h.Host, Error: msg})
 	}
@@ -515,19 +536,24 @@ func (s *Server) upsertA(ctx context.Context, h *store.SiteHost, ip, remark stri
 	}
 	cctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
+	var updateErr error
 	if h.RecordID != "" {
-		if err := cl.Update(cctx, d.Name, h.RecordID, h.Sub, "A", ip, remark); err == nil {
+		updateErr = cl.Update(cctx, d.Name, h.RecordID, h.Sub, "A", ip, remark)
+		if updateErr == nil {
 			return h.RecordID, nil
 		}
-		// 记录可能已被手动删除：重新查找或新建
+		// 只有确认记录已删除后才重新创建；同 IP 不能掩盖备注更新错误。
 	}
 	rs, err := cl.Records(cctx, d.Name, h.Sub)
 	if err != nil {
 		return h.RecordID, err
 	}
 	if rec := dnsapi.Find(rs, "A"); rec != nil {
+		if updateErr != nil && rec.ID == h.RecordID {
+			return h.RecordID, updateErr
+		}
 		if rec.Value == ip {
-			return rec.ID, nil
+			return rec.ID, cl.Update(cctx, d.Name, rec.ID, h.Sub, "A", ip, remark)
 		}
 		if h.RecordID == "" || rec.ID != h.RecordID {
 			return "", fmt.Errorf("%s 已有指向 %s 的解析记录，未自动修改", h.Host, rec.Value)
@@ -537,6 +563,94 @@ func (s *Server) upsertA(ctx context.Context, h *store.SiteHost, ip, remark stri
 		return "", fmt.Errorf("%s 已有 %s 解析记录，未自动修改", h.Host, rs[0].Type)
 	}
 	return cl.Create(cctx, d.Name, h.Sub, "A", ip, remark)
+}
+
+// dnsRemarkLoop 启动时恢复任务，失败每分钟重试；不重复创建解析。
+func (s *Server) dnsRemarkLoop(ctx context.Context) {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	for {
+		s.processDNSRemarks(ctx)
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func (s *Server) processDNSRemarks(ctx context.Context) {
+	s.dnsMu.Lock()
+	defer s.dnsMu.Unlock()
+	type job struct {
+		id, domain                    int64
+		record, remark, previousError string
+	}
+	rows, err := s.db.Query(`SELECT j.host_id,h.domain_id,j.record_id,j.remark,j.error FROM dns_remark_jobs j JOIN site_hosts h ON h.id=j.host_id WHERE h.record_id=j.record_id`)
+	if err != nil {
+		return
+	}
+	var jobs []job
+	for rows.Next() {
+		var j job
+		if err := rows.Scan(&j.id, &j.domain, &j.record, &j.remark, &j.previousError); err != nil {
+			rows.Close()
+			return
+		}
+		jobs = append(jobs, j)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return
+	}
+	for _, j := range jobs {
+		if ctx.Err() != nil {
+			return
+		}
+		var latest string
+		if err := s.db.QueryRow(`SELECT s.remark || '(' || u.username || ')' FROM site_hosts h JOIN sites s ON s.id=h.site_id JOIN users u ON u.id=s.user_id WHERE h.id=? AND h.record_id=?`, j.id, j.record).Scan(&latest); err != nil {
+			continue
+		}
+		if latest != j.remark {
+			if _, err := s.db.Exec(`UPDATE dns_remark_jobs SET remark=? WHERE host_id=? AND record_id=? AND remark=?`, latest, j.id, j.record, j.remark); err != nil {
+				continue
+			}
+			j.remark = latest
+		}
+		cl, d, err := s.dnsFor(j.domain)
+		if err == nil {
+			p, ok := cl.(dnsapi.AsyncRemarkProvider)
+			if !ok {
+				err = fmt.Errorf("当前服务商不支持独立备注接口")
+			} else {
+				cctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+				err = p.SetRemark(cctx, d.Name, j.record, j.remark)
+				cancel()
+			}
+		}
+		tx, txErr := s.db.Begin()
+		if txErr != nil {
+			continue
+		}
+		msg := ""
+		if err != nil {
+			msg = "解析备注同步失败: " + err.Error()
+		}
+		_, txErr = tx.Exec(`UPDATE site_hosts SET dns_error=? WHERE id=? AND record_id=? AND (dns_error='解析已创建，备注等待后台同步' OR dns_error=?) AND EXISTS(SELECT 1 FROM dns_remark_jobs WHERE host_id=? AND record_id=? AND remark=?)`, msg, j.id, j.record, j.previousError, j.id, j.record, j.remark)
+		if txErr == nil {
+			if err == nil {
+				_, txErr = tx.Exec(`DELETE FROM dns_remark_jobs WHERE host_id=? AND record_id=? AND remark=?`, j.id, j.record, j.remark)
+			} else {
+				_, txErr = tx.Exec(`UPDATE dns_remark_jobs SET error=? WHERE host_id=? AND record_id=? AND remark=?`, msg, j.id, j.record, j.remark)
+			}
+		}
+		if txErr != nil {
+			tx.Rollback()
+		} else {
+			tx.Commit()
+		}
+	}
 }
 
 // deleteHostDNS 删除本系统为域名添加的解析记录。
