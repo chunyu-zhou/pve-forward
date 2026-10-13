@@ -72,8 +72,9 @@ type NodeWeb struct {
 	Deploy       string `json:"deploy"` // auto（自动安装）| manual（已自行安装）
 	SSHUser      string `json:"sshUser"`
 	SSHPort      int    `json:"sshPort"`
-	SSHAuth      string `json:"sshAuth"` // node | password | key
+	SSHAuth      string `json:"sshAuth"` // node（宿主机的 Web 转发密钥）| password | key | cred（SSH 凭证）
 	SSHSecretEnc []byte `json:"sshSecretEnc,omitempty"`
+	CredID       int64  `json:"credId,omitempty"`
 	HTTP         []int  `json:"http"`
 	HTTPS        []int  `json:"https"`
 	Default      int    `json:"default"`

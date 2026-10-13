@@ -29,7 +29,7 @@
           <a-tooltip content="刷新"><div class="action-icon" @click="load"><icon-refresh size="18" /></div></a-tooltip>
         </a-col>
       </a-row>
-      <a-table row-key="id" :data="rows" :loading="loading" :pagination="{ showTotal: true, pageSize: 20 }" :bordered="false" :scroll="{ x: 1260 }">
+      <a-table row-key="id" :data="rows" :loading="loading && !rows.length" :pagination="{ showTotal: true, pageSize: 20 }" :bordered="false" :scroll="{ x: 1260 }">
         <template #columns>
           <a-table-column title="用户" :width="140"><template #cell="{ record }">
             <a-space><a-avatar :size="24" :style="{ backgroundColor: color(record.username) }">{{ record.username[0].toUpperCase() }}</a-avatar>{{ record.username }}</a-space>

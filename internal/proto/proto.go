@@ -119,7 +119,7 @@ type WebTarget struct {
 
 // WebReq 为对 OpenResty 的一次操作。
 type WebReq struct {
-	Op     string    `json:"op"` // check | install | apply | remove
+	Op     string    `json:"op"` // check | install | apply | remove | pubkey
 	Target WebTarget `json:"target"`
 	Ports  []int     `json:"ports,omitempty"`  // check：需要空闲的 Web 端口
 	Deploy string    `json:"deploy,omitempty"` // check：auto（需要能安装）| manual（需要已安装）
@@ -135,8 +135,9 @@ type WebCheck struct {
 }
 
 type WebResult struct {
-	Checks  []WebCheck `json:"checks,omitempty"`
-	Version string     `json:"version,omitempty"` // openresty -v
+	Checks    []WebCheck `json:"checks,omitempty"`
+	Version   string     `json:"version,omitempty"`   // openresty -v
+	PublicKey string     `json:"publicKey,omitempty"` // pubkey：宿主机 Web 转发专用密钥的公钥
 }
 
 // WebCounter 为站点的累计请求数与流量（OpenResty 重启后清零）。
@@ -221,10 +222,12 @@ type Report struct {
 	Disks    []DiskMetrics     `json:"disks"`
 	VMs      []VMInfo          `json:"vms"`
 	Counters map[int64]Counter `json:"counters"`
-	Conns    map[int64]int     `json:"conns"`
-	Health   map[int64]string  `json:"health"` // 规则 ID → 异常原因（空表示正常）
-	Listen   []int             `json:"listen"` // 宿主机进程正在监听的端口
-	Loaded   bool              `json:"loaded"` // 规则表是否已加载
+	Conns    map[int64]int     `json:"conns"`    // 规则的当前连接数（TCP 已建立 + UDP）
+	ConnsTCP map[int64]int     `json:"connsTcp"` // 其中 TCP（已建立）
+	ConnsUDP map[int64]int     `json:"connsUdp"` // 其中 UDP
+	Health   map[int64]string  `json:"health"`   // 规则 ID → 异常原因（空表示正常）
+	Listen   []int             `json:"listen"`   // 宿主机进程正在监听的端口
+	Loaded   bool              `json:"loaded"`   // 规则表是否已加载
 	// Web 转发：OpenResty 状态与站点目标是否可达（站点 ID → 异常原因）
 	Web        *WebReport       `json:"web,omitempty"`
 	SiteHealth map[int64]string `json:"siteHealth,omitempty"`

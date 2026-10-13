@@ -73,6 +73,36 @@ type Manager struct {
 	liveMu sync.Mutex
 	live   map[time.Duration]time.Time // 监控页请求的采集间隔 → 有效期
 	wg     sync.WaitGroup              // 节点循环
+
+	subMu sync.Mutex
+	subs  map[chan struct{}]bool // 采集完成通知（实时监控页）
+}
+
+// Subscribe 返回一个在任意节点完成采集后收到通知的通道（通知可合并），cancel 取消订阅。
+func (m *Manager) Subscribe() (<-chan struct{}, func()) {
+	ch := make(chan struct{}, 1)
+	m.subMu.Lock()
+	if m.subs == nil {
+		m.subs = map[chan struct{}]bool{}
+	}
+	m.subs[ch] = true
+	m.subMu.Unlock()
+	return ch, func() {
+		m.subMu.Lock()
+		delete(m.subs, ch)
+		m.subMu.Unlock()
+	}
+}
+
+func (m *Manager) notify() {
+	m.subMu.Lock()
+	defer m.subMu.Unlock()
+	for ch := range m.subs {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+	}
 }
 
 func New(db *store.DB, box *secret.Box) *Manager {
@@ -171,10 +201,10 @@ func (m *Manager) RemoveNode(id int64) {
 }
 
 // Kick 让节点尽快执行一轮下发与采集。
-// Live 由监控页在刷新时调用：在接下来一段时间内按 every 采集（不低于 3 秒），
+// Live 由监控页在刷新时调用：在接下来一段时间内按 every 采集（不低于 2 秒），
 // 页面关闭后自动恢复为系统设置中的采集间隔。
 func (m *Manager) Live(every time.Duration) {
-	every = max(every, 3*time.Second)
+	every = max(every, 2*time.Second)
 	before := m.interval()
 	m.liveMu.Lock()
 	m.live[every] = time.Now().Add(max(15*time.Second, 3*every))
@@ -482,12 +512,16 @@ func (m *Manager) tick(ctx context.Context, r *runtime) error {
 		m.setErr(r, err)
 		m.resetDriverOnError(r, n, err)
 		m.transition(n, wasOnline, false, err)
+		if wasOnline {
+			m.notify()
+		}
 		return err
 	}
 	m.setErr(r, nil)
 	m.db.Exec(`UPDATE nodes SET last_seen=? WHERE id=?`, time.Now().Unix(), n.ID)
 	m.transition(n, wasOnline, true, nil)
 	m.process(n, r, st, rep)
+	m.notify()
 	return nil
 }
 

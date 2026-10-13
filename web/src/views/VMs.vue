@@ -15,7 +15,7 @@
           <a-button size="small" :loading="syncing" @click="syncAll"><template #icon><icon-sync /></template>同步</a-button>
         </a-col>
       </a-row>
-      <a-table row-key="id" :data="rows" :loading="loading" :pagination="{ showTotal: true, pageSize: 20 }" :bordered="false" :scroll="{ x: 1280 }">
+      <a-table row-key="id" :data="rows" :loading="loading && !rows.length" :pagination="{ showTotal: true, pageSize: 20 }" :bordered="false" :scroll="{ x: 1280 }">
         <template #columns>
           <a-table-column title="节点" :width="100"><template #cell="{ record }"><a-tag size="small" color="arcoblue">{{ record.nodeName }}</a-tag></template></a-table-column>
           <a-table-column title="VMID" :width="80"><template #cell="{ record }"><span class="mono">{{ record.vmid }}</span></template></a-table-column>

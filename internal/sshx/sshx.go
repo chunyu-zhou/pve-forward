@@ -323,6 +323,33 @@ func KeyInfo(priv, passphrase string) (algo, fp string, err error) {
 	return algo, ssh.FingerprintSHA256(k), nil
 }
 
+// PlainKey 返回不带口令的 OpenSSH 私钥（有口令时解密后重新编码），供命令行 ssh -i 使用。
+func PlainKey(priv, passphrase string) (string, error) {
+	priv = strings.TrimSpace(strings.ReplaceAll(priv, "\r\n", "\n")) + "\n"
+	var raw any
+	var err error
+	if passphrase != "" {
+		raw, err = ssh.ParseRawPrivateKeyWithPassphrase([]byte(priv), []byte(passphrase))
+	} else {
+		raw, err = ssh.ParseRawPrivateKey([]byte(priv))
+	}
+	if err != nil {
+		var pm *ssh.PassphraseMissingError
+		if errors.As(err, &pm) {
+			return "", errors.New("私钥已加密，请改用带口令的 SSH 凭证")
+		}
+		return "", fmt.Errorf("私钥无效: %w", err)
+	}
+	if passphrase == "" {
+		return priv, nil
+	}
+	blk, err := ssh.MarshalPrivateKey(raw, "")
+	if err != nil {
+		return "", err
+	}
+	return string(pem.EncodeToMemory(blk)), nil
+}
+
 // PublicKeyOf 返回私钥对应的 authorized_keys 公钥行。
 func PublicKeyOf(priv, passphrase string) string {
 	var s ssh.Signer

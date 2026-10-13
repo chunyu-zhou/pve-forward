@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/pem"
 	"errors"
 	"net"
 	"os/exec"
@@ -156,6 +157,33 @@ func TestKeyAuthAndGenerate(t *testing.T) {
 		t.Fatalf("密钥认证执行 %q %v", out, err)
 	}
 	if _, _, err := KeyInfo("not a key", ""); err == nil {
+		t.Fatal("无效私钥应报错")
+	}
+}
+
+// PlainKey：无口令的私钥原样返回；有口令时解密后重新编码为无口令私钥。
+func TestPlainKey(t *testing.T) {
+	priv, _, err := GenerateKey("t")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if k, err := PlainKey(priv, ""); err != nil || !strings.Contains(k, "OPENSSH PRIVATE KEY") {
+		t.Fatalf("%v", err)
+	}
+	_, sk, _ := ed25519.GenerateKey(rand.Reader)
+	blk, _ := ssh.MarshalPrivateKeyWithPassphrase(sk, "t", []byte("pass"))
+	enc := string(pem.EncodeToMemory(blk))
+	if _, err := PlainKey(enc, ""); err == nil || !strings.Contains(err.Error(), "口令") {
+		t.Fatalf("缺少口令 %v", err)
+	}
+	k, err := PlainKey(enc, "pass")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ssh.ParsePrivateKey([]byte(k)); err != nil {
+		t.Fatalf("解密后应为无口令私钥: %v", err)
+	}
+	if _, err := PlainKey("garbage", ""); err == nil {
 		t.Fatal("无效私钥应报错")
 	}
 }

@@ -242,17 +242,106 @@ func (s *Server) listDomains(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, res)
 }
 
+// providerZones 列出 DNS 服务商账号下的域名（添加主域名时选择），标出已添加的。
+func (s *Server) providerZones(w http.ResponseWriter, r *http.Request) {
+	p, err := s.db.DNSProvider(pathID(r))
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	zones, err := s.testProvider(r.Context(), p.Type, s.providerParams(p))
+	if err != nil {
+		fail(w, bad("无法获取 %s 的域名：%v", p.Name, err))
+		return
+	}
+	added := map[string]bool{}
+	if ds, err := s.db.WebDomains(); err == nil {
+		for _, d := range ds {
+			added[d.Name] = true
+		}
+	}
+	type zone struct {
+		Name  string `json:"name"`
+		Added bool   `json:"added"`
+	}
+	res := []zone{}
+	for _, z := range zones {
+		z = strings.TrimSuffix(strings.ToLower(z), ".")
+		res = append(res, zone{z, added[z]})
+	}
+	writeJSON(w, res)
+}
+
+// saveDomain 添加（可一次添加多个，names）或修改主域名。
 func (s *Server) saveDomain(w http.ResponseWriter, r *http.Request) {
-	var in store.WebDomain
+	var in struct {
+		store.WebDomain
+		Names []string `json:"names"`
+	}
 	if !readJSON(w, r, &in) {
 		return
 	}
 	in.ID = pathID(r)
-	in.Name = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(in.Name)), ".")
-	if !domainRe.MatchString(in.Name) {
-		jsonErr(w, http.StatusBadRequest, "主域名格式错误，如 example.com")
+	names := in.Names
+	if in.ID > 0 || len(names) == 0 {
+		names = []string{in.Name}
+	}
+	seen := map[string]bool{}
+	var clean []string
+	for _, n := range names {
+		n = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(n)), ".")
+		if n == "" || seen[n] {
+			continue
+		}
+		if !domainRe.MatchString(n) {
+			jsonErr(w, http.StatusBadRequest, "主域名 "+n+" 格式错误，如 example.com")
+			return
+		}
+		seen[n] = true
+		clean = append(clean, n)
+	}
+	if len(clean) == 0 {
+		jsonErr(w, http.StatusBadRequest, "请选择或输入主域名")
 		return
 	}
+	if in.Users == nil {
+		in.Users = []int64{}
+	}
+	p, err := s.db.DNSProvider(in.ProviderID)
+	if err != nil {
+		jsonErr(w, http.StatusBadRequest, "请选择 DNS 服务商")
+		return
+	}
+	// 确认 DNS 服务商账号下有这些域名，避免用户添加站点时才发现无法解析
+	zones, err := s.testProvider(r.Context(), p.Type, s.providerParams(p))
+	if err != nil {
+		jsonErr(w, http.StatusBadRequest, "无法通过 DNS 服务商 "+p.Name+" 确认域名："+err.Error())
+		return
+	}
+	inZone := map[string]bool{}
+	for _, z := range zones {
+		inZone[strings.TrimSuffix(strings.ToLower(z), ".")] = true
+	}
+	for _, n := range clean {
+		if !inZone[n] {
+			jsonErr(w, http.StatusBadRequest, fmt.Sprintf("DNS 服务商 %s 的账号下没有域名 %s", p.Name, n))
+			return
+		}
+	}
+	if in.ID == 0 {
+		var ids []int64
+		for _, n := range clean {
+			d := store.WebDomain{Name: n, ProviderID: p.ID, Users: in.Users}
+			if err := s.db.SaveWebDomain(&d); err != nil {
+				fail(w, bad("%v", err))
+				return
+			}
+			ids = append(ids, d.ID)
+		}
+		writeJSON(w, map[string]any{"ids": ids})
+		return
+	}
+	in.Name = clean[0]
 	if in.ID > 0 {
 		old, err := s.db.WebDomain(in.ID)
 		if err != nil {
@@ -266,31 +355,7 @@ func (s *Server) saveDomain(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	p, err := s.db.DNSProvider(in.ProviderID)
-	if err != nil {
-		jsonErr(w, http.StatusBadRequest, "请选择 DNS 服务商")
-		return
-	}
-	// 确认 DNS 服务商账号下有该域名，避免用户添加站点时才发现无法解析
-	zones, err := s.testProvider(r.Context(), p.Type, s.providerParams(p))
-	if err != nil {
-		jsonErr(w, http.StatusBadRequest, "无法通过 DNS 服务商 "+p.Name+" 确认域名："+err.Error())
-		return
-	}
-	found := false
-	for _, z := range zones {
-		if strings.EqualFold(strings.TrimSuffix(z, "."), in.Name) {
-			found = true
-		}
-	}
-	if !found {
-		jsonErr(w, http.StatusBadRequest, fmt.Sprintf("DNS 服务商 %s 的账号下没有域名 %s", p.Name, in.Name))
-		return
-	}
-	if in.Users == nil {
-		in.Users = []int64{}
-	}
-	if err := s.db.SaveWebDomain(&in); err != nil {
+	if err := s.db.SaveWebDomain(&in.WebDomain); err != nil {
 		fail(w, bad("%v", err))
 		return
 	}
@@ -540,7 +605,8 @@ func (s *Server) webEntry(n *store.Node) *webEntryOut {
 			if u := users[rl.UserID]; u != nil && u.Role != "admin" {
 				owner = u.Username
 			}
-			o.Rules = append(o.Rules, map[string]any{"id": rl.ID, "port": rl.Port, "remark": rl.Remark, "owner": owner, "public": owner == "公共"})
+			o.Rules = append(o.Rules, map[string]any{"id": rl.ID, "port": rl.Port, "remark": rl.Remark, "owner": owner, "public": owner == "公共",
+				"vmId": rl.VMID, "targetPort": rl.TargetPort, "proto": rl.Proto})
 		}
 	}
 	if vms, err := s.db.VMs(n.ID); err == nil {
@@ -576,6 +642,7 @@ type webIn struct {
 	SSHPort   int    `json:"sshPort"`
 	SSHAuth   string `json:"sshAuth"`
 	SSHSecret string `json:"sshSecret"` // 留空沿用已保存的
+	CredID    int64  `json:"credId"`
 	HTTP      []int  `json:"http"`
 	HTTPS     []int  `json:"https"`
 	Default   int    `json:"default"`
@@ -623,12 +690,8 @@ func (s *Server) buildWeb(n *store.Node, in webIn) (store.NodeWeb, error) {
 	if seen[webcfg.StatusPort] {
 		return w, bad("端口 %d 由系统内部使用", webcfg.StatusPort)
 	}
-	// 端口不能被端口转发规则使用，也不能已分配给用户
+	// 端口不能已分配给用户（与端口转发规则的冲突由 webConflicts 处理）
 	for _, p := range w.Ports() {
-		var remark string
-		if s.db.QueryRow(`SELECT remark FROM rules WHERE node_id=? AND listen_port=?`, n.ID, p).Scan(&remark) == nil {
-			return w, bad("端口 %d 正被端口转发规则「%s」使用：请先删除该规则（由 Web 转发接管），或从 Web 端口中移除 %d", p, remark, p)
-		}
 		var holder string
 		if s.db.QueryRow(`SELECT u.username FROM allocated_ports a JOIN users u ON u.id=a.user_id WHERE a.node_id=? AND a.port=?`, n.ID, p).Scan(&holder) == nil {
 			return w, bad("端口 %d 已分配给用户 %s，请先收回分配", p, holder)
@@ -662,15 +725,25 @@ func (s *Server) buildWeb(n *store.Node, in webIn) (store.NodeWeb, error) {
 			return w, bad("SSH 端口无效")
 		}
 		switch w.SSHAuth {
+		case "cred":
+			c, err := s.db.Credential(in.CredID)
+			if err != nil {
+				return w, bad("请选择 SSH 凭证")
+			}
+			w.CredID, w.SSHUser = c.ID, c.Username
 		case "password", "key":
+			secret := strings.TrimSpace(in.SSHSecret)
+			if w.SSHAuth == "password" {
+				secret = in.SSHSecret
+			}
 			switch {
-			case in.SSHSecret != "":
+			case secret != "":
 				if w.SSHAuth == "key" {
-					if _, _, err := sshx.KeyInfo(in.SSHSecret, ""); err != nil {
+					if _, err := sshx.PlainKey(secret, ""); err != nil {
 						return w, bad("%v", err)
 					}
 				}
-				w.SSHSecretEnc = s.box.Seal(in.SSHSecret)
+				w.SSHSecretEnc = s.box.Seal(secret)
 			case old.SSHAuth == w.SSHAuth && len(old.SSHSecretEnc) > 0:
 				w.SSHSecretEnc = old.SSHSecretEnc
 			default:
@@ -685,6 +758,56 @@ func (s *Server) buildWeb(n *store.Node, in webIn) (store.NodeWeb, error) {
 
 var sshUserRe = regexp.MustCompile(`^[a-z_][a-z0-9_.-]{0,31}$`)
 
+// webConflict 为与 Web 端口冲突的端口转发规则。
+type webConflict struct {
+	RuleID int64  `json:"ruleId"`
+	Port   int    `json:"port"`
+	Remark string `json:"remark"`
+	// Auto 表示可自动接管：入口虚拟机模式下，该规则本就把此端口转发到入口虚拟机的同一端口，
+	// 部署时删除该规则，由系统生成的转发代替，流量不中断
+	Auto bool `json:"auto"`
+}
+
+// webConflicts 返回 Web 端口上已有的端口转发规则。
+func (s *Server) webConflicts(n *store.Node, w store.NodeWeb) []webConflict {
+	var res []webConflict
+	rules, _ := s.db.Rules(0, n.ID)
+	for _, rl := range rules {
+		if !w.HasPort(rl.Port) {
+			continue
+		}
+		auto := w.Mode == "vm" && rl.VMID == w.VMID && rl.TargetPort == rl.Port && rl.Proto != "udp"
+		res = append(res, webConflict{RuleID: rl.ID, Port: rl.Port, Remark: rl.Remark, Auto: auto})
+	}
+	return res
+}
+
+// blockingConflicts 返回需要管理员处理的冲突说明；为空表示可以部署。
+func blockingConflicts(cs []webConflict) error {
+	var msg []string
+	for _, c := range cs {
+		if !c.Auto {
+			msg = append(msg, fmt.Sprintf("宿主机端口 %d 正被端口转发规则「%s」使用", c.Port, c.Remark))
+		}
+	}
+	if len(msg) > 0 {
+		return bad("%s：请删除这些规则（由 Web 转发接管），或从 Web 端口中移除这些端口", strings.Join(msg, "；"))
+	}
+	return nil
+}
+
+// postWebPubkey 返回宿主机连接入口虚拟机使用的公钥（首次调用时在宿主机上生成）。
+func (s *Server) postWebPubkey(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	res, err := s.mgr.WebOp(ctx, pathID(r), &proto.WebReq{Op: "pubkey"})
+	if err != nil {
+		fail(w, bad("%v", err))
+		return
+	}
+	writeJSON(w, map[string]string{"publicKey": res.PublicKey})
+}
+
 // postWebCheck 检测运行位置的环境（使用表单中的参数，不保存）。
 func (s *Server) postWebCheck(w http.ResponseWriter, r *http.Request) {
 	n, err := s.db.Node(pathID(r))
@@ -698,8 +821,7 @@ func (s *Server) postWebCheck(w http.ResponseWriter, r *http.Request) {
 	}
 	in.Enabled = true
 	cfg, err := s.buildWeb(n, in)
-	// 检测时允许端口与现有规则冲突（检测结果会提示），其余错误直接返回
-	if err != nil && !strings.Contains(err.Error(), "端口转发规则") {
+	if err != nil {
 		fail(w, err)
 		return
 	}
@@ -739,6 +861,9 @@ func (s *Server) postWeb(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cfg, err := s.buildWeb(n, in)
+	if err == nil && cfg.Enabled {
+		err = blockingConflicts(s.webConflicts(n, cfg))
+	}
 	if err != nil {
 		fail(w, err)
 		return
@@ -798,6 +923,19 @@ func (s *Server) postWeb(w http.ResponseWriter, r *http.Request) {
 		if err := s.mgr.ApplyWeb(ctx, n.ID); !step("下发 Web 配置", err) {
 			send(map[string]any{"error": err.Error()})
 			return
+		}
+	}
+	// 接管目标相同的端口转发规则（入口虚拟机模式），由系统生成的转发代替
+	if cfg.Enabled {
+		var taken []string
+		for _, c := range s.webConflicts(n, cfg) {
+			if c.Auto {
+				s.db.Exec(`DELETE FROM rules WHERE id=?`, c.RuleID)
+				taken = append(taken, fmt.Sprintf("%d「%s」", c.Port, c.Remark))
+			}
+		}
+		if len(taken) > 0 {
+			step("接管端口转发规则 "+strings.Join(taken, "、"), nil)
 		}
 	}
 	// 入口虚拟机模式需要宿主机转发 Web 端口；位置变化或停用时也要更新

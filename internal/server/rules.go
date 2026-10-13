@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"pveforward/internal/ports"
+	"pveforward/internal/proto"
 	"pveforward/internal/store"
 )
 
@@ -24,6 +25,8 @@ type ruleOut struct {
 	Target4    string `json:"target4"`
 	Target6    string `json:"target6"`
 	Conns      int    `json:"conns"`
+	ConnsTCP   int    `json:"connsTcp"`
+	ConnsUDP   int    `json:"connsUdp"`
 	Up24       int64  `json:"up24"`
 	Down24     int64  `json:"down24"`
 }
@@ -64,13 +67,11 @@ func (s *Server) ruleRows(uid int64) ([]*ruleOut, error) {
 		rows.Close()
 	}
 	status := map[int64]string{}
-	conns := map[int64]map[int64]int{}
+	reports := map[int64]*proto.Report{}
 	for id := range nodes {
 		st := s.mgr.Status(id)
 		status[id] = st.State
-		if st.Report != nil {
-			conns[id] = st.Report.Conns
-		}
+		reports[id] = st.Report
 	}
 	res := []*ruleOut{}
 	for _, rl := range rules {
@@ -81,7 +82,10 @@ func (s *Server) ruleRows(uid int64) ([]*ruleOut, error) {
 		if n := nodes[rl.NodeID]; n != nil {
 			o.NodeName, o.NodeStatus = n.Name, status[n.ID]
 			o.Entry4, o.Entry6 = n.Net.WANIP4, n.Net.WANIP6
-			o.Conns = conns[n.ID][rl.ID]
+			if rep := reports[n.ID]; rep != nil {
+				o.ConnsTCP, o.ConnsUDP = ruleConns(rep, rl.ID)
+				o.Conns = o.ConnsTCP + o.ConnsUDP
+			}
 		}
 		if v := vms[rl.VMID]; v != nil {
 			o.VMName, o.VMVMID, o.VMShared, o.Target4, o.Target6 = v.Name, v.VMID, v.Shared, v.IPv4, v.IPv6

@@ -9,7 +9,7 @@
             <a-button type="primary" :disabled="!providers.length" @click="openDomain()"><template #icon><icon-plus /></template>添加主域名</a-button>
           </a-row>
           <a-alert v-if="!providers.length" style="margin-bottom:16px">请先在「DNS 服务商」中添加服务商账号，再添加主域名</a-alert>
-          <a-table :data="domains" :pagination="false" :bordered="false" row-key="id" :loading="loading">
+          <a-table :data="domains" :pagination="false" :bordered="false" row-key="id" :loading="loading && !loaded">
             <template #columns>
               <a-table-column title="主域名" :width="200"><template #cell="{ record }"><b class="mono" style="font-size:13px">{{ record.name }}</b></template></a-table-column>
               <a-table-column title="DNS 服务商" :width="220"><template #cell="{ record }"><div class="lines"><div>{{ record.providerName }}</div><div class="muted">{{ record.providerType }}</div></div></template></a-table-column>
@@ -31,7 +31,7 @@
             <span class="muted">同一类服务商可添加多个账号；密钥加密保存，保存后不再显示</span>
             <a-button type="primary" @click="openProvider()"><template #icon><icon-plus /></template>添加 DNS 服务商</a-button>
           </a-row>
-          <a-table :data="providers" :pagination="false" :bordered="false" row-key="id" :loading="loading">
+          <a-table :data="providers" :pagination="false" :bordered="false" row-key="id" :loading="loading && !loaded">
             <template #columns>
               <a-table-column title="名称" :width="200" data-index="name" />
               <a-table-column title="类型" :width="140" data-index="typeName" />
@@ -57,7 +57,7 @@
             <span class="muted">由管理员手动添加；用户添加 HTTPS 站点时，只能选择覆盖其域名的证书。证书到期前 30 天、7 天会在事件通知中提醒</span>
             <a-button type="primary" @click="openCert()"><template #icon><icon-plus /></template>添加证书</a-button>
           </a-row>
-          <a-table :data="certs" :pagination="false" :bordered="false" row-key="id" :loading="loading">
+          <a-table :data="certs" :pagination="false" :bordered="false" row-key="id" :loading="loading && !loaded">
             <template #columns>
               <a-table-column title="名称" :width="180" data-index="name" />
               <a-table-column title="包含域名" :width="260"><template #cell="{ record }"><div class="lines mono"><div v-for="d in record.domains" :key="d">{{ d }}</div></div></template></a-table-column>
@@ -124,15 +124,25 @@
                     <a-col :xs="24" :md="8"><a-form-item label="SSH 连接" :extra="`由节点 ${e.node.name} 连接虚拟机，虚拟机的 SSH 不需要对外开放`">
                       <a-input-group style="width:100%"><a-input v-model="forms[e.node.id].sshUser" style="width:90px" placeholder="用户" />
                         <a-input-number v-model="forms[e.node.id].sshPort" :min="1" :max="65535" style="width:90px"><template #prefix>:</template></a-input-number>
-                        <a-select v-model="forms[e.node.id].sshAuth" style="flex:1" :options="[{ label: '使用节点密钥', value: 'node' }, { label: '密码', value: 'password' }, { label: '私钥', value: 'key' }]" /></a-input-group>
+                        <a-select v-model="forms[e.node.id].sshAuth" style="flex:1" :options="[{ label: 'SSH 凭证', value: 'cred' }, { label: '宿主机密钥', value: 'node' }, { label: '密码', value: 'password' }, { label: '私钥', value: 'key' }]" /></a-input-group>
                     </a-form-item></a-col>
                   </a-row>
-                  <a-row v-if="forms[e.node.id].sshAuth !== 'node'" :gutter="40"><a-col :xs="24" :md="12">
+                  <a-row v-if="forms[e.node.id].sshAuth === 'cred'" :gutter="40"><a-col :xs="24" :md="12">
+                    <a-form-item label="SSH 凭证" required extra="在「PVE 节点 → SSH 凭证」中管理；使用凭证中的用户名">
+                      <a-select v-model="forms[e.node.id].credId" placeholder="选择凭证" :options="creds.map(c => ({ label: `${c.name}（${c.username} · ${c.type === 'key' ? '私钥' : '密码'}）`, value: c.id }))">
+                        <template #empty><div style="padding:12px;text-align:center" class="muted">还没有 SSH 凭证</div></template></a-select>
+                    </a-form-item></a-col></a-row>
+                  <a-row v-else-if="forms[e.node.id].sshAuth !== 'node'" :gutter="40"><a-col :xs="24" :md="12">
                     <a-form-item :label="forms[e.node.id].sshAuth === 'password' ? 'SSH 密码' : 'SSH 私钥'" :extra="hasSecret(e) ? '已保存，留空则不修改' : '加密保存'">
                       <a-input-password v-if="forms[e.node.id].sshAuth === 'password'" v-model="forms[e.node.id].sshSecret" :placeholder="hasSecret(e) ? '留空不修改' : ''" />
                       <a-textarea v-else v-model="forms[e.node.id].sshSecret" class="mono" spellcheck="false" :auto-size="{ minRows: 2, maxRows: 5 }" :placeholder="hasSecret(e) ? '留空不修改' : '-----BEGIN OPENSSH PRIVATE KEY-----'" />
                     </a-form-item></a-col></a-row>
-                  <a-alert v-if="forms[e.node.id].sshAuth === 'node'" style="margin-bottom:16px">使用宿主机 root 的 SSH 密钥登录虚拟机：请先把宿主机 /root/.ssh/id_rsa.pub（或 id_ed25519.pub）加入虚拟机的 authorized_keys</a-alert>
+                  <a-alert v-if="forms[e.node.id].sshAuth === 'node'" style="margin-bottom:16px">
+                    使用宿主机的 Web 转发专用密钥登录虚拟机：把下面的公钥加入虚拟机 {{ forms[e.node.id].sshUser }} 用户的 ~/.ssh/authorized_keys
+                    <div v-if="pubkeys[e.node.id]" class="cmd mono" style="margin-top:8px">{{ pubkeys[e.node.id] }}
+                      <a-button class="copy" size="mini" @click="copyText(pubkeys[e.node.id])">复制</a-button></div>
+                    <a-button v-else size="mini" style="margin-top:8px" :loading="pubkeys[e.node.id] === null" @click="loadPubkey(e)">获取宿主机公钥</a-button>
+                  </a-alert>
                   <a-alert type="info" style="margin-bottom:16px">入口虚拟机停止时，该节点的全部 Web 转发都会中断，建议使用开机自启、不常重启的虚拟机。客户端真实 IP 通过 X-Forwarded-For / X-Real-IP 传给目标虚拟机。</a-alert>
                 </a-form>
                 <a-form :model="forms[e.node.id]" layout="vertical">
@@ -143,7 +153,10 @@
                       <a-select v-model="forms[e.node.id].default" :options="allPorts(e).map(p => ({ label: `${forms[e.node.id].https.includes(p) ? 'HTTPS' : 'HTTP'} ${p}`, value: p }))" /></a-form-item></a-col>
                   </a-row>
                 </a-form>
-                <a-alert v-for="c in conflicts(e)" :key="c.id" type="warning" style="margin-bottom:8px" :title="`端口 ${c.port} 正被端口转发规则「${c.remark || c.port}」（${c.owner}）使用`">
+                <a-alert v-if="autoConflicts(e).length" type="info" style="margin-bottom:8px">
+                  宿主机端口 {{ autoConflicts(e).map(c => c.port).join('、') }} 的端口转发规则已指向该入口虚拟机的同一端口，部署时由 Web 转发自动接管（流量不中断）。
+                </a-alert>
+                <a-alert v-for="c in conflicts(e)" :key="c.id" type="warning" style="margin-bottom:8px" :title="`宿主机端口 ${c.port} 正被端口转发规则「${c.remark || c.port}」（${c.owner}）使用`">
                   同一端口只能由一种方式使用：由 Web 转发接管（删除该端口转发规则），或从 Web 端口中移除 {{ c.port }}。
                   <template #action><a-space>
                     <a-popconfirm :content="`删除端口转发规则「${c.remark || c.port}」？删除后 ${c.port} 端口的流量将由 Web 转发处理`" type="warning" @ok="takeOver(c)"><a-button size="mini" type="primary">由 Web 转发接管</a-button></a-popconfirm>
@@ -170,9 +183,16 @@
     <!-- 主域名 -->
     <a-modal v-model:visible="domainVisible" :title="df.id ? '编辑主域名' : '添加主域名'" :width="560" :ok-loading="saving" @before-ok="saveDomain">
       <a-form :model="df" :label-col-props="{ span: 6 }" :wrapper-col-props="{ span: 18 }">
-        <a-form-item label="主域名" required extra="如 example.com；用户填写前缀，组成 前缀.example.com"><a-input v-model="df.name" placeholder="example.com" :disabled="!!df.sites" /></a-form-item>
-        <a-form-item label="DNS 服务商" required extra="用户保存站点后，用该账号自动添加 A 记录（保存时会确认账号下有该域名）">
-          <a-select v-model="df.providerId" :disabled="!!df.sites" :options="providers.map(p => ({ label: `${p.name}（${p.typeName}）`, value: p.id }))" /></a-form-item>
+        <a-form-item label="DNS 服务商" required extra="用户保存站点后，用该账号自动添加 A 记录">
+          <a-select v-model="df.providerId" :disabled="!!df.sites" placeholder="选择 DNS 服务商" :options="providers.map(p => ({ label: `${p.name}（${p.typeName}）`, value: p.id }))" @change="loadZones" /></a-form-item>
+        <a-form-item label="主域名" required :extra="zonesErr || (df.id ? '用户填写前缀，组成 前缀.主域名' : '从服务商账号获取，可选择多个（也可输入后回车）；保存后逐个添加')"
+                     :validate-status="zonesErr ? 'error' : undefined">
+          <a-input v-if="df.id" v-model="df.name" :disabled="!!df.sites" />
+          <a-select v-else v-model="df.names" multiple allow-create allow-search :loading="zonesLoading" :disabled="!df.providerId"
+                    :placeholder="df.providerId ? '选择或输入域名' : '请先选择 DNS 服务商'">
+            <a-option v-for="z in zones" :key="z.name" :value="z.name" :disabled="z.added">{{ z.name }}<span v-if="z.added" class="muted">（已添加）</span></a-option>
+          </a-select>
+        </a-form-item>
         <a-form-item label="可用用户">
           <div style="width:100%"><a-radio-group v-model="df.who"><a-radio value="all">全部用户</a-radio><a-radio value="some">指定用户</a-radio></a-radio-group>
             <a-select v-if="df.who === 'some'" v-model="df.users" multiple style="margin-top:8px" placeholder="选择用户" :options="users.filter(u => u.role !== 'admin').map(u => ({ label: u.username, value: u.id }))" /></div></a-form-item>
@@ -235,17 +255,20 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { Message } from '@arco-design/web-vue'
-import { api, expColor, expType, readTextFile, streamNDJSON } from '../api'
+import { api, copyText, expColor, expType, readTextFile, streamNDJSON } from '../api'
 
 const route = useRoute()
 const tab = ref(['domains', 'dns', 'certs', 'entry'].includes(route.query.tab) ? route.query.tab : 'domains')
 const loading = ref(false)
+const loaded = ref(false)
 const saving = ref(false)
 const domains = ref([])
 const providers = ref([])
 const types = ref([])
 const certs = ref([])
 const users = ref([])
+const creds = ref([])
+const pubkeys = reactive({})
 const entries = ref([])
 const forms = reactive({})
 const checks = reactive({})
@@ -258,10 +281,11 @@ const typeOf = t => types.value.find(x => x.type === t)
 async function load() {
   loading.value = true
   try {
-    const [d, p, t, c, u, e] = await Promise.all([api.get('/api/web-domains'), api.get('/api/dns-providers'), api.get('/api/dns-types'),
-      api.get('/api/certs'), api.get('/api/users'), api.get('/api/web-entries')])
-    domains.value = d; providers.value = p; types.value = t; certs.value = c; users.value = u
+    const [d, p, t, c, u, e, cr] = await Promise.all([api.get('/api/web-domains'), api.get('/api/dns-providers'), api.get('/api/dns-types'),
+      api.get('/api/certs'), api.get('/api/users'), api.get('/api/web-entries'), api.get('/api/credentials')])
+    domains.value = d; providers.value = p; types.value = t; certs.value = c; users.value = u; creds.value = cr
     setEntries(e)
+    loaded.value = true
   } finally { loading.value = false }
 }
 onMounted(load)
@@ -270,18 +294,36 @@ async function del(url) { await api.del(url); Message.success('已删除'); load
 // ---------------- 主域名 ----------------
 const domainVisible = ref(false)
 const df = reactive({})
+const zones = ref([])
+const zonesLoading = ref(false)
+const zonesErr = ref('')
+async function loadZones() {
+  zones.value = []
+  zonesErr.value = ''
+  if (!df.providerId || df.id) return
+  df.names = []
+  zonesLoading.value = true
+  try {
+    zones.value = await api.get(`/api/dns-providers/${df.providerId}/zones`, { silent: true })
+    if (!zones.value.length) zonesErr.value = '该账号下没有域名'
+  } catch (e) { zonesErr.value = e.message } finally { zonesLoading.value = false }
+}
 function openDomain(r) {
-  Object.assign(df, r ? { id: r.id, name: r.name, providerId: r.providerId, who: r.users.length ? 'some' : 'all', users: [...r.users], sites: r.sites }
-    : { id: 0, name: '', providerId: providers.value[0]?.id, who: 'all', users: [], sites: 0 })
+  Object.assign(df, r ? { id: r.id, name: r.name, names: [], providerId: r.providerId, who: r.users.length ? 'some' : 'all', users: [...r.users], sites: r.sites }
+    : { id: 0, name: '', names: [], providerId: providers.value.length === 1 ? providers.value[0].id : undefined, who: 'all', users: [], sites: 0 })
+  zones.value = []
+  zonesErr.value = ''
   domainVisible.value = true
+  loadZones()
 }
 async function saveDomain(done) {
+  if (!df.id && !df.names.length) { Message.warning('请选择或输入主域名'); return done(false) }
   saving.value = true
   try {
-    const body = { name: df.name, providerId: df.providerId, users: df.who === 'some' ? df.users : [] }
-    if (df.id) await api.put(`/api/web-domains/${df.id}`, body)
-    else await api.post('/api/web-domains', body)
-    Message.success('已保存主域名')
+    const users = df.who === 'some' ? df.users : []
+    if (df.id) await api.put(`/api/web-domains/${df.id}`, { name: df.name, providerId: df.providerId, users })
+    else await api.post('/api/web-domains', { names: df.names, providerId: df.providerId, users })
+    Message.success(df.id ? '已保存主域名' : `已添加 ${df.names.length} 个主域名`)
     load(); done(true)
   } catch { done(false) } finally { saving.value = false }
 }
@@ -377,7 +419,7 @@ function setEntries(list) {
   entries.value = list
   for (const e of list) {
     const w = e.web
-    forms[e.node.id] = { enabled: w.enabled, mode: w.mode || 'host', vmId: w.vmId || undefined, deploy: w.deploy || 'auto', sshUser: w.sshUser || 'root',
+    forms[e.node.id] = { enabled: w.enabled, mode: w.mode || 'host', vmId: w.vmId || undefined, deploy: w.deploy || 'auto', sshUser: w.sshUser || 'root', credId: w.credId || undefined,
       sshPort: w.sshPort || 22, sshAuth: w.sshAuth || 'node', sshSecret: '', http: [...(w.http || [])], https: [...(w.https || [])],
       httpText: (w.http || []).map(String), httpsText: (w.https || []).map(String), default: w.default }
   }
@@ -406,7 +448,11 @@ function dropPort(e, p) {
   f.httpText = f.http.map(String); f.httpsText = f.https.map(String)
   if (f.default === p) f.default = allPorts(e)[0]
 }
-const conflicts = e => (forms[e.node.id]?.enabled ? e.rules.filter(r => allPorts(e).includes(r.port)) : [])
+// 宿主机上与 Web 端口冲突的端口转发规则；入口虚拟机模式下，原本就转发到入口虚拟机同一端口的规则部署时自动接管
+const autoTake = (e, r) => forms[e.node.id].mode === 'vm' && r.vmId === forms[e.node.id].vmId && r.targetPort === r.port && r.proto !== 'udp'
+const allConflicts = e => (forms[e.node.id]?.enabled ? e.rules.filter(r => allPorts(e).includes(r.port)) : [])
+const conflicts = e => allConflicts(e).filter(r => !autoTake(e, r))
+const autoConflicts = e => allConflicts(e).filter(r => autoTake(e, r))
 async function takeOver(c) {
   await api.del(`/api/rules/${c.id}`)
   Message.success(`已删除端口转发规则，${c.port} 端口将由 Web 转发处理`)
@@ -415,8 +461,12 @@ async function takeOver(c) {
 }
 function webBody(e) {
   const f = forms[e.node.id]
-  return { enabled: f.enabled, mode: f.mode, vmId: f.vmId || 0, deploy: f.deploy, sshUser: f.sshUser, sshPort: f.sshPort, sshAuth: f.sshAuth, sshSecret: f.sshSecret,
+  return { enabled: f.enabled, mode: f.mode, vmId: f.vmId || 0, deploy: f.deploy, sshUser: f.sshUser, sshPort: f.sshPort, sshAuth: f.sshAuth, sshSecret: f.sshSecret, credId: f.credId || 0,
     http: f.http, https: f.https, default: f.default }
+}
+async function loadPubkey(e) {
+  pubkeys[e.node.id] = null
+  try { pubkeys[e.node.id] = (await api.post(`/api/nodes/${e.node.id}/web/pubkey`)).publicKey } catch { delete pubkeys[e.node.id] }
 }
 async function check(e) {
   checking.value = e.node.id

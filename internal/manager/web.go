@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"pveforward/internal/proto"
+	"pveforward/internal/sshx"
 	"pveforward/internal/store"
 	"pveforward/internal/webcfg"
 )
@@ -40,9 +41,35 @@ func (m *Manager) WebTarget(w store.NodeWeb) (proto.WebTarget, error) {
 		return proto.WebTarget{}, fmt.Errorf("入口虚拟机 %d 还没有内网 IPv4 地址", v.VMID)
 	}
 	t := proto.WebTarget{Mode: "vm", VMIP: v.IPv4, SSHUser: w.SSHUser, SSHPort: w.SSHPort, SSHAuth: w.SSHAuth}
-	if w.SSHAuth == "password" || w.SSHAuth == "key" {
+	switch w.SSHAuth {
+	case "password", "key":
 		if t.SSHSecret, err = m.box.Open(w.SSHSecretEnc); err != nil {
 			return t, err
+		}
+		if t.SSHSecret == "" {
+			return t, errors.New("没有保存入口虚拟机的 SSH 密码或私钥，请重新填写")
+		}
+		if w.SSHAuth == "key" {
+			if t.SSHSecret, err = sshx.PlainKey(t.SSHSecret, ""); err != nil {
+				return t, err
+			}
+		}
+	case "cred":
+		c, err := m.db.Credential(w.CredID)
+		if err != nil {
+			return t, errors.New("SSH 凭证不存在")
+		}
+		secret, err := m.box.Open(c.SecretEnc)
+		if err != nil {
+			return t, err
+		}
+		t.SSHUser, t.SSHAuth, t.SSHSecret = c.Username, "password", secret
+		if c.Type == "key" {
+			pass, _ := m.box.Open(c.PassphraseEnc)
+			if t.SSHSecret, err = sshx.PlainKey(secret, pass); err != nil {
+				return t, err
+			}
+			t.SSHAuth = "key"
 		}
 	}
 	return t, nil

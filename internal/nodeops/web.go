@@ -21,6 +21,8 @@ const (
 	// 由本系统安装 OpenResty 的标记，移除时停止服务（不能以 web- 开头：会被当作旧版本配置目录清理）
 	webMarker = Dir + "/openresty-installed"
 	webLogDir = "/var/log/pve-forward-web"
+	// webNodeKey 为宿主机连接入口虚拟机的专用密钥（首次使用时生成），公钥需加入虚拟机的 authorized_keys
+	webNodeKey = Dir + "/web_ed25519"
 )
 
 var (
@@ -31,8 +33,19 @@ var (
 	webStatusRe = regexp.MustCompile(`^http://[0-9.]+:\d+/pvef-stats$`)
 )
 
+// ensureNodeKey 生成宿主机的 Web 转发专用密钥（已存在则不变）。
+const ensureNodeKey = `[ -f ` + webNodeKey + ` ] || { mkdir -p ` + Dir + ` && ssh-keygen -q -t ed25519 -N '' -C "pve-forward-web@$(hostname -s)" -f ` + webNodeKey + `; }
+`
+
 // Web 执行一次 Web 转发操作。
 func Web(ctx context.Context, ex Executor, req *proto.WebReq) (*proto.WebResult, error) {
+	if req.Op == "pubkey" { // 在宿主机上执行
+		out, err := ex.Run(ctx, ensureNodeKey+"cat "+webNodeKey+".pub\n")
+		if err != nil {
+			return nil, fmt.Errorf("生成宿主机密钥失败: %w", err)
+		}
+		return &proto.WebResult{PublicKey: strings.TrimSpace(string(out))}, nil
+	}
 	tex, err := webExecutor(ex, req.Target)
 	if err != nil {
 		return nil, err
@@ -65,7 +78,7 @@ func webExecutor(ex Executor, t proto.WebTarget) (Executor, error) {
 		return nil, fmt.Errorf("SSH 端口无效")
 	}
 	if (t.SSHAuth == "password" || t.SSHAuth == "key") && t.SSHSecret == "" {
-		return nil, fmt.Errorf("缺少 SSH 密码或私钥")
+		return nil, fmt.Errorf("没有入口虚拟机的 SSH 密码或私钥")
 	}
 	return &vmExecutor{ex: ex, t: t}, nil
 }
@@ -82,6 +95,9 @@ func (v *vmExecutor) Run(ctx context.Context, script string) ([]byte, error) {
 		msg := err.Error()
 		if i := strings.Index(msg, ": "); i >= 0 {
 			msg = msg[i+2:]
+		}
+		if strings.Contains(msg, "Permission denied") && v.t.SSHAuth != "password" && v.t.SSHAuth != "key" {
+			msg += "（请把宿主机的 Web 转发公钥加入虚拟机 " + v.t.SSHUser + " 用户的 ~/.ssh/authorized_keys）"
 		}
 		return out, fmt.Errorf("SSH 连接入口虚拟机 %s 失败: %s", v.t.VMIP, msg)
 	}
@@ -108,8 +124,9 @@ func (v *vmExecutor) wrap(script string) string {
 		b.WriteString("printf '#!/bin/sh\\ncat \"%s\"\\n' \"$K/pw\" > \"$K/ask\"\nchmod 700 \"$K/ask\"\n")
 		b.WriteString("export SSH_ASKPASS=\"$K/ask\" SSH_ASKPASS_REQUIRE=force DISPLAY=none\n")
 		opts += " -o PreferredAuthentications=password,keyboard-interactive -o PubkeyAuthentication=no -o NumberOfPasswordPrompts=1"
-	default: // 使用宿主机 root 的密钥
-		opts += " -o BatchMode=yes"
+	default: // 宿主机的 Web 转发专用密钥
+		b.WriteString(ensureNodeKey)
+		opts += " -i " + webNodeKey + " -o IdentitiesOnly=yes -o BatchMode=yes"
 	}
 	remote := "bash -s"
 	if t.SSHUser != "root" {

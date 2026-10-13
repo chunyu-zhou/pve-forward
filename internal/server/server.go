@@ -296,6 +296,7 @@ func (s *Server) routes() http.Handler {
 	user("PUT /api/me/password", s.changePassword)
 	user("GET /api/dashboard", s.dashboard)
 	user("GET /api/monitor", s.monitor)
+	user("GET /api/monitor/ws", s.monitorWS)
 	user("GET /api/monitor/rrd", s.monitorRRD)
 	user("GET /api/monitor/traffic", s.monitorTraffic)
 	user("GET /api/rules", s.listRules)
@@ -365,6 +366,8 @@ func (s *Server) routes() http.Handler {
 	admin("POST /api/certs/parse", s.parseCert)
 	admin("GET /api/web-entries", s.listWebEntries)
 	admin("POST /api/nodes/{id}/web/check", s.postWebCheck)
+	admin("POST /api/nodes/{id}/web/pubkey", s.postWebPubkey)
+	admin("GET /api/dns-providers/{id}/zones", s.providerZones)
 	admin("POST /api/nodes/{id}/web", s.postWeb)
 
 	mux.Handle("/", s.spa())

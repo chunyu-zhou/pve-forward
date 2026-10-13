@@ -209,6 +209,27 @@ curl -sS http://127.0.0.1:61080/pvef-stats | sort
 		t.Fatalf("检测虚拟机 %+v %v", res, err)
 	}
 
+	// 宿主机专用密钥：生成公钥，加入虚拟机后用 node 方式登录
+	if _, err := Web(ctx, host, &proto.WebReq{Op: "check", Target: proto.WebTarget{Mode: "vm", VMIP: vmIP, SSHUser: "root", SSHAuth: "node"}, Ports: []int{80}}); err != nil {
+		t.Fatal(err)
+	}
+	pk, err := Web(ctx, host, &proto.WebReq{Op: "pubkey"})
+	if err != nil || !strings.HasPrefix(pk.PublicKey, "ssh-ed25519 ") {
+		t.Fatalf("宿主机公钥 %+v %v", pk, err)
+	}
+	res, _ = Web(ctx, host, &proto.WebReq{Op: "check", Target: proto.WebTarget{Mode: "vm", VMIP: vmIP, SSHUser: "root", SSHAuth: "node"}, Ports: []int{80}})
+	if res.Checks[0].OK || !strings.Contains(res.Checks[0].Detail, "authorized_keys") {
+		t.Fatalf("未授权时应提示加入公钥 %+v", res.Checks)
+	}
+	run(t, vmc, "mkdir -p /root/.ssh && echo '"+pk.PublicKey+"' >> /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys")
+	res, err = Web(ctx, host, &proto.WebReq{Op: "check", Target: proto.WebTarget{Mode: "vm", VMIP: vmIP, SSHUser: "root", SSHAuth: "node"}, Ports: []int{80}})
+	if err != nil || !res.Checks[0].OK {
+		t.Fatalf("宿主机密钥登录 %+v %v", res, err)
+	}
+	if again, _ := Web(ctx, host, &proto.WebReq{Op: "pubkey"}); again.PublicKey != pk.PublicKey {
+		t.Fatal("公钥应保持不变")
+	}
+
 	// 私钥 + 普通用户 sudo
 	priv, pub := mustKey(t)
 	run(t, vmc, "mkdir -p /home/ops/.ssh && echo '"+pub+"' > /home/ops/.ssh/authorized_keys && chown -R ops /home/ops/.ssh && chmod 600 /home/ops/.ssh/authorized_keys")

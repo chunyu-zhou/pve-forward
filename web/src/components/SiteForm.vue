@@ -152,7 +152,7 @@ watch(() => props.active, async v => {
     nodeId: s?.nodeId, port: s?.port, scheme: s?.scheme || 'http', vmId: s?.vmId, targetPort: s?.targetPort ?? 80,
     certId: s?.certId ?? undefined, remark: s?.remark || '',
     hosts: s ? s.hosts.map(h => ({ sub: h.sub, domainId: h.domainId })) : [{ sub: '', domainId: undefined }],
-    opts: { ws: o.ws ?? true, realIp: o.realIp ?? true, block: o.block ?? false, cache: o.cache ?? false, forceHttps: o.forceHttps ?? true,
+    opts: { ws: o.ws ?? true, realIp: o.realIp ?? true, block: o.block ?? true, cache: o.cache ?? false, forceHttps: o.forceHttps ?? true,
       authUser: o.authUser || '', authPassword: '', bodyMax: o.bodyMax || 100, timeout: o.timeout || 60, headers: o.headers || '', custom: o.custom || '' },
   })
   auth.value = !!o.authUser

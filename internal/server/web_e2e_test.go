@@ -13,11 +13,15 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"regexp"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/coder/websocket"
+	"github.com/coder/websocket/wsjson"
 
 	"pveforward/internal/dnsapi"
 	"pveforward/internal/manager"
@@ -115,7 +119,17 @@ func (c *fakeCF) handler() http.Handler {
 		id := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
 		switch {
 		case r.URL.Path == "/zones":
-			res([]map[string]string{{"id": "z1", "name": "example.com"}})
+			all := []map[string]string{{"id": "z1", "name": "example.com"}, {"id": "z2", "name": "example.net"}}
+			if n := r.URL.Query().Get("name"); n != "" {
+				var one []map[string]string
+				for _, z := range all {
+					if z["name"] == n {
+						one = append(one, z)
+					}
+				}
+				all = one
+			}
+			res(all)
 		case r.Method == "GET":
 			out := []map[string]string{}
 			for id, x := range c.recs {
@@ -200,8 +214,26 @@ func testWebForward(t *testing.T, srv *Server, mgr *manager.Manager, admin, alic
 	if body := admin.do("POST", "/api/web-domains", map[string]any{"name": "other.com", "providerId": pid}, 400, nil); !strings.Contains(body, "账号下没有域名") {
 		t.Fatalf("主域名校验 %s", body)
 	}
-	var dom struct{ ID int64 }
-	admin.do("POST", "/api/web-domains", map[string]any{"name": "Example.com.", "providerId": pid}, 200, &dom)
+	// 主域名：从服务商获取域名列表，一次添加多个
+	var zones []struct {
+		Name  string
+		Added bool
+	}
+	admin.do("GET", fmt.Sprintf("/api/dns-providers/%d/zones", pid), nil, 200, &zones)
+	if len(zones) != 2 || zones[0].Name != "example.com" || zones[0].Added {
+		t.Fatalf("服务商域名 %+v", zones)
+	}
+	var added struct{ IDs []int64 }
+	admin.do("POST", "/api/web-domains", map[string]any{"names": []string{"Example.com.", "example.net", "example.com"}, "providerId": pid}, 200, &added)
+	if len(added.IDs) != 2 {
+		t.Fatalf("添加多个主域名 %+v", added)
+	}
+	admin.do("GET", fmt.Sprintf("/api/dns-providers/%d/zones", pid), nil, 200, &zones)
+	if !zones[0].Added || !zones[1].Added {
+		t.Fatalf("已添加标记 %+v", zones)
+	}
+	dom := struct{ ID int64 }{added.IDs[0]}
+	admin.do("DELETE", fmt.Sprintf("/api/web-domains/%d", added.IDs[1]), nil, 200, nil)
 	if body := admin.do("DELETE", fmt.Sprintf("/api/dns-providers/%d", pid), nil, 400, nil); !strings.Contains(body, "正在使用") {
 		t.Fatalf("删除使用中的服务商 %s", body)
 	}
@@ -438,4 +470,41 @@ func testWebForward(t *testing.T, srv *Server, mgr *manager.Manager, admin, alic
 		t.Fatalf("停用 %s\n%s", stream, fake.ops())
 	}
 	t.Logf("Web 转发流程完成：%s", fake.ops())
+}
+
+// testMonitorWS 实时监控：登录后通过 WebSocket 订阅，每次采集完成推送；未登录、跨站请求被拒绝。
+func testMonitorWS(t *testing.T, base string, mgr *manager.Manager, admin *client, nid int64) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	u := "ws" + strings.TrimPrefix(base, "http") + "/api/monitor/ws?every=2"
+	if _, _, err := websocket.Dial(ctx, u, nil); err == nil {
+		t.Fatal("未登录应拒绝")
+	}
+	hdr := http.Header{}
+	bu, _ := url.Parse(base)
+	for _, c := range admin.hc.Jar.Cookies(bu) {
+		hdr.Add("Cookie", c.Name+"="+c.Value)
+	}
+	hdr.Set("Origin", "https://evil.example")
+	if _, _, err := websocket.Dial(ctx, u, &websocket.DialOptions{HTTPHeader: hdr}); err == nil {
+		t.Fatal("跨站请求应拒绝")
+	}
+	hdr.Set("Origin", base)
+	ws, _, err := websocket.Dial(ctx, u, &websocket.DialOptions{HTTPHeader: hdr})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ws.CloseNow()
+	ws.SetReadLimit(4 << 20)
+	var first, second struct {
+		Nodes []monNode `json:"nodes"`
+	}
+	if err := wsjson.Read(ctx, ws, &first); err != nil || len(first.Nodes) != 1 {
+		t.Fatalf("首次推送 %+v %v", first, err)
+	}
+	go mgr.RunOnce(context.Background(), nid)
+	if err := wsjson.Read(ctx, ws, &second); err != nil || len(second.Nodes) != 1 {
+		t.Fatalf("采集后推送 %+v %v", second, err)
+	}
 }

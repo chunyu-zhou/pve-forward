@@ -208,7 +208,9 @@ some avg10=12.50 avg60=1.00 avg300=0.00 total=1
 [::]:8006
 127.0.0.1:85
 ##conntrack
-20000 3
+tcp 20000 3
+udp 20000 2
+tcp 443 9
 ##health
 1 ok
 `)
@@ -244,8 +246,9 @@ func TestParseCollect(t *testing.T) {
 	if c := rep.Counters[1]; c.Up != 1024 || c.Down != 5000 || !rep.Loaded {
 		t.Errorf("计数器 %+v", rep.Counters)
 	}
-	if rep.Conns[1] != 3 {
-		t.Errorf("连接数 %v", rep.Conns)
+	// 按规则协议统计：TCP 规则不计 UDP 连接，其他端口的连接不计入
+	if rep.Conns[1] != rep.ConnsTCP[1]+rep.ConnsUDP[1] || rep.ConnsTCP[1] != 3 {
+		t.Errorf("连接数 %v %v %v", rep.Conns, rep.ConnsTCP, rep.ConnsUDP)
 	}
 	if rep.Health[1] != "" || !strings.Contains(rep.Health[3], "端口冲突") {
 		t.Errorf("健康 %v", rep.Health)

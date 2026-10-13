@@ -96,7 +96,7 @@ echo '##cgio'
 for d in /sys/fs/cgroup/qemu.slice/*.scope /sys/fs/cgroup/lxc/*; do [ -f "$d/io.stat" ] || continue; echo "#$(basename "$d" .scope)"; cat "$d/io.stat"; grep '^some' "$d/io.pressure" 2>/dev/null; done
 echo '##nft'; nft -j list table inet ` + TableName + ` 2>/dev/null
 echo '##listen'; ss -Hlntu 2>/dev/null | awk '{print $5}'
-echo '##conntrack'; conntrack -L -n 2>/dev/null | awk '$1=="tcp" && $4!="ESTABLISHED"{next} {d="";for(i=1;i<=NF;i++){if($i~/^dport=/){d=substr($i,7);break}} if(d!="")c[d]++} END{for(k in c)print k,c[k]}'
+echo '##conntrack'; conntrack -L -g 2>/dev/null | awk '$1=="tcp" && $4!="ESTABLISHED"{next} $1!="tcp" && $1!="udp"{next} {d="";for(i=1;i<=NF;i++){if($i~/^dport=/){d=substr($i,7);break}} if(d!="")c[$1" "d]++} END{for(k in c)print k,c[k]}'
 ` + vmip + web + `echo '##health'
 ` + health.String() + `wait
 `
@@ -118,7 +118,7 @@ func (c *Collector) Collect(ctx context.Context, ex Executor, st *proto.DesiredS
 }
 
 func parseCollect(s map[string]string, prev *sample, now time.Time, st *proto.DesiredState) (*proto.Report, *sample) {
-	rep := &proto.Report{Time: now, Counters: map[int64]proto.Counter{}, Conns: map[int64]int{}, Health: map[int64]string{}}
+	rep := &proto.Report{Time: now, Counters: map[int64]proto.Counter{}, Conns: map[int64]int{}, ConnsTCP: map[int64]int{}, ConnsUDP: map[int64]int{}, Health: map[int64]string{}}
 	cur := &sample{t: now, disks: map[string][5]uint64{}, diskRW: map[string]uint64{}, vmNet: map[int]vmCounter{}, vmIOs: map[int]uint64{}}
 	dt := 0.0
 	if prev != nil {
@@ -345,14 +345,18 @@ func parseCollect(s map[string]string, prev *sample, now time.Time, st *proto.De
 			}
 		}
 	}
-	// 连接数（按原始目标端口）
-	conns := map[int]int{}
+	// 连接数（经 DNAT 的连接，按协议与原始目标端口；TCP 只统计已建立的）
+	tcpConns, udpConns := map[int]int{}, map[int]int{}
 	for _, l := range strings.Split(s["conntrack"], "\n") {
 		f := strings.Fields(l)
-		if len(f) == 2 {
-			p, _ := strconv.Atoi(f[0])
-			n, _ := strconv.Atoi(f[1])
-			conns[p] = n
+		if len(f) == 3 {
+			p, _ := strconv.Atoi(f[1])
+			n, _ := strconv.Atoi(f[2])
+			if f[0] == "udp" {
+				udpConns[p] += n
+			} else {
+				tcpConns[p] += n
+			}
 		}
 	}
 	healthy := map[int64]string{}
@@ -384,7 +388,13 @@ func parseCollect(s map[string]string, prev *sample, now time.Time, st *proto.De
 	}
 	if st != nil {
 		for _, r := range st.Rules {
-			rep.Conns[r.ID] = conns[r.Port]
+			if r.Proto != "udp" {
+				rep.ConnsTCP[r.ID] = tcpConns[r.Port]
+			}
+			if r.Proto != "tcp" {
+				rep.ConnsUDP[r.ID] = udpConns[r.Port]
+			}
+			rep.Conns[r.ID] = rep.ConnsTCP[r.ID] + rep.ConnsUDP[r.ID]
 			msg := ""
 			if seen[r.Port] && !r.Public {
 				msg = fmt.Sprintf("端口冲突：%d 已被宿主机进程监听", r.Port)

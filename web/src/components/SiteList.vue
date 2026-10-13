@@ -45,7 +45,7 @@
       <template #action><a-button size="mini" type="text" @click="q.status = 'err'">只看异常</a-button></template>
     </a-alert>
 
-    <a-table row-key="key" :data="tableRows" :columns="columns" :pagination="false" :bordered="false" :loading="loading"
+    <a-table row-key="key" :data="tableRows" :columns="columns" :pagination="false" :bordered="false" :loading="loading && !sites.length"
              :row-selection="{ type: 'checkbox', showCheckedAll: true, checkStrictly: false }" v-model:selected-keys="selected"
              v-model:expanded-keys="expanded" :indent-size="0" :span-method="spanMethod" :row-class="r => (r.group ? 'grp-row' : '')" :scroll="{ x: 1300 }">
       <template #status="{ record }">

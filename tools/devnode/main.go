@@ -346,8 +346,9 @@ MemAvailable:   %d kB
 [::]:8006
 0.0.0.0:20005
 ##conntrack
-20000 3
-20001 41
+tcp 20000 3
+tcp 20001 41
+udp 20001 6
 ##health
 %s`, s.name, s.cpu[0]-idle-s.cpu[1], idle, s.cpu[1], uint64(131900000*(0.42+0.1*wave(400, 1))), 3.12*cpuBusy*4, up, ds.String(),
 		s.net[0], s.net[1], strings.Join(res, ","), confs.String(), strings.Join(cg, "\n"), s.nftJSON(), health.String())

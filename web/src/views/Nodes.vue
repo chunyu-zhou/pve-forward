@@ -11,7 +11,7 @@
           <a-tooltip content="刷新"><div class="action-icon" @click="load"><icon-refresh size="18" /></div></a-tooltip>
         </a-col>
       </a-row>
-      <a-table row-key="id" :data="rows" :loading="loading" :pagination="false" :bordered="false" :scroll="{ x: 1420 }">
+      <a-table row-key="id" :data="rows" :loading="loading && !rows.length" :pagination="false" :bordered="false" :scroll="{ x: 1420 }">
         <template #columns>
           <a-table-column title="节点" :width="160"><template #cell="{ record }">
             <div style="font-weight:500">{{ record.name }}</div><div class="muted">{{ record.remark || record.hostname }}</div></template></a-table-column>

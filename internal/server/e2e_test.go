@@ -566,6 +566,7 @@ func TestEndToEnd(t *testing.T) {
 	resp.Body.Close()
 	testMonitorRegressions(t, srv, admin, ua, ub, anon, fake, nid, vmWeb, vmVPN)
 	testWebForward(t, srv, mgr, admin, ua, ub, fake, nid, vmWeb, vmVPN)
+	testMonitorWS(t, ts.URL, mgr, admin, nid)
 
 	// ---- 删除节点（含清理） ----
 	admin.do("DELETE", fmt.Sprintf("/api/nodes/%d?cleanup=1", nid), nil, 200, nil)

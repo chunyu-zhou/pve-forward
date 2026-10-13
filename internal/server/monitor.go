@@ -9,6 +9,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/coder/websocket"
+	"github.com/coder/websocket/wsjson"
+
 	"pveforward/internal/manager"
 	"pveforward/internal/proto"
 	"pveforward/internal/store"
@@ -25,6 +28,8 @@ type monNode struct {
 	Metrics  *proto.NodeMetrics  `json:"metrics"`
 	Disks    []proto.DiskMetrics `json:"disks"`
 	Conns    int                 `json:"conns"` // 经转发规则的当前连接数
+	ConnsTCP int                 `json:"connsTcp"`
+	ConnsUDP int                 `json:"connsUdp"`
 }
 
 type monVM struct {
@@ -59,6 +64,8 @@ type monVMMetrics struct {
 	IOPS       float64 `json:"iops"`
 	IOPressure float64 `json:"ioPressure"`
 	Conns      int     `json:"conns"` // 指向该虚拟机的转发规则的当前连接数
+	ConnsTCP   int     `json:"connsTcp"`
+	ConnsUDP   int     `json:"connsUdp"`
 	// 近 24 小时经转发规则的流量：上传为客户端 → 虚拟机，下载为虚拟机 → 客户端（公开页为 -1，不显示）
 	Up24   int64 `json:"up24"`
 	Down24 int64 `json:"down24"`
@@ -103,18 +110,21 @@ func (s *Server) monitorData(sc monScope) map[string]any {
 		}
 		outNodes = append(outNodes, mn)
 	}
-	nodeConns, vmConns := map[int64]int{}, map[int64]int{}
+	// 连接数：[0] TCP、[1] UDP（旧版 Agent 只上报合计，计入 TCP）
+	nodeConns, vmConns := map[int64][2]int{}, map[int64][2]int{}
 	if rules, err := s.db.Rules(0, 0); err == nil {
 		for _, rl := range rules {
 			if st, ok := statuses[rl.NodeID]; ok && st.State == "online" && st.Report != nil {
-				c := st.Report.Conns[rl.ID]
-				nodeConns[rl.NodeID] += c
-				vmConns[rl.VMID] += c
+				t, u := ruleConns(st.Report, rl.ID)
+				n, v := nodeConns[rl.NodeID], vmConns[rl.VMID]
+				nodeConns[rl.NodeID] = [2]int{n[0] + t, n[1] + u}
+				vmConns[rl.VMID] = [2]int{v[0] + t, v[1] + u}
 			}
 		}
 	}
 	for i := range outNodes {
-		outNodes[i].Conns = nodeConns[outNodes[i].ID]
+		c := nodeConns[outNodes[i].ID]
+		outNodes[i].ConnsTCP, outNodes[i].ConnsUDP, outNodes[i].Conns = c[0], c[1], c[0]+c[1]
 	}
 	vmTraffic := map[int64][2]int64{}
 	if sc.traffic {
@@ -156,7 +166,8 @@ func (s *Server) monitorData(sc monScope) map[string]any {
 						o.CPU, o.MemUsed, o.DiskUsed, o.Uptime = x.CPU, x.MemUsed, x.DiskUsed, x.Uptime
 						o.NetIn, o.NetOut, o.DiskR, o.DiskW = x.NetIn, x.NetOut, x.DiskR, x.DiskW
 						o.IOPS, o.IOPressure = x.IOPS, x.IOPressure
-						o.Conns = vmConns[v.ID]
+						c := vmConns[v.ID]
+						o.ConnsTCP, o.ConnsUDP, o.Conns = c[0], c[1], c[0]+c[1]
 						if x.Status != "" {
 							o.Status = x.Status
 						}
@@ -181,17 +192,72 @@ func (s *Server) monitorData(sc monScope) map[string]any {
 		"interval":   st.Interval}
 }
 
-func (s *Server) monitor(w http.ResponseWriter, r *http.Request) {
-	u := currentUser(r)
-	if rf := queryInt(r, "refresh"); rf > 0 {
-		s.mgr.Live(time.Duration(rf) * time.Second)
+// ruleConns 返回规则的 TCP、UDP 连接数。
+func ruleConns(rep *proto.Report, id int64) (int, int) {
+	if rep.ConnsTCP == nil && rep.ConnsUDP == nil {
+		return rep.Conns[id], 0
 	}
+	return rep.ConnsTCP[id], rep.ConnsUDP[id]
+}
+
+func userScope(u *store.User) monScope {
 	sc := monScope{showOwner: true, showIP: true, showNodes: u.Role == "admin", traffic: true}
 	if u.Role != "admin" {
 		sc.userID = u.ID
 		sc.vmFilter = func(v *store.VM) bool { return v.UserID != nil && *v.UserID == u.ID }
 	}
-	writeJSON(w, s.monitorData(sc))
+	return sc
+}
+
+func (s *Server) monitor(w http.ResponseWriter, r *http.Request) {
+	if rf := queryInt(r, "refresh"); rf > 0 {
+		s.mgr.Live(time.Duration(rf) * time.Second)
+	}
+	writeJSON(w, s.monitorData(userScope(currentUser(r))))
+}
+
+// monitorWS 实时监控：节点每完成一次采集就推送最新数据（页面打开期间按 every 秒采集，最少 2 秒）。
+func (s *Server) monitorWS(w http.ResponseWriter, r *http.Request) {
+	u := currentUser(r)
+	// 浏览器 WebSocket 不能自定义请求头，同源校验代替 CSRF 头（Accept 默认拒绝跨域）
+	ws, err := websocket.Accept(w, r, nil)
+	if err != nil {
+		return
+	}
+	defer ws.CloseNow()
+	ctx := ws.CloseRead(r.Context())
+	every := time.Duration(max(queryInt(r, "every"), 2)) * time.Second
+	ch, cancel := s.mgr.Subscribe()
+	defer cancel()
+	send := func() error {
+		wctx, c := context.WithTimeout(ctx, 10*time.Second)
+		defer c()
+		return wsjson.Write(wctx, ws, s.monitorData(userScope(u)))
+	}
+	s.mgr.Live(every)
+	if send() != nil {
+		return
+	}
+	keep := time.NewTicker(5 * time.Second)
+	defer keep.Stop()
+	var last time.Time
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-keep.C:
+			s.mgr.Live(every) // 连接保持期间持续请求高频采集
+		case <-ch:
+			// 多个节点几乎同时完成采集时合并为一次推送
+			if d := time.Since(last); d < time.Second {
+				time.Sleep(time.Second - d)
+			}
+			last = time.Now()
+			if send() != nil {
+				return
+			}
+		}
+	}
 }
 
 func (s *Server) rrd(w http.ResponseWriter, r *http.Request, nodeID int64, req proto.RRDReq) {
