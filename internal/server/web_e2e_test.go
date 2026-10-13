@@ -5,6 +5,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
@@ -26,6 +27,7 @@ import (
 	"pveforward/internal/dnsapi"
 	"pveforward/internal/manager"
 	"pveforward/internal/store"
+	"pveforward/internal/webbundle"
 )
 
 var (
@@ -45,10 +47,13 @@ func (f *fakeNode) webRun(script string) ([]byte, bool, error) {
 	case strings.Contains(script, "##managed"):
 		f.webOps = append(f.webOps, "check "+loc)
 		return []byte("##uid\n0\n##os\nDebian GNU/Linux 12 (bookworm)|debian|\n##arch\nx86_64\n##apt\nyes\n##systemd\nyes\n##openresty\n##managed\n##listen\n0.0.0.0:22 users:((\"sshd\",pid=1,fd=3))\n##repo\n200"), true, nil
-	case strings.Contains(script, "openresty.list"):
+	case strings.Contains(script, "base64 -d") && strings.Contains(script, "stat -c %s /tmp/pve-forward-openresty.tgz"):
+		f.webOps = append(f.webOps, "upload "+loc)
+		return nil, true, nil
+	case strings.Contains(script, "NEW=binary") || strings.Contains(script, "NEW=docker"):
 		f.webOps = append(f.webOps, "install "+loc)
 		return []byte(version), true, nil
-	case strings.Contains(script, "-t -q -c"):
+	case strings.Contains(script, `if ! or_test "$D/nginx.conf"`):
 		if f.webFail != "" {
 			return nil, true, fmt.Errorf("exit status 3: %s", f.webFail)
 		}
@@ -103,6 +108,7 @@ type fakeCF struct {
 	mu   sync.Mutex
 	next int
 	recs map[string][3]string // id → 名称、类型、值
+	note map[string]string    // id → 备注
 }
 
 func (c *fakeCF) handler() http.Handler {
@@ -114,7 +120,7 @@ func (c *fakeCF) handler() http.Handler {
 			w.Write([]byte(`{"success":false,"errors":[{"code":9109,"message":"Invalid access token"}]}`))
 			return
 		}
-		var in struct{ Type, Name, Content string }
+		var in struct{ Type, Name, Content, Comment string }
 		json.NewDecoder(r.Body).Decode(&in)
 		id := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
 		switch {
@@ -142,15 +148,29 @@ func (c *fakeCF) handler() http.Handler {
 			c.next++
 			id := fmt.Sprint("rec", c.next)
 			c.recs[id] = [3]string{in.Name, in.Type, in.Content}
+			c.note[id] = in.Comment
 			res(map[string]string{"id": id})
 		case r.Method == "PUT":
 			c.recs[id] = [3]string{in.Name, in.Type, in.Content}
+			c.note[id] = in.Comment
 			res(map[string]string{"id": id})
 		case r.Method == "DELETE":
 			delete(c.recs, id)
 			res(map[string]string{"id": id})
 		}
 	})
+}
+
+// noteOf 返回域名解析记录的备注。
+func (c *fakeCF) noteOf(name string) string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for id, x := range c.recs {
+		if x[0] == name {
+			return c.note[id]
+		}
+	}
+	return ""
 }
 
 func (c *fakeCF) lookup(name string) string {
@@ -181,7 +201,7 @@ func pemEncode(typ string, b []byte) string {
 func testWebForward(t *testing.T, srv *Server, mgr *manager.Manager, admin, alice, bob *client, fake *fakeNode, nid, vmWeb, vmVPN int64) {
 	t.Helper()
 	ctx := context.Background()
-	cf := &fakeCF{recs: map[string][3]string{"pre": {"www.example.com", "A", "1.1.1.1"}}}
+	cf := &fakeCF{recs: map[string][3]string{"pre": {"www.example.com", "A", "1.1.1.1"}}, note: map[string]string{}}
 	cfs := httptest.NewServer(cf.handler())
 	defer cfs.Close()
 	dnsapi.Endpoints["cloudflare"] = cfs.URL
@@ -258,6 +278,20 @@ func testWebForward(t *testing.T, srv *Server, mgr *manager.Manager, admin, alic
 	}
 	alice.do("GET", fmt.Sprintf("/api/certs/%d", cert.ID), nil, 403, nil)
 
+	// 所有二进制下载均走本地 HTTP，不访问真实 Release 服务。
+	bundle := []byte("fake openresty bundle")
+	bundleServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/SHA256SUMS") {
+			fmt.Fprintf(w, "%x  %s\n", sha256.Sum256(bundle), webbundle.Name("amd64"))
+			return
+		}
+		w.Write(bundle)
+	}))
+	defer bundleServer.Close()
+	oldBase := webbundle.Base
+	webbundle.Base = bundleServer.URL
+	defer func() { webbundle.Base = oldBase }()
+
 	// ---- Web 入口：端口不能与端口转发规则冲突；部署到宿主机 ----
 	var me struct{ User store.User }
 	admin.do("GET", "/api/me", nil, 200, &me)
@@ -290,12 +324,28 @@ func testWebForward(t *testing.T, srv *Server, mgr *manager.Manager, admin, alic
 	if !strings.Contains(stream, `"done":true`) || strings.Contains(stream, `"error"`) || !strings.Contains(stream, "安装 OpenResty") {
 		t.Fatalf("部署 %s", stream)
 	}
-	if ops := fake.ops(); ops != "check host; install host; apply host" {
+	if ops := fake.ops(); ops != "check host; check host; upload host; install host; apply host" {
 		t.Fatalf("宿主机操作 %s", ops)
 	}
 	if conf := fake.webConf("host", "nginx.conf"); !strings.Contains(conf, "listen 8080 default_server;") || !strings.Contains(conf, "listen 127.0.0.1:61080;") {
 		t.Fatalf("主配置 %s", conf)
 	}
+	// 部署枚举、镜像和加速配置必须由后端校验。
+	for key, value := range map[string]string{"deploy": "bogus", "image": "x:y;id", "downloadMirror": "http://untrusted/"} {
+		old := webCfg[key]
+		webCfg[key] = value
+		admin.do("POST", fmt.Sprintf("/api/nodes/%d/web/check", nid), webCfg, 400, nil)
+		if old == nil { delete(webCfg, key) } else { webCfg[key] = old }
+	}
+	// 切换 Docker：带显式镜像，不下载/上传二进制包。
+	webCfg["deploy"], webCfg["image"] = "docker", "registry.example.com:5000/openresty:test"
+	before := fake.ops()
+	stream = admin.do("POST", fmt.Sprintf("/api/nodes/%d/web", nid), webCfg, 200, nil)
+	if !strings.Contains(stream, `"done":true`) || strings.Contains(stream, `"error"`) { t.Fatalf("Docker 部署 %s", stream) }
+	if added := strings.TrimPrefix(fake.ops(), before); added != "; check host; install host; apply host" { t.Fatalf("Docker 操作 %s", added) }
+	webCfg["deploy"] = "binary"
+	delete(webCfg, "image")
+
 	// Web 端口不能再用于端口转发，也不能分配给用户
 	if body := admin.do("POST", "/api/rules", waf, 400, nil); !strings.Contains(body, "Web 转发端口") {
 		t.Fatalf("Web 端口用于规则 %s", body)
@@ -340,6 +390,11 @@ func testWebForward(t *testing.T, srv *Server, mgr *manager.Manager, admin, alic
 		t.Fatalf("已使用的域名 %s", body)
 	}
 	site["hosts"] = []map[string]any{{"sub": "dev", "domainId": dom.ID}}
+	// 备注必填：写入解析记录的备注
+	if body := alice.do("POST", "/api/sites", site, 400, nil); !strings.Contains(body, "请填写备注") {
+		t.Fatalf("缺少备注 %s", body)
+	}
+	site["remark"] = "前端开发"
 	var created struct {
 		ID  int64
 		DNS []dnsResult
@@ -347,6 +402,9 @@ func testWebForward(t *testing.T, srv *Server, mgr *manager.Manager, admin, alic
 	alice.do("POST", "/api/sites", site, 200, &created)
 	if len(created.DNS) != 1 || created.DNS[0].Error != "" || cf.lookup("dev.example.com") != "A 203.0.113.10" {
 		t.Fatalf("自动解析 %+v %q", created, cf.lookup("dev.example.com"))
+	}
+	if n := cf.noteOf("dev.example.com"); n != "前端开发(alice)" {
+		t.Fatalf("解析备注 %q", n)
 	}
 	sid := created.ID
 	if err := mgr.RunOnce(ctx, nid); err != nil {

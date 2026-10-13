@@ -241,7 +241,8 @@ func (s *Server) saveSite(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	n, _ := s.db.Node(site.NodeID)
-	results := s.syncSiteDNS(ctx, site, n.Net.WANIP4)
+	// 备注变化时同步修改已有解析的备注
+	results := s.syncSiteDNS(ctx, site, n.Net.WANIP4, old != nil && (old.Remark != site.Remark || old.UserID != site.UserID))
 	for _, h := range removed {
 		s.deleteHostDNS(ctx, h)
 	}
@@ -397,6 +398,9 @@ func (s *Server) validateSite(ctx context.Context, me, owner *store.User, old *s
 	}
 	site.Opts = o
 	site.Remark = strings.TrimSpace(in.Remark)
+	if site.Remark == "" {
+		return nil, bad("请填写备注（会写入域名解析的备注）")
+	}
 	if len([]rune(site.Remark)) > 40 {
 		return nil, bad("备注不超过 40 个字符")
 	}
@@ -474,14 +478,25 @@ type dnsResult struct {
 	Error string `json:"error,omitempty"`
 }
 
-// syncSiteDNS 为站点的域名添加或更新 A 记录（指向节点公网 IP）。
-func (s *Server) syncSiteDNS(ctx context.Context, site *store.Site, ip string) []dnsResult {
+// dnsRemark 返回解析记录的备注：站点备注(所属用户名)。
+func (s *Server) dnsRemark(site *store.Site) string {
+	name := ""
+	if u, err := s.db.User(site.UserID); err == nil {
+		name = u.Username
+	}
+	return site.Remark + "(" + name + ")"
+}
+
+// syncSiteDNS 为站点的域名添加或更新 A 记录（指向节点公网 IP，备注为 站点备注(用户名)）。
+// force 为 true 时即使地址未变也更新（备注变化）。
+func (s *Server) syncSiteDNS(ctx context.Context, site *store.Site, ip string, force bool) []dnsResult {
 	res := []dnsResult{}
+	remark := s.dnsRemark(site)
 	for _, h := range site.Hosts {
-		if h.RecordID != "" && h.RecordIP == ip && h.DNSError == "" {
+		if !force && h.RecordID != "" && h.RecordIP == ip && h.DNSError == "" {
 			continue
 		}
-		recordID, err := s.upsertA(ctx, h, ip)
+		recordID, err := s.upsertA(ctx, h, ip, remark)
 		msg := ""
 		if err != nil {
 			msg = err.Error()
@@ -493,7 +508,7 @@ func (s *Server) syncSiteDNS(ctx context.Context, site *store.Site, ip string) [
 	return res
 }
 
-func (s *Server) upsertA(ctx context.Context, h *store.SiteHost, ip string) (string, error) {
+func (s *Server) upsertA(ctx context.Context, h *store.SiteHost, ip, remark string) (string, error) {
 	cl, d, err := s.dnsFor(h.DomainID)
 	if err != nil {
 		return h.RecordID, err
@@ -501,7 +516,7 @@ func (s *Server) upsertA(ctx context.Context, h *store.SiteHost, ip string) (str
 	cctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	if h.RecordID != "" {
-		if err := cl.Update(cctx, d.Name, h.RecordID, h.Sub, "A", ip); err == nil {
+		if err := cl.Update(cctx, d.Name, h.RecordID, h.Sub, "A", ip, remark); err == nil {
 			return h.RecordID, nil
 		}
 		// 记录可能已被手动删除：重新查找或新建
@@ -521,7 +536,7 @@ func (s *Server) upsertA(ctx context.Context, h *store.SiteHost, ip string) (str
 	if len(rs) > 0 {
 		return "", fmt.Errorf("%s 已有 %s 解析记录，未自动修改", h.Host, rs[0].Type)
 	}
-	return cl.Create(cctx, d.Name, h.Sub, "A", ip)
+	return cl.Create(cctx, d.Name, h.Sub, "A", ip, remark)
 }
 
 // deleteHostDNS 删除本系统为域名添加的解析记录。
@@ -698,7 +713,7 @@ func (s *Server) resyncNodeDNS(nodeID int64, ip string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	for _, st := range sites {
-		for _, r := range s.syncSiteDNS(ctx, st, ip) {
+		for _, r := range s.syncSiteDNS(ctx, st, ip, false) {
 			if r.Error != "" {
 				s.db.AddEvent("warn", st.UserID, nodeID, fmt.Sprintf("更新 %s 的解析失败：%s", r.Host, r.Error))
 			}

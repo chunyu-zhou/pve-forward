@@ -2,17 +2,25 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
 
 	"pveforward/internal/dnsapi"
+	"pveforward/internal/nodeops"
 	"pveforward/internal/proto"
 	"pveforward/internal/sshx"
 	"pveforward/internal/store"
+	"pveforward/internal/webbundle"
 	"pveforward/internal/webcfg"
 )
 
@@ -595,7 +603,7 @@ func (s *Server) webEntry(n *store.Node) *webEntryOut {
 	o.Web.SSHSecretEnc, o.State.Deployed.SSHSecretEnc = nil, nil
 	o.State.Hash, o.State.FailHash = "", ""
 	if o.Web.HTTP == nil {
-		o.Web = store.NodeWeb{Mode: "host", Deploy: "auto", SSHUser: "root", SSHPort: 22, SSHAuth: "node", HTTP: []int{80, 8080}, HTTPS: []int{443, 8443}, Default: 80}
+		o.Web = store.NodeWeb{Mode: "host", Deploy: "binary", SSHUser: "root", SSHPort: 22, SSHAuth: "node", HTTP: []int{80, 8080}, HTTPS: []int{443, 8443}, Default: 80}
 	}
 	users := map[int64]*store.User{}
 	if us, err := s.db.Users(); err == nil {
@@ -638,19 +646,21 @@ func (s *Server) listWebEntries(w http.ResponseWriter, r *http.Request) {
 }
 
 type webIn struct {
-	Enabled   bool   `json:"enabled"`
-	Mode      string `json:"mode"`
-	VMID      int64  `json:"vmId"`
-	Deploy    string `json:"deploy"`
-	SSHUser   string `json:"sshUser"`
-	SSHPort   int    `json:"sshPort"`
-	SSHAuth   string `json:"sshAuth"`
-	SSHSecret string `json:"sshSecret"` // 留空沿用已保存的
-	CredID    int64  `json:"credId"`
-	TakeOver  bool   `json:"takeOver"` // 部署时接管（删除）Web 端口上的端口转发规则
-	HTTP      []int  `json:"http"`
-	HTTPS     []int  `json:"https"`
-	Default   int    `json:"default"`
+	Enabled        bool   `json:"enabled"`
+	Mode           string `json:"mode"`
+	VMID           int64  `json:"vmId"`
+	Deploy         string `json:"deploy"`
+	Image          string `json:"image"`
+	DownloadMirror string `json:"downloadMirror"`
+	SSHUser        string `json:"sshUser"`
+	SSHPort        int    `json:"sshPort"`
+	SSHAuth        string `json:"sshAuth"`
+	SSHSecret      string `json:"sshSecret"` // 留空沿用已保存的
+	CredID         int64  `json:"credId"`
+	TakeOver       bool   `json:"takeOver"` // 部署时接管（删除）Web 端口上的端口转发规则
+	HTTP           []int  `json:"http"`
+	HTTPS          []int  `json:"https"`
+	Default        int    `json:"default"`
 }
 
 // buildWeb 校验并生成节点的 Web 入口配置。
@@ -664,8 +674,29 @@ func (s *Server) buildWeb(n *store.Node, in webIn) (store.NodeWeb, error) {
 	if w.Mode != "vm" {
 		w.Mode, w.VMID = "host", 0
 	}
-	if w.Deploy != "manual" {
-		w.Deploy = "auto"
+	if !w.Enabled && w.Deploy == "" { w.Deploy = old.Deploy; if w.Deploy == "" { w.Deploy = "binary" } }
+	if w.Deploy == "auto" {
+		w.Deploy = "binary"
+	} // 旧客户端显式兼容
+	switch w.Deploy {
+	case "binary", "docker", "manual":
+	default:
+		return w, bad("不支持的部署方式 %q", w.Deploy)
+	}
+	w.Image = strings.TrimSpace(in.Image)
+	if w.Image == "" {
+		w.Image = nodeops.DefaultWebImage
+	}
+	if !nodeops.ValidWebImage(w.Image) {
+		return w, bad("Docker 镜像引用无效（须指定标签或 SHA256 摘要）")
+	}
+	w.DownloadMirror = strings.TrimSpace(in.DownloadMirror)
+	if w.DownloadMirror != "" {
+		u, err := url.Parse(w.DownloadMirror)
+		if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+			return w, bad("下载加速地址必须是无账号、查询参数的 HTTPS URL")
+		}
+		w.DownloadMirror = strings.TrimRight(w.DownloadMirror, "/") + "/"
 	}
 	if w.HTTP == nil {
 		w.HTTP = []int{}
@@ -860,6 +891,59 @@ func (s *Server) postWebCheck(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, res)
 }
 
+// installWeb 在下载之前检测架构；包经校验缓存后分块传送，节点安装时再次校验。
+func (s *Server) installWeb(ctx context.Context, id int64, cfg store.NodeWeb, target proto.WebTarget) (*proto.WebResult, error) {
+	check, err := s.mgr.WebOp(ctx, id, &proto.WebReq{Op: "check", Target: target, Deploy: cfg.Deploy, Ports: cfg.Ports()})
+	if err != nil {
+		return nil, err
+	}
+	for _, c := range check.Checks {
+		if !c.OK {
+			return nil, fmt.Errorf("%s: %s", c.Name, c.Detail)
+		}
+	}
+	req := &proto.WebReq{Op: "install", Target: target, Deploy: cfg.Deploy, Image: cfg.Image}
+	if cfg.Deploy == "binary" {
+		arch, err := webbundle.Arch(check.Arch)
+		if err != nil {
+			return nil, err
+		}
+		path, err := webbundle.Fetch(ctx, filepath.Join(s.dataDir, "openresty-cache"), arch, cfg.DownloadMirror)
+		if err != nil {
+			return nil, err
+		}
+		f, err := os.Open(path)
+		if err != nil {
+			return nil, err
+		}
+		defer f.Close()
+		h := sha256.New()
+		buf := make([]byte, 256<<10)
+		var offset int64
+		for {
+			n, readErr := f.Read(buf)
+			if n > 0 {
+				h.Write(buf[:n])
+				if _, err := s.mgr.WebOp(ctx, id, &proto.WebReq{Op: "upload", Target: target, Offset: offset, Data: buf[:n]}); err != nil {
+					return nil, err
+				}
+				offset += int64(n)
+			}
+			if readErr == io.EOF {
+				break
+			}
+			if readErr != nil {
+				return nil, readErr
+			}
+		}
+		if offset == 0 {
+			return nil, fmt.Errorf("OpenResty 包为空")
+		}
+		req.SHA256 = hex.EncodeToString(h.Sum(nil))
+	}
+	return s.mgr.WebOp(ctx, id, req)
+}
+
 // postWeb 保存 Web 入口配置并部署，以 NDJSON 流式返回每一步。
 func (s *Server) postWeb(w http.ResponseWriter, r *http.Request) {
 	n, err := s.db.Node(pathID(r))
@@ -915,9 +999,9 @@ func (s *Server) postWeb(w http.ResponseWriter, r *http.Request) {
 	}
 	if cfg.Enabled {
 		target, err := s.mgr.WebTarget(cfg)
-		if err == nil && cfg.Deploy == "auto" {
+		if err == nil && cfg.Deploy != "manual" {
 			var res *proto.WebResult
-			res, err = s.mgr.WebOp(ctx, n.ID, &proto.WebReq{Op: "install", Target: target})
+			res, err = s.installWeb(ctx, n.ID, cfg, target)
 			if err == nil {
 				st.Version = res.Version
 			}

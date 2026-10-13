@@ -29,10 +29,23 @@ type fakeDNS struct {
 	mu   sync.Mutex
 	next int
 	recs map[string]Record // id → 记录
+	note map[string]string // id → 备注
+}
+
+func (f *fakeDNS) setNote(id, n string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.note[id] = n
+}
+
+func (f *fakeDNS) noteOf(id string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.note[id]
 }
 
 func newFake() *fakeDNS {
-	return &fakeDNS{next: 100, recs: map[string]Record{"7": {ID: "7", Name: "www", Type: "A", Value: "1.1.1.1"}}}
+	return &fakeDNS{next: 100, recs: map[string]Record{"7": {ID: "7", Name: "www", Type: "A", Value: "1.1.1.1"}}, note: map[string]string{}}
 }
 
 func (f *fakeDNS) list(sub string) []Record {
@@ -88,15 +101,21 @@ func exercise(t *testing.T, p Provider, f *fakeDNS) {
 	if rs, err := p.Records(ctx, "example.com", "dev"); err != nil || len(rs) != 0 {
 		t.Fatalf("Records dev %+v %v", rs, err)
 	}
-	id, err := p.Create(ctx, "example.com", "dev", "A", "203.0.113.10")
+	id, err := p.Create(ctx, "example.com", "dev", "A", "203.0.113.10", "前端开发(alice)")
 	if err != nil || id == "" {
 		t.Fatalf("Create %q %v", id, err)
+	}
+	if n := f.noteOf(id); n != "前端开发(alice)" {
+		t.Fatalf("新建时的备注 %q", n)
 	}
 	if rs := f.list("dev"); len(rs) != 1 || rs[0].Value != "203.0.113.10" || rs[0].Type != "A" {
 		t.Fatalf("新建后 %+v", rs)
 	}
-	if err := p.Update(ctx, "example.com", id, "dev", "A", "203.0.113.11"); err != nil {
+	if err := p.Update(ctx, "example.com", id, "dev", "A", "203.0.113.11", "测试环境(alice)"); err != nil {
 		t.Fatalf("Update %v", err)
+	}
+	if n := f.noteOf(id); n != "测试环境(alice)" {
+		t.Fatalf("修改后的备注 %q", n)
 	}
 	if rs := f.list("dev"); len(rs) != 1 || rs[0].Value != "203.0.113.11" {
 		t.Fatalf("修改后 %+v", rs)
@@ -132,6 +151,9 @@ func TestDNSPod(t *testing.T) {
 			ok(`,"record":{"id":"` + id + `"}`)
 		case "/Record.Modify":
 			f.set(r.Form.Get("record_id"), Record{Name: r.Form.Get("sub_domain"), Type: r.Form.Get("record_type"), Value: r.Form.Get("value")})
+			ok("")
+		case "/Record.Remark":
+			f.setNote(r.Form.Get("record_id"), r.Form.Get("remark"))
 			ok("")
 		case "/Record.Remove":
 			f.del(r.Form.Get("record_id"))
@@ -179,6 +201,9 @@ func TestAliyun(t *testing.T) {
 		case "AddDomainRecord":
 			id := f.add(Record{Name: q.Get("RR"), Type: q.Get("Type"), Value: q.Get("Value")})
 			w.Write([]byte(`{"RecordId":"` + id + `"}`))
+		case "UpdateDomainRecordRemark":
+			f.setNote(q.Get("RecordId"), q.Get("Remark"))
+			w.Write([]byte(`{}`))
 		case "UpdateDomainRecord":
 			f.set(q.Get("RecordId"), Record{Name: q.Get("RR"), Type: q.Get("Type"), Value: q.Get("Value")})
 			w.Write([]byte(`{}`))
@@ -238,10 +263,13 @@ func TestTencent(t *testing.T) {
 			resp(map[string]any{"RecordList": out})
 		case "CreateRecord":
 			var id int
-			json.Unmarshal([]byte(f.add(Record{Name: str("SubDomain"), Type: str("RecordType"), Value: str("Value")})), &id)
+			rid := f.add(Record{Name: str("SubDomain"), Type: str("RecordType"), Value: str("Value")})
+			f.setNote(rid, str("Remark"))
+			json.Unmarshal([]byte(rid), &id)
 			resp(map[string]any{"RecordId": id})
 		case "ModifyRecord":
 			f.set(num("RecordId"), Record{Name: str("SubDomain"), Type: str("RecordType"), Value: str("Value")})
+			f.setNote(num("RecordId"), str("Remark"))
 			resp(map[string]any{})
 		case "DeleteRecord":
 			f.del(num("RecordId"))
@@ -285,19 +313,21 @@ func TestHuawei(t *testing.T) {
 			w.Write(b)
 		case r.Method == "POST":
 			var in struct {
-				Name, Type string
-				Records    []string
+				Name, Type, Description string
+				Records                 []string
 			}
 			json.Unmarshal(body, &in)
 			id := f.add(Record{Name: strings.TrimSuffix(in.Name, ".example.com."), Type: in.Type, Value: in.Records[0]})
+			f.setNote(id, in.Description)
 			w.Write([]byte(`{"id":"` + id + `"}`))
 		case r.Method == "PUT":
 			var in struct {
-				Name, Type string
-				Records    []string
+				Name, Type, Description string
+				Records                 []string
 			}
 			json.Unmarshal(body, &in)
 			f.set(r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:], Record{Name: strings.TrimSuffix(in.Name, ".example.com."), Type: in.Type, Value: in.Records[0]})
+			f.setNote(r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:], in.Description)
 			w.Write([]byte(`{}`))
 		case r.Method == "DELETE":
 			f.del(r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:])
@@ -322,7 +352,7 @@ func TestCloudflare(t *testing.T) {
 			w.Write([]byte(`{"success":false,"errors":[{"code":9109,"message":"Invalid access token"}]}`))
 			return
 		}
-		var in struct{ Type, Name, Content string }
+		var in struct{ Type, Name, Content, Comment string }
 		json.NewDecoder(r.Body).Decode(&in)
 		switch {
 		case r.URL.Path == "/zones":
@@ -335,9 +365,12 @@ func TestCloudflare(t *testing.T) {
 			}
 			res(out)
 		case r.Method == "POST":
-			res(map[string]string{"id": f.add(Record{Name: strings.TrimSuffix(in.Name, ".example.com"), Type: in.Type, Value: in.Content})})
+			id := f.add(Record{Name: strings.TrimSuffix(in.Name, ".example.com"), Type: in.Type, Value: in.Content})
+			f.setNote(id, in.Comment)
+			res(map[string]string{"id": id})
 		case r.Method == "PUT":
 			f.set(r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:], Record{Name: strings.TrimSuffix(in.Name, ".example.com"), Type: in.Type, Value: in.Content})
+			f.setNote(r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:], in.Comment)
 			res(map[string]string{})
 		case r.Method == "DELETE":
 			f.del(r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:])

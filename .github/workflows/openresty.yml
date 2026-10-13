@@ -1,0 +1,107 @@
+name: OpenResty bundle
+
+# 构建 Web 转发「二进制安装」使用的 OpenResty（amd64 / arm64），发布到 openresty-<版本>-<修订> Release。
+# 控制端从该 Release 下载（可经加速前缀），按 SHA256SUMS 校验后上传到宿主机或入口虚拟机。
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'tools/openresty/**'
+      - '.github/workflows/openresty.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: openresty-bundle
+  cancel-in-progress: false
+
+jobs:
+  # 先创建（草稿）Release，各架构构建完成后上传，最后生成 SHA256SUMS 并正式发布
+  plan:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.v.outputs.tag }}
+      build: ${{ steps.v.outputs.build }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - id: v
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          . tools/openresty/versions.env
+          tag="openresty-${OPENRESTY_VERSION}-${BUNDLE_REVISION}"
+          build=true
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft -q .isDraft 2>/dev/null | grep -qx false; then
+            build=false
+            printf '%s 已发布，跳过\n' "$tag"
+          else
+            gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+              gh release create "$tag" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --draft --latest=false \
+                --title "$tag（Web 转发使用的 OpenResty）" \
+                --notes "PVE Forward Web 转发「二进制安装」使用的 OpenResty，由 tools/openresty/build.sh 构建（自带依赖库，可在任意 Linux 发行版运行）。不是 PVE Forward 程序版本。"
+          fi
+          printf 'tag=%s\nbuild=%s\n' "$tag" "$build" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Build in Alpine
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          docker run --rm -v "$PWD/tools/openresty:/w:ro" -v "$PWD/out:/out" alpine:3.22 sh /w/build.sh
+          ls -la out
+      # 在其他发行版上运行（自带加载器与依赖库，不依赖系统 glibc）
+      - name: Run on Debian, Ubuntu and Rocky
+        run: |
+          set -euo pipefail
+          f=$(basename out/*.tar.gz)
+          for img in debian:13 ubuntu:24.04 rockylinux:9; do
+            docker run --rm -v "$PWD/out:/o:ro" "$img" sh -c "tar xzf /o/$f -C /usr/local && /usr/local/pve-forward-openresty/bin/openresty -v"
+          done
+      - name: Upload to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ needs.plan.outputs.tag }}" out/*.tar.gz out/*.tar.gz.sha256 --repo "$GITHUB_REPOSITORY" --clobber
+
+  publish:
+    needs: [plan, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Write SHA256SUMS and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.plan.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir out && cd out
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern '*.tar.gz' --pattern '*.tar.gz.sha256'
+          for f in *.tar.gz.sha256; do sha256sum -c "$f"; done
+          cat *.tar.gz.sha256 > SHA256SUMS
+          cat SHA256SUMS
+          gh release upload "$TAG" SHA256SUMS --repo "$GITHUB_REPOSITORY" --clobber
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest=false

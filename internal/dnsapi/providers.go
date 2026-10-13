@@ -96,18 +96,34 @@ func (d *dnspod) Records(ctx context.Context, zone, sub string) ([]Record, error
 	return res, nil
 }
 
-func (d *dnspod) Create(ctx context.Context, zone, sub, typ, value string) (string, error) {
+func (d *dnspod) Create(ctx context.Context, zone, sub, typ, value, remark string) (string, error) {
 	var r struct {
 		Record struct {
 			ID json.Number `json:"id"`
 		} `json:"record"`
 	}
-	err := d.call(ctx, "Record.Create", url.Values{"domain": {zone}, "sub_domain": {sub}, "record_type": {typ}, "record_line": {"默认"}, "value": {value}}, &r)
-	return r.Record.ID.String(), err
+	if err := d.call(ctx, "Record.Create", url.Values{"domain": {zone}, "sub_domain": {sub}, "record_type": {typ}, "record_line": {"默认"}, "value": {value}}, &r); err != nil {
+		return "", err
+	}
+	id := r.Record.ID.String()
+	return id, d.remark(ctx, zone, id, remark)
 }
 
-func (d *dnspod) Update(ctx context.Context, zone, id, sub, typ, value string) error {
-	return d.call(ctx, "Record.Modify", url.Values{"domain": {zone}, "record_id": {id}, "sub_domain": {sub}, "record_type": {typ}, "record_line": {"默认"}, "value": {value}}, nil)
+func (d *dnspod) remark(ctx context.Context, zone, id, remark string) error {
+	if remark == "" {
+		return nil
+	}
+	if err := d.call(ctx, "Record.Remark", url.Values{"domain": {zone}, "record_id": {id}, "remark": {remark}}, nil); err != nil {
+		return fmt.Errorf("设置解析备注失败: %w", err)
+	}
+	return nil
+}
+
+func (d *dnspod) Update(ctx context.Context, zone, id, sub, typ, value, remark string) error {
+	if err := d.call(ctx, "Record.Modify", url.Values{"domain": {zone}, "record_id": {id}, "sub_domain": {sub}, "record_type": {typ}, "record_line": {"默认"}, "value": {value}}, nil); err != nil {
+		return err
+	}
+	return d.remark(ctx, zone, id, remark)
 }
 
 func (d *dnspod) Delete(ctx context.Context, zone, id string) error {
@@ -211,18 +227,30 @@ func (a *aliyun) Records(ctx context.Context, zone, sub string) ([]Record, error
 	return res, nil
 }
 
-func (a *aliyun) Create(ctx context.Context, zone, sub, typ, value string) (string, error) {
+func (a *aliyun) Create(ctx context.Context, zone, sub, typ, value, remark string) (string, error) {
 	var r struct{ RecordId string }
-	err := a.call(ctx, "AddDomainRecord", map[string]string{"DomainName": zone, "RR": sub, "Type": typ, "Value": value}, &r)
-	return r.RecordId, err
+	if err := a.call(ctx, "AddDomainRecord", map[string]string{"DomainName": zone, "RR": sub, "Type": typ, "Value": value}, &r); err != nil {
+		return "", err
+	}
+	return r.RecordId, a.remark(ctx, r.RecordId, remark)
 }
 
-func (a *aliyun) Update(ctx context.Context, zone, id, sub, typ, value string) error {
-	err := a.call(ctx, "UpdateDomainRecord", map[string]string{"RecordId": id, "RR": sub, "Type": typ, "Value": value}, nil)
-	if err != nil && strings.Contains(err.Error(), "DomainRecordDuplicate") { // 记录值未变化
+func (a *aliyun) remark(ctx context.Context, id, remark string) error {
+	if remark == "" {
 		return nil
 	}
-	return err
+	if err := a.call(ctx, "UpdateDomainRecordRemark", map[string]string{"RecordId": id, "Remark": remark}, nil); err != nil {
+		return fmt.Errorf("设置解析备注失败: %w", err)
+	}
+	return nil
+}
+
+func (a *aliyun) Update(ctx context.Context, zone, id, sub, typ, value, remark string) error {
+	err := a.call(ctx, "UpdateDomainRecord", map[string]string{"RecordId": id, "RR": sub, "Type": typ, "Value": value}, nil)
+	if err != nil && !strings.Contains(err.Error(), "DomainRecordDuplicate") { // 记录值未变化时仍更新备注
+		return err
+	}
+	return a.remark(ctx, id, remark)
 }
 
 func (a *aliyun) Delete(ctx context.Context, zone, id string) error {
@@ -341,15 +369,15 @@ func (t *tencent) Records(ctx context.Context, zone, sub string) ([]Record, erro
 	return res, nil
 }
 
-func (t *tencent) Create(ctx context.Context, zone, sub, typ, value string) (string, error) {
+func (t *tencent) Create(ctx context.Context, zone, sub, typ, value, remark string) (string, error) {
 	var r struct{ RecordId uint64 }
-	err := t.call(ctx, "CreateRecord", map[string]any{"Domain": zone, "SubDomain": sub, "RecordType": typ, "RecordLine": "默认", "Value": value}, &r)
+	err := t.call(ctx, "CreateRecord", map[string]any{"Domain": zone, "SubDomain": sub, "RecordType": typ, "RecordLine": "默认", "Value": value, "Remark": remark}, &r)
 	return strconv.FormatUint(r.RecordId, 10), err
 }
 
-func (t *tencent) Update(ctx context.Context, zone, id, sub, typ, value string) error {
+func (t *tencent) Update(ctx context.Context, zone, id, sub, typ, value, remark string) error {
 	rid, _ := strconv.ParseUint(id, 10, 64)
-	return t.call(ctx, "ModifyRecord", map[string]any{"Domain": zone, "RecordId": rid, "SubDomain": sub, "RecordType": typ, "RecordLine": "默认", "Value": value}, nil)
+	return t.call(ctx, "ModifyRecord", map[string]any{"Domain": zone, "RecordId": rid, "SubDomain": sub, "RecordType": typ, "RecordLine": "默认", "Value": value, "Remark": remark}, nil)
 }
 
 func (t *tencent) Delete(ctx context.Context, zone, id string) error {
@@ -517,7 +545,7 @@ func (h *huawei) Records(ctx context.Context, zone, sub string) ([]Record, error
 	return res, nil
 }
 
-func (h *huawei) Create(ctx context.Context, zone, sub, typ, value string) (string, error) {
+func (h *huawei) Create(ctx context.Context, zone, sub, typ, value, remark string) (string, error) {
 	zid, err := h.zoneID(ctx, zone)
 	if err != nil {
 		return "", err
@@ -526,17 +554,17 @@ func (h *huawei) Create(ctx context.Context, zone, sub, typ, value string) (stri
 		ID string `json:"id"`
 	}
 	err = h.call(ctx, "POST", "/v2/zones/"+zid+"/recordsets", nil,
-		map[string]any{"name": sub + "." + zone + ".", "type": typ, "records": []string{value}, "ttl": 300}, &r)
+		map[string]any{"name": sub + "." + zone + ".", "type": typ, "records": []string{value}, "ttl": 300, "description": remark}, &r)
 	return r.ID, err
 }
 
-func (h *huawei) Update(ctx context.Context, zone, id, sub, typ, value string) error {
+func (h *huawei) Update(ctx context.Context, zone, id, sub, typ, value, remark string) error {
 	zid, err := h.zoneID(ctx, zone)
 	if err != nil {
 		return err
 	}
 	return h.call(ctx, "PUT", "/v2/zones/"+zid+"/recordsets/"+url.PathEscape(id), nil,
-		map[string]any{"name": sub + "." + zone + ".", "type": typ, "records": []string{value}, "ttl": 300}, nil)
+		map[string]any{"name": sub + "." + zone + ".", "type": typ, "records": []string{value}, "ttl": 300, "description": remark}, nil)
 }
 
 func (h *huawei) Delete(ctx context.Context, zone, id string) error {
@@ -641,24 +669,24 @@ func (c *cloudflare) Records(ctx context.Context, zone, sub string) ([]Record, e
 	return res, nil
 }
 
-func (c *cloudflare) Create(ctx context.Context, zone, sub, typ, value string) (string, error) {
+func (c *cloudflare) Create(ctx context.Context, zone, sub, typ, value, remark string) (string, error) {
 	zid, err := c.zoneID(ctx, zone)
 	if err != nil {
 		return "", err
 	}
 	var r struct{ ID string }
 	err = c.call(ctx, "POST", "/zones/"+zid+"/dns_records", nil,
-		map[string]any{"type": typ, "name": sub + "." + zone, "content": value, "ttl": 1, "proxied": false}, &r)
+		map[string]any{"type": typ, "name": sub + "." + zone, "content": value, "ttl": 1, "proxied": false, "comment": remark}, &r)
 	return r.ID, err
 }
 
-func (c *cloudflare) Update(ctx context.Context, zone, id, sub, typ, value string) error {
+func (c *cloudflare) Update(ctx context.Context, zone, id, sub, typ, value, remark string) error {
 	zid, err := c.zoneID(ctx, zone)
 	if err != nil {
 		return err
 	}
 	return c.call(ctx, "PUT", "/zones/"+zid+"/dns_records/"+url.PathEscape(id), nil,
-		map[string]any{"type": typ, "name": sub + "." + zone, "content": value, "ttl": 1, "proxied": false}, nil)
+		map[string]any{"type": typ, "name": sub + "." + zone, "content": value, "ttl": 1, "proxied": false, "comment": remark}, nil)
 }
 
 func (c *cloudflare) Delete(ctx context.Context, zone, id string) error {

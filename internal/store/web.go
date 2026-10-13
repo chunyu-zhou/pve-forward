@@ -66,18 +66,20 @@ func (d *DB) migrateWeb() error {
 
 // NodeWeb 为节点的 Web 入口配置（由管理员设置）。
 type NodeWeb struct {
-	Enabled      bool   `json:"enabled"`
-	Mode         string `json:"mode"`   // host（宿主机运行）| vm（指定虚拟机运行）
-	VMID         int64  `json:"vmId"`   // 入口虚拟机（vms.id）
-	Deploy       string `json:"deploy"` // auto（自动安装）| manual（已自行安装）
-	SSHUser      string `json:"sshUser"`
-	SSHPort      int    `json:"sshPort"`
-	SSHAuth      string `json:"sshAuth"` // node（宿主机的 Web 转发密钥）| password | key | cred（SSH 凭证）
-	SSHSecretEnc []byte `json:"sshSecretEnc,omitempty"`
-	CredID       int64  `json:"credId,omitempty"`
-	HTTP         []int  `json:"http"`
-	HTTPS        []int  `json:"https"`
-	Default      int    `json:"default"`
+	Enabled        bool   `json:"enabled"`
+	Mode           string `json:"mode"`   // host（宿主机运行）| vm（指定虚拟机运行）
+	VMID           int64  `json:"vmId"`   // 入口虚拟机（vms.id）
+	Deploy         string `json:"deploy"` // binary | docker | manual；旧 auto 迁移为 binary
+	Image          string `json:"image"`
+	DownloadMirror string `json:"downloadMirror"` // 空为直连；加速须显式选择
+	SSHUser        string `json:"sshUser"`
+	SSHPort        int    `json:"sshPort"`
+	SSHAuth        string `json:"sshAuth"` // node（宿主机的 Web 转发密钥）| password | key | cred（SSH 凭证）
+	SSHSecretEnc   []byte `json:"sshSecretEnc,omitempty"`
+	CredID         int64  `json:"credId,omitempty"`
+	HTTP           []int  `json:"http"`
+	HTTPS          []int  `json:"https"`
+	Default        int    `json:"default"`
 }
 
 // Ports 返回全部 Web 端口（未启用时为空）。
@@ -137,6 +139,13 @@ func (d *DB) NodeWeb(id int64) (NodeWeb, WebState, error) {
 	var st WebState
 	json.Unmarshal([]byte(a), &w)
 	json.Unmarshal([]byte(b), &st)
+	// 兼容旧配置，不再通过 apt 自动安装 OpenResty。
+	if w.Deploy == "auto" {
+		w.Deploy = "binary"
+	}
+	if st.Deployed.Deploy == "auto" {
+		st.Deployed.Deploy = "binary"
+	}
 	return w, st, err
 }
 

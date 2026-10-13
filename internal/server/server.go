@@ -294,6 +294,9 @@ func (s *Server) routes() http.Handler {
 	user := func(p string, h http.HandlerFunc) { mux.Handle(p, s.auth(h, false)) }
 	user("GET /api/me", s.me)
 	user("PUT /api/me/password", s.changePassword)
+	user("POST /api/me/2fa/setup", s.post2FASetup)
+	user("POST /api/me/2fa/enable", s.post2FAEnable)
+	user("POST /api/me/2fa/disable", s.post2FADisable)
 	user("GET /api/dashboard", s.dashboard)
 	user("GET /api/monitor", s.monitor)
 	user("GET /api/monitor/ws", s.monitorWS)

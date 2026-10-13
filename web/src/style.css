@@ -2,6 +2,8 @@
 html, body, #app { height: 100%; margin: 0; }
 /* 始终为滚动条预留位置：内容高度变化时页面不左右跳动 */
 html { scrollbar-gutter: stable; }
+/* 隐藏 Edge / IE 自带的密码显示按钮，统一使用输入框右侧的眼睛按钮 */
+input::-ms-reveal, input::-ms-clear { display: none; }
 body { font-family: Inter, -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 14px; background: var(--color-fill-2); }
 .mono { font-family: "JetBrains Mono", Menlo, Consolas, monospace; font-size: 12px; }
 .muted { color: var(--color-text-3); font-size: 12px; }

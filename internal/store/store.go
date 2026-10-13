@@ -139,7 +139,10 @@ func (d *DB) migrate() error {
 		}
 		d.SetSetting("migrated_max_rules", "1")
 	}
-	return d.migrateWeb()
+	if err := d.migrateWeb(); err != nil {
+		return err
+	}
+	return d.migrate2FA()
 }
 
 var ErrNotFound = errors.New("记录不存在")
@@ -187,6 +190,7 @@ type User struct {
 	MaxRules     int    `json:"maxRules"`
 	Remark       string `json:"remark"`
 	CreatedAt    int64  `json:"createdAt"`
+	TwoFA        bool   `json:"twoFa"` // 已启用两步验证
 }
 
 // OverQuota 用户是否超出流量上限
@@ -195,11 +199,11 @@ func (u *User) OverQuota() bool { return u.QuotaBytes > 0 && u.UsedBytes >= u.Qu
 // Active 用户的规则是否应生效
 func (u *User) Active() bool { return u.Enabled && !u.OverQuota() }
 
-const userCols = `id,username,password_hash,role,enabled,quota_bytes,used_bytes,max_rules,remark,created_at`
+const userCols = `id,username,password_hash,role,enabled,quota_bytes,used_bytes,max_rules,remark,created_at,totp_enabled`
 
 func scanUser(r interface{ Scan(...any) error }) (*User, error) {
 	u := &User{}
-	err := r.Scan(&u.ID, &u.Username, &u.PasswordHash, &u.Role, &u.Enabled, &u.QuotaBytes, &u.UsedBytes, &u.MaxRules, &u.Remark, &u.CreatedAt)
+	err := r.Scan(&u.ID, &u.Username, &u.PasswordHash, &u.Role, &u.Enabled, &u.QuotaBytes, &u.UsedBytes, &u.MaxRules, &u.Remark, &u.CreatedAt, &u.TwoFA)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}

@@ -119,10 +119,16 @@ type WebTarget struct {
 
 // WebReq 为对 OpenResty 的一次操作。
 type WebReq struct {
-	Op     string    `json:"op"` // check | install | apply | remove | pubkey
+	Op     string    `json:"op"` // check | upload | install | apply | remove | pubkey
 	Target WebTarget `json:"target"`
 	Ports  []int     `json:"ports,omitempty"`  // check：需要空闲的 Web 端口
-	Deploy string    `json:"deploy,omitempty"` // check：auto（需要能安装）| manual（需要已安装）
+	Deploy string    `json:"deploy,omitempty"` // check / install：binary（二进制）| docker | manual（已自行安装）
+	// install：二进制包的 SHA256（包已通过 upload 上传）；Docker 镜像（可带国内镜像仓库前缀）
+	SHA256 string `json:"sha256,omitempty"`
+	Image  string `json:"image,omitempty"`
+	// upload：二进制包的一段内容，Offset 为 0 时重新开始
+	Data   []byte `json:"data,omitempty"`
+	Offset int64  `json:"offset,omitempty"`
 	// apply：版本目录名与其中的文件（相对路径 → 内容，含证书私钥）
 	Dir   string            `json:"dir,omitempty"`
 	Files map[string]string `json:"files,omitempty"`
@@ -138,6 +144,8 @@ type WebResult struct {
 	Checks    []WebCheck `json:"checks,omitempty"`
 	Version   string     `json:"version,omitempty"`   // openresty -v
 	PublicKey string     `json:"publicKey,omitempty"` // pubkey：宿主机 Web 转发专用密钥的公钥
+	Arch      string     `json:"arch,omitempty"`      // check：uname -m
+	Runtime   string     `json:"runtime,omitempty"`   // check：当前的运行方式 binary | docker | system，未安装为空
 }
 
 // WebCounter 为站点的累计请求数与流量（OpenResty 重启后清零）。

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -35,6 +36,7 @@ func main() {
   pve-forward [run] [-data 目录] [-listen 地址] [-tls self|acme|proxy]   启动服务
   pve-forward setup-token [-data 目录]            重新生成初始化令牌
   pve-forward reset-password 用户名 新密码 [-data 目录]
+  pve-forward reset-2fa 用户名 [-data 目录]（解除两步验证）
   pve-forward version
 `, server.Version)
 	}
@@ -56,7 +58,7 @@ func main() {
 		fmt.Println(server.Version)
 		return
 	}
-	if cmd != "run" && cmd != "setup-token" && cmd != "reset-password" {
+	if cmd != "run" && cmd != "setup-token" && cmd != "reset-password" && cmd != "reset-2fa" {
 		fs.Usage()
 		os.Exit(2)
 	}
@@ -99,6 +101,17 @@ func main() {
 			os.Exit(1)
 		}
 		fmt.Println("初始化令牌：" + srv.NewSetupToken())
+		return
+	case "reset-2fa":
+		u, err := db.UserByName(strings.Join(pos, ""))
+		if len(pos) != 1 || err != nil {
+			fmt.Fprintln(os.Stderr, "用法: pve-forward reset-2fa 用户名（用户不存在）")
+			os.Exit(1)
+		}
+		if err := db.DisableTOTP(u.ID); err != nil {
+			log.Fatal("解除两步验证失败")
+		}
+		fmt.Println("已解除 " + u.Username + " 的两步验证")
 		return
 	case "reset-password":
 		if len(pos) != 2 || len(pos[1]) < 8 || len(pos[1]) > 72 {

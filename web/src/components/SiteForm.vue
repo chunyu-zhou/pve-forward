@@ -62,7 +62,7 @@
         <a-input-number v-model="f.targetPort" :min="1" :max="65535" style="width:130px" placeholder="端口"><template #prefix>:</template></a-input-number>
       </a-input-group>
     </a-form-item>
-    <a-form-item label="备注"><a-input v-model="f.remark" :max-length="40" show-word-limit placeholder="选填" /></a-form-item>
+    <a-form-item label="备注" required extra="同时写入域名解析的备注，格式为：备注(用户名)"><a-input v-model="f.remark" :max-length="40" show-word-limit placeholder="如 前端开发环境" /></a-form-item>
 
     <div class="adv-toggle" @click="adv = !adv">高级参数 <icon-down :style="{ transform: adv ? 'rotate(180deg)' : 'none', transition: 'transform .2s' }" /></div>
     <template v-if="adv">
@@ -215,7 +215,7 @@ function recheck(all) {
 }
 watch(() => f.hosts.map(d => `${d.sub}|${d.domainId}`).join(','), () => recheck())
 
-const canSave = computed(() => !!f.nodeId && !!f.port && f.hosts.length > 0 && f.hosts.every(d => norm(d).sub && d.domainId && d.st === 'ok') &&
+const canSave = computed(() => !!f.nodeId && !!f.port && !!f.remark?.trim() && f.hosts.length > 0 && f.hosts.every(d => norm(d).sub && d.domainId && d.st === 'ok') &&
   (!isHttps(f.port) || !!f.certId))
 
 async function save() {

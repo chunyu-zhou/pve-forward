@@ -138,6 +138,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
+		Code     string `json:"code"` // 两步验证码（已启用时必填）
 	}
 	if !readJSON(w, r, &req) {
 		return
@@ -157,6 +158,20 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	if !u.Enabled && u.Role != "admin" {
 		jsonErr(w, http.StatusForbidden, "账号已被禁用，请联系管理员")
 		return
+	}
+	// 两步验证：密码正确后再要求验证码（未填写时提示输入，不计入失败次数）
+	if u.TwoFA {
+		if req.Code == "" {
+			writeJSON(w, map[string]bool{"need2fa": true})
+			return
+		}
+		if !s.check2FA(u, req.Code) {
+			s.limiter.Fail(key)
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			w.WriteHeader(http.StatusUnauthorized)
+			writeJSON(w, map[string]any{"error": "两步验证码不正确", "need2fa": true})
+			return
+		}
 	}
 	s.limiter.Reset(key)
 	if err := s.startSession(w, r, u.ID); err != nil {
@@ -187,18 +202,49 @@ func (s *Server) changePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u := currentUser(r)
+	key := "password:" + clientIP(r) + ":" + u.Username
+	if s.limiter.Blocked(key, 5, 15*time.Minute) {
+		jsonErr(w, http.StatusTooManyRequests, "尝试次数过多，请 15 分钟后再试")
+		return
+	}
 	if !checkPassword(u.PasswordHash, req.Old) {
+		s.limiter.Fail(key)
 		jsonErr(w, http.StatusBadRequest, "当前密码不正确")
 		return
 	}
-	if len(req.New) < 8 {
-		jsonErr(w, http.StatusBadRequest, "新密码至少 8 位")
+	if len(req.New) < 8 || len(req.New) > 72 {
+		jsonErr(w, http.StatusBadRequest, "新密码须为 8–72 字节（中文等字符占多个字节）")
 		return
 	}
-	h, _ := hashPassword(req.New)
-	s.db.Exec(`UPDATE users SET password_hash=? WHERE id=?`, h, u.ID)
-	// 使其他会话失效
-	s.db.Exec(`DELETE FROM sessions WHERE user_id=? AND token_hash<>?`, u.ID, secret.Hash(sessionToken(r)))
+	h, err := hashPassword(req.New)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	defer tx.Rollback()
+	res, err := tx.Exec(`UPDATE users SET password_hash=?, totp_pending_enc=NULL, totp_pending_expires=0 WHERE id=? AND password_hash=?`, h, u.ID, u.PasswordHash)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	if n, err := res.RowsAffected(); err != nil || n != 1 {
+		jsonErr(w, http.StatusConflict, "密码已变化，请重新登录后操作")
+		return
+	}
+	if _, err := tx.Exec(`DELETE FROM sessions WHERE user_id=? AND token_hash<>?`, u.ID, secret.Hash(sessionToken(r))); err != nil {
+		fail(w, err)
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		fail(w, err)
+		return
+	}
+	s.limiter.Reset(key)
 	writeJSON(w, map[string]bool{"ok": true})
 }
 

@@ -55,6 +55,7 @@
               <a-button type="text" size="small">更多 <icon-down /></a-button>
               <template #content>
                 <a-doption value="reset-password">重置密码</a-doption>
+                <a-doption v-if="record.twoFa" value="reset-2fa">解除两步验证</a-doption>
                 <a-doption value="reset-traffic">清零已用流量</a-doption>
                 <a-doption :value="record.enabled ? 'disable' : 'enable'">{{ record.enabled ? '禁用' : '启用' }}</a-doption>
                 <a-doption value="delete" style="color:rgb(var(--red-6))">删除用户</a-doption>
@@ -112,6 +113,11 @@ const rows = computed(() => users.value.filter(u =>
 const pwd = reactive({ visible: false, value: '', user: null })
 async function action(u, a) {
   if (a === 'reset-password') { Object.assign(pwd, { visible: true, value: '', user: u }); return }
+  if (a === 'reset-2fa') {
+    Modal.warning({ title: '解除两步验证', content: `用户 ${u.username} 丢失认证设备时使用：解除后登录只需密码，用户可在个人资料中重新绑定。确定解除？`, hideCancel: false,
+      onOk: async () => { await api.post(`/api/users/${u.id}/action`, { action: 'reset-2fa' }); Message.success('已解除'); load() } })
+    return
+  }
   if (a === 'delete') {
     Modal.warning({ title: '删除用户', content: `确定删除 ${u.username}？其全部规则会被删除，端口与虚拟机将被收回。`, hideCancel: false,
       onOk: async () => { await api.del(`/api/users/${u.id}`); Message.success('已删除'); load() } })

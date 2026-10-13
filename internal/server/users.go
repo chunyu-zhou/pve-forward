@@ -417,6 +417,12 @@ func (s *Server) userAction(w http.ResponseWriter, r *http.Request) {
 		h, _ := hashPassword(req.Password)
 		s.db.Exec(`UPDATE users SET password_hash=? WHERE id=?`, h, u.ID)
 		s.db.Exec(`DELETE FROM sessions WHERE user_id=?`, u.ID)
+	case "reset-2fa": // 用户丢失手机时由管理员解除
+		if err := s.db.DisableTOTP(u.ID); err != nil {
+			fail(w, err)
+			return
+		}
+		s.db.AddEvent("warn", u.ID, 0, "管理员已解除 "+u.Username+" 的两步验证")
 	case "reset-traffic":
 		s.db.Exec(`UPDATE users SET used_bytes=0 WHERE id=?`, u.ID)
 		s.mgr.PushUser(u.ID)

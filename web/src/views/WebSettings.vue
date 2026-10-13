@@ -91,6 +91,15 @@
               <a-alert v-if="e.state.error" type="error" style="margin-bottom:16px" title="最近一次配置下发失败（站点保持原配置运行）">{{ e.state.error }}</a-alert>
               <template v-if="forms[e.node.id].enabled">
                 <a-form :model="forms[e.node.id]" layout="vertical">
+                  <a-form-item label="部署方式" extra="旧版自动安装配置已迁移为二进制安装；宿主机和入口虚拟机均可使用以下方式。">
+                    <a-radio-group v-model="forms[e.node.id].deploy" @change="checks[e.node.id] = null"><a-radio value="binary">二进制安装</a-radio><a-radio value="docker">Docker</a-radio><a-radio value="manual">已自行安装</a-radio></a-radio-group>
+                  </a-form-item>
+                  <a-form-item v-if="forms[e.node.id].deploy === 'binary'" label="下载方式" extra="控制端下载并校验 SHA256 后上传，目标机器无需访问外网。大陆网络可主动选择第三方加速；不自动切换下载源。">
+                    <a-select v-model="forms[e.node.id].downloadMirror" :options="[{ label: '直连 GitHub（默认）', value: '' }, { label: '大陆加速：ghfast.top（第三方，需信任该服务）', value: 'https://ghfast.top/' }]" />
+                  </a-form-item>
+                  <a-form-item v-if="forms[e.node.id].deploy === 'docker'" label="OpenResty 镜像" extra="默认从 Docker Hub 拉取官方镜像；大陆网络可显式填写可信镜像仓库完整引用（含标签或 sha256 摘要），不会自动使用第三方镜像。无 Docker 时通过 apt 安装 docker.io。">
+                    <a-input v-model="forms[e.node.id].image" placeholder="openresty/openresty:1.31.1.1-0-bookworm-fat" />
+                  </a-form-item>
                   <a-form-item label="运行方式">
                     <a-radio-group v-model="forms[e.node.id].mode" class="mode-cards">
                       <a-radio value="host"><div class="t">宿主机运行</div>
@@ -118,9 +127,6 @@
                         <a-option v-for="v in e.vms" :key="v.id" :value="v.id" :label="`${v.vmid} ${v.name}（${v.ipv4 || '未分配 IP'}）`" :disabled="!v.ipv4">
                           <div class="ip-opt"><span><span class="mono">{{ v.vmid }}</span> {{ v.name }}</span><span class="mono muted">{{ v.ipv4 || '未分配 IP' }}</span></div></a-option>
                       </a-select></a-form-item></a-col>
-                    <a-col :xs="24" :md="8"><a-form-item label="部署方式">
-                      <a-radio-group v-model="forms[e.node.id].deploy"><a-radio value="auto">自动安装</a-radio><a-radio value="manual">已自行安装</a-radio></a-radio-group>
-                      <template #extra>{{ forms[e.node.id].deploy === 'auto' ? '通过 SSH 安装 OpenResty（Debian / Ubuntu）并下发配置' : '只通过 SSH 下发配置并重载 OpenResty' }}</template></a-form-item></a-col>
                     <a-col :xs="24" :md="8"><a-form-item label="SSH 连接" :extra="`由节点 ${e.node.name} 连接虚拟机，虚拟机的 SSH 不需要对外开放`">
                       <a-input-group style="width:100%"><a-input v-model="forms[e.node.id].sshUser" style="width:90px" placeholder="用户" />
                         <a-input-number v-model="forms[e.node.id].sshPort" :min="1" :max="65535" style="width:90px"><template #prefix>:</template></a-input-number>
@@ -424,7 +430,7 @@ function setEntries(list) {
   entries.value = list
   for (const e of list) {
     const w = e.web
-    forms[e.node.id] = { enabled: w.enabled, mode: w.mode || 'host', vmId: w.vmId || undefined, deploy: w.deploy || 'auto', sshUser: w.sshUser || 'root', credId: w.credId || undefined,
+    forms[e.node.id] = { enabled: w.enabled, mode: w.mode || 'host', vmId: w.vmId || undefined, deploy: !w.deploy || w.deploy === 'auto' ? 'binary' : w.deploy, image: w.image || 'openresty/openresty:1.31.1.1-0-bookworm-fat', downloadMirror: w.downloadMirror || '', sshUser: w.sshUser || 'root', credId: w.credId || undefined,
       sshPort: w.sshPort || 22, sshAuth: w.sshAuth || 'node', sshSecret: '', http: [...(w.http || [])], https: [...(w.https || [])],
       httpText: (w.http || []).map(String), httpsText: (w.https || []).map(String), default: w.default }
   }
@@ -459,7 +465,7 @@ const conflicts = e => (forms[e.node.id]?.enabled && forms[e.node.id].mode === '
 const vmEntryRules = e => e.rules.filter(r => allPorts(e).includes(r.port))
 function webBody(e) {
   const f = forms[e.node.id]
-  return { enabled: f.enabled, mode: f.mode, vmId: f.vmId || 0, deploy: f.deploy, sshUser: f.sshUser, sshPort: f.sshPort, sshAuth: f.sshAuth, sshSecret: f.sshSecret, credId: f.credId || 0,
+  return { enabled: f.enabled, mode: f.mode, vmId: f.vmId || 0, deploy: f.deploy, image: f.image, downloadMirror: f.downloadMirror, sshUser: f.sshUser, sshPort: f.sshPort, sshAuth: f.sshAuth, sshSecret: f.sshSecret, credId: f.credId || 0,
     http: f.http, https: f.https, default: f.default }
 }
 async function loadPubkey(e) {
