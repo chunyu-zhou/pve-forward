@@ -220,6 +220,9 @@ func (s *Server) validateRule(owner *store.User, old *store.Rule, in *ruleIn) er
 	if in.Port < 1 || in.Port > 65535 {
 		return bad("监听端口无效")
 	}
+	if s.webPorts(n.ID)[in.Port] {
+		return bad("端口 %d 是节点 %s 的 Web 转发端口，请使用 Web 转发", in.Port, n.Name)
+	}
 	// 监听端口：普通用户必须使用分配给自己的端口；公共规则（管理员）可使用任意端口，包括保留端口，
 	// 但不能占用已分配给用户的端口
 	if public {
@@ -389,6 +392,7 @@ func (s *Server) ruleOptions(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		reserved := ports.MustSet(n.Ports.Reserved)
+		webPorts := s.webPorts(nodeID)
 		free := []int{}
 		nUsed, nBusy := 0, 0
 		for p := range mine {
@@ -399,7 +403,7 @@ func (s *Server) ruleOptions(w http.ResponseWriter, r *http.Request) {
 				nUsed++
 			case busy[p]:
 				nBusy++
-			case reserved.Contains(p):
+			case reserved.Contains(p), webPorts[p]:
 			default:
 				free = append(free, p)
 			}

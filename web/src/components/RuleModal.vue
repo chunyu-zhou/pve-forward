@@ -1,6 +1,12 @@
 <template>
-  <a-modal :visible="visible" :title="rule?.id ? '编辑规则' : '添加规则'" :width="600" :ok-loading="saving" @ok="save" @cancel="$emit('update:visible', false)" unmount-on-close>
-    <a-form :model="f" :label-col-props="{ span: 5 }" :wrapper-col-props="{ span: 19 }">
+  <a-modal :visible="visible" :title="editing ? '编辑规则' : '添加规则'" :width="tab === 'web' ? 720 : 600" :ok-loading="saving"
+           :ok-button-props="{ disabled: tab === 'web' && !siteForm?.canSave }" @ok="save" @cancel="$emit('update:visible', false)" unmount-on-close>
+    <a-tabs v-model:active-key="tab" class="form-tabs">
+      <a-tab-pane key="web" :disabled="!!editing && tab !== 'web'"><template #title><icon-public /> Web 转发</template></a-tab-pane>
+      <a-tab-pane key="port" :disabled="!!editing && tab !== 'port'"><template #title><icon-swap /> 端口转发</template></a-tab-pane>
+    </a-tabs>
+    <SiteForm v-if="tab === 'web'" ref="siteForm" :site="site" :user-id="userId" :active="visible && tab === 'web'" />
+    <a-form v-else :model="f" :label-col-props="{ span: 5 }" :wrapper-col-props="{ span: 19 }">
       <a-form-item label="所属用户" required :extra="admin ? (isPublic ? '公共规则只有管理员可以管理，可使用保留端口，可指向节点上的任意虚拟机' : undefined) : '规则只能创建在自己名下'">
         <a-select v-model="f.userId" :disabled="!admin" placeholder="请选择用户" @change="onUserChange">
           <a-option v-if="admin" :value="session.user.id">公共（管理员）</a-option>
@@ -55,9 +61,14 @@
 import { computed, reactive, ref, watch } from 'vue'
 import { Message } from '@arco-design/web-vue'
 import { api, isAdmin, session } from '../api'
+import SiteForm from './SiteForm.vue'
 
-const props = defineProps({ visible: Boolean, rule: Object, userId: Number })
+// kind：打开时显示的类型（web 为 Web 转发，port 为端口转发）；编辑时由 rule / site 决定
+const props = defineProps({ visible: Boolean, rule: Object, site: Object, userId: Number, kind: { type: String, default: 'web' } })
 const emit = defineEmits(['update:visible', 'saved'])
+const tab = ref('web')
+const siteForm = ref(null)
+const editing = computed(() => props.rule?.id || props.site?.id)
 const admin = computed(isAdmin)
 const users = ref([])
 const userList = computed(() => (admin.value ? users.value : [session.user]))
@@ -106,7 +117,10 @@ async function loadOpts(withNode = true) {
   opts.reservedCount = d.reservedCount || 0
 }
 
-watch(() => props.visible, async v => {
+watch(() => props.visible, v => { if (v) tab.value = props.site ? 'web' : props.rule ? 'port' : props.kind }, { immediate: true })
+
+// 端口转发表单：切换到该类型时初始化
+watch(() => props.visible && tab.value === 'port', async v => {
   if (!v) return
   if (admin.value && !users.value.length) users.value = await api.get('/api/users')
   const r = props.rule
@@ -126,6 +140,16 @@ function onVMChange() {
 }
 
 async function save() {
+  if (tab.value === 'web') {
+    saving.value = true
+    try {
+      if (await siteForm.value.save()) {
+        emit('update:visible', false)
+        emit('saved', 'web')
+      }
+    } catch { /* 已提示 */ } finally { saving.value = false }
+    return
+  }
   if (!f.userId || !f.nodeId || !f.port || !f.vmId || !f.targetPort) { Message.warning('请填写完整'); return false }
   saving.value = true
   try {
@@ -133,7 +157,7 @@ async function save() {
     else await api.post('/api/rules', f)
     Message.success('已保存，正在下发到节点')
     emit('update:visible', false)
-    emit('saved')
+    emit('saved', 'port')
   } catch { /* 已提示 */ } finally { saving.value = false }
 }
 </script>

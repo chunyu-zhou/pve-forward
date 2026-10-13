@@ -5,6 +5,12 @@
     </a-card>
 
     <a-card class="general-card" title="转发规则">
+      <a-tabs v-model:active-key="kind" class="type-tabs" @change="k => $router.replace({ query: { ...$route.query, tab: k } })">
+        <a-tab-pane key="web"><template #title><icon-public /> Web 转发 <a-tag v-if="siteCount !== null" size="small" style="margin-left:4px">{{ siteCount }}</a-tag></template></a-tab-pane>
+        <a-tab-pane key="port"><template #title><icon-swap /> 端口转发 <a-tag size="small" style="margin-left:4px">{{ rules.length }}</a-tag></template></a-tab-pane>
+      </a-tabs>
+      <SiteList v-if="kind === 'web'" ref="siteList" @add="openRule(null, undefined, 'web')" @edit="s => openSite(s)" @count="n => (siteCount = n)" />
+      <template v-else>
       <a-row>
         <a-col :flex="1">
           <a-form :model="q" :label-col-props="{ span: 6 }" :wrapper-col-props="{ span: 18 }" label-align="left">
@@ -35,7 +41,7 @@
       <a-row style="margin-bottom: 16px">
         <a-col :span="16">
           <a-space wrap>
-            <a-button type="primary" @click="openRule()"><template #icon><icon-plus /></template>添加规则</a-button>
+            <a-button type="primary" @click="openRule(null, undefined, 'port')"><template #icon><icon-plus /></template>添加规则</a-button>
             <a-button :disabled="!selectedRules.length" @click="batch('enable')">批量启用</a-button>
             <a-button :disabled="!selectedRules.length" @click="batch('disable')">批量停用</a-button>
             <a-popconfirm :content="`确定删除选中的 ${selectedRules.length} 条规则？`" type="warning" @ok="batch('delete')">
@@ -84,7 +90,7 @@
             </div>
             <a-space style="margin-left:auto" @click.stop>
               <a-button type="text" size="mini" @click="$router.push(`/users/${record.user.id}`)">编辑用户</a-button>
-              <a-button type="text" size="mini" @click="openRule(null, record.user.id)">代加规则</a-button>
+              <a-button type="text" size="mini" @click="openRule(null, record.user.id, 'port')">代加规则</a-button>
             </a-space>
           </div>
         </template>
@@ -110,8 +116,9 @@
         </template>
         <template #empty><a-empty :description="rules.length ? '没有符合条件的规则' : '还没有转发规则'" /></template>
       </a-table>
+      </template>
     </a-card>
-    <RuleModal v-model:visible="modal" :rule="editing" :user-id="modalUser" @saved="load" />
+    <RuleModal v-model:visible="modal" :rule="editing" :site="editingSite" :user-id="modalUser" :kind="modalKind" @saved="onSaved" />
   </div>
 </template>
 
@@ -121,6 +128,7 @@ import { Message } from '@arco-design/web-vue'
 import { useRoute } from 'vue-router'
 import { api, isAdmin, fmtBytes, protoName, ipverName } from '../api'
 import RuleModal from '../components/RuleModal.vue'
+import SiteList from '../components/SiteList.vue'
 
 const route = useRoute()
 const admin = computed(isAdmin)
@@ -134,7 +142,12 @@ const selected = ref([])
 const expanded = ref([])
 const modal = ref(false)
 const editing = ref(null)
+const editingSite = ref(null)
 const modalUser = ref(undefined)
+const modalKind = ref('web')
+const kind = ref(route.query.tab === 'port' ? 'port' : 'web')
+const siteList = ref(null)
+const siteCount = ref(null)
 
 const palette = ['#00b42a', '#ff7d00', '#722ed1', '#165dff', '#f53f3f', '#14c9c9', '#eb0aa4', '#7bc616']
 const color = name => palette[[...name].reduce((s, c) => s + c.charCodeAt(0), 0) % palette.length]
@@ -228,7 +241,14 @@ const quotaRows = computed(() => {
   return rows
 })
 
-function openRule(r = null, uid) { editing.value = r; modalUser.value = uid; modal.value = true }
+function openRule(r = null, uid, k = 'port') { editing.value = r; editingSite.value = null; modalUser.value = uid; modalKind.value = k; modal.value = true }
+function openSite(s) { editing.value = null; editingSite.value = s; modalUser.value = undefined; modalKind.value = 'web'; modal.value = true }
+// 保存后刷新对应列表，并切换到保存的类型
+function onSaved(k) {
+  kind.value = k
+  if (k === 'web') siteList.value?.load()
+  else load()
+}
 async function toggle(r, v) {
   await api.put(`/api/rules/${r.id}`, { enabled: v })
   r.enabled = v

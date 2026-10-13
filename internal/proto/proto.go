@@ -92,6 +92,65 @@ type DesiredState struct {
 	Net     NetConfig  `json:"net"`
 	Rules   []Rule     `json:"rules"`
 	Hosts   []DHCPHost `json:"hosts"`
+	// Web 转发：OpenResty 统计接口地址（为空表示未启用），采集时读取各站点的请求数与流量
+	WebStatus string `json:"webStatus,omitempty"`
+	// Web 转发站点的目标地址，采集时检测是否可达
+	Sites []SiteTarget `json:"sites,omitempty"`
+}
+
+// SiteTarget 为 Web 转发站点的转发目标。
+type SiteTarget struct {
+	ID     int64  `json:"id"`
+	Target string `json:"target"`
+	Port   int    `json:"port"`
+}
+
+// ---------------- Web 转发（OpenResty） ----------------
+
+// WebTarget 为 OpenResty 的运行位置：宿主机，或经由宿主机 SSH 连接的入口虚拟机。
+type WebTarget struct {
+	Mode      string `json:"mode"` // host | vm
+	VMIP      string `json:"vmIp,omitempty"`
+	SSHUser   string `json:"sshUser,omitempty"`
+	SSHPort   int    `json:"sshPort,omitempty"`
+	SSHAuth   string `json:"sshAuth,omitempty"` // node（使用宿主机 root 的密钥）| password | key
+	SSHSecret string `json:"sshSecret,omitempty"`
+}
+
+// WebReq 为对 OpenResty 的一次操作。
+type WebReq struct {
+	Op     string    `json:"op"` // check | install | apply | remove
+	Target WebTarget `json:"target"`
+	Ports  []int     `json:"ports,omitempty"`  // check：需要空闲的 Web 端口
+	Deploy string    `json:"deploy,omitempty"` // check：auto（需要能安装）| manual（需要已安装）
+	// apply：版本目录名与其中的文件（相对路径 → 内容，含证书私钥）
+	Dir   string            `json:"dir,omitempty"`
+	Files map[string]string `json:"files,omitempty"`
+}
+
+type WebCheck struct {
+	Name   string `json:"name"`
+	OK     bool   `json:"ok"`
+	Detail string `json:"detail,omitempty"`
+}
+
+type WebResult struct {
+	Checks  []WebCheck `json:"checks,omitempty"`
+	Version string     `json:"version,omitempty"` // openresty -v
+}
+
+// WebCounter 为站点的累计请求数与流量（OpenResty 重启后清零）。
+type WebCounter struct {
+	Requests uint64 `json:"requests"`
+	Up       uint64 `json:"up"`   // 客户端 → 站点（请求大小）
+	Down     uint64 `json:"down"` // 站点 → 客户端（响应大小）
+}
+
+// WebReport 为采集时读取的 OpenResty 状态。
+type WebReport struct {
+	Up    bool                 `json:"up"`
+	Error string               `json:"error,omitempty"`
+	Stats map[int64]WebCounter `json:"stats,omitempty"`
 }
 
 type ApplyResult struct {
@@ -166,6 +225,9 @@ type Report struct {
 	Health   map[int64]string  `json:"health"` // 规则 ID → 异常原因（空表示正常）
 	Listen   []int             `json:"listen"` // 宿主机进程正在监听的端口
 	Loaded   bool              `json:"loaded"` // 规则表是否已加载
+	// Web 转发：OpenResty 状态与站点目标是否可达（站点 ID → 异常原因）
+	Web        *WebReport       `json:"web,omitempty"`
+	SiteHealth map[int64]string `json:"siteHealth,omitempty"`
 }
 
 // RRDPoint 为 PVE rrddata 的一个点

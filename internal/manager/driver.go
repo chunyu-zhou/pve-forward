@@ -23,6 +23,8 @@ type Driver interface {
 	Apply(ctx context.Context, st *proto.DesiredState) (*proto.ApplyResult, error)
 	Collect(ctx context.Context, st *proto.DesiredState) (*proto.Report, error)
 	RRD(ctx context.Context, req proto.RRDReq) ([]proto.RRDPoint, error)
+	// Web 在宿主机或入口虚拟机上操作 OpenResty（检测、安装、下发配置、移除）
+	Web(ctx context.Context, req *proto.WebReq) (*proto.WebResult, error)
 	Cleanup(ctx context.Context) error
 	Close()
 }
@@ -50,6 +52,9 @@ func (d *sshDriver) Collect(ctx context.Context, st *proto.DesiredState) (*proto
 }
 func (d *sshDriver) RRD(ctx context.Context, req proto.RRDReq) ([]proto.RRDPoint, error) {
 	return nodeops.RRD(ctx, d.ex, req)
+}
+func (d *sshDriver) Web(ctx context.Context, req *proto.WebReq) (*proto.WebResult, error) {
+	return nodeops.Web(ctx, d.ex, req)
 }
 func (d *sshDriver) Cleanup(ctx context.Context) error { return nodeops.Cleanup(ctx, d.ex) }
 func (d *sshDriver) Close()                            { d.ex.Close() }
@@ -170,6 +175,10 @@ func (d *agentDriver) RRD(ctx context.Context, req proto.RRDReq) ([]proto.RRDPoi
 	var r []proto.RRDPoint
 	return r, d.c.Call(ctx, "rrd", req, &r, nil)
 }
+func (d *agentDriver) Web(ctx context.Context, req *proto.WebReq) (*proto.WebResult, error) {
+	var r proto.WebResult
+	return &r, d.c.Call(ctx, "web", req, &r, nil)
+}
 func (d *agentDriver) Cleanup(ctx context.Context) error {
 	return d.c.Call(ctx, "cleanup", nil, nil, nil)
 }
@@ -239,6 +248,12 @@ func handleAgentCall(ctx context.Context, m proto.RPCMessage, ex nodeops.Executo
 		return col.Collect(ctx, ex, st)
 	case "cleanup":
 		return nil, nodeops.Cleanup(ctx, ex)
+	case "web":
+		var req proto.WebReq
+		if err := json.Unmarshal(m.Params, &req); err != nil {
+			return nil, err
+		}
+		return nodeops.Web(ctx, ex, &req)
 	case "rrd":
 		var req proto.RRDReq
 		if err := json.Unmarshal(m.Params, &req); err != nil {

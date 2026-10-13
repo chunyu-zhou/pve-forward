@@ -19,7 +19,7 @@ import (
 
 func timeoutFor(method string) time.Duration {
 	switch method {
-	case "init_network":
+	case "init_network", "web": // Web 操作可能包含安装 OpenResty
 		return 10 * time.Minute
 	case "apply", "collect", "detect":
 		return 90 * time.Second
@@ -50,9 +50,13 @@ type runtime struct {
 	last    map[int64]proto.Counter // 上次读到的计数器
 	fails   map[int64]int           // 规则连续探测失败次数
 	ruleErr map[int64]string
-	kick    chan struct{}
-	cancel  context.CancelFunc
-	busy    sync.Mutex // 串行化对节点的操作（采集 / 下发 / 初始化）
+	// Web 转发：上次读到的站点统计、站点连续探测失败次数与异常
+	lastWeb   map[int64]proto.WebCounter
+	siteFails map[int64]int
+	siteErr   map[int64]string
+	kick      chan struct{}
+	cancel    context.CancelFunc
+	busy      sync.Mutex // 串行化对节点的操作（采集 / 下发 / 初始化）
 }
 
 type Manager struct {
@@ -123,7 +127,8 @@ func (m *Manager) AddNode(id int64) {
 	}
 	cctx, cancel := context.WithCancel(root)
 	r := &runtime{id: id, kick: make(chan struct{}, 1), cancel: cancel, last: map[int64]proto.Counter{},
-		fails: map[int64]int{}, ruleErr: map[int64]string{}, since: time.Now()}
+		fails: map[int64]int{}, ruleErr: map[int64]string{}, lastWeb: map[int64]proto.WebCounter{},
+		siteFails: map[int64]int{}, siteErr: map[int64]string{}, since: time.Now()}
 	m.mu.Lock()
 	m.nodes[id] = r
 	m.mu.Unlock()
@@ -226,9 +231,9 @@ func (m *Manager) Push(ids ...int64) {
 	}
 }
 
-// PushUser 用户相关变化（启用、配额）影响其所有节点。
+// PushUser 用户相关变化（启用、配额）影响其所有节点（端口转发与 Web 转发）。
 func (m *Manager) PushUser(uid int64) {
-	rows, err := m.db.Query(`SELECT DISTINCT node_id FROM rules WHERE user_id=?`, uid)
+	rows, err := m.db.Query(`SELECT DISTINCT node_id FROM rules WHERE user_id=? UNION SELECT DISTINCT node_id FROM sites WHERE user_id=?`, uid, uid)
 	if err != nil {
 		return
 	}
@@ -465,6 +470,9 @@ func (m *Manager) tick(ctx context.Context, r *runtime) error {
 				log.Printf("节点 %s 下发失败: %v", n.Name, err)
 			}
 		}
+		if err := m.syncWeb(ctx, drv, n, false); err != nil {
+			log.Printf("节点 %s Web 转发配置下发失败: %v", n.Name, err)
+		}
 	}
 
 	cctx, cancel := context.WithTimeout(ctx, 90*time.Second)
@@ -582,7 +590,11 @@ func (m *Manager) addTraffic(nodeID int64, deltas map[int64]proto.Counter) {
 		log.Printf("记录流量失败: %v", err)
 		return
 	}
-	// 检查用户是否刚超出流量上限
+	m.checkQuota()
+}
+
+// checkQuota 检查用户是否刚超出流量上限，超出时停用其规则与站点。
+func (m *Manager) checkQuota() {
 	users, err := m.db.Users()
 	if err != nil {
 		return
@@ -632,9 +644,13 @@ func (m *Manager) process(n *store.Node, r *runtime, st *proto.DesiredState, rep
 	m.addTraffic(n.ID, deltas)
 
 	// 健康状态：目标不可达需连续 3 次失败才判定，端口冲突立即判定
+	m.processWeb(n, r, st, rep)
 	r.mu.Lock()
 	newErr := map[int64]string{}
 	for _, rule := range st.Rules {
+		if rule.ID < 0 {
+			continue // 入口虚拟机模式下由系统生成的 Web 端口转发
+		}
 		msg := rep.Health[rule.ID]
 		if strings.HasPrefix(msg, "目标不可达") {
 			r.fails[rule.ID]++
@@ -729,6 +745,7 @@ func (m *Manager) BuildState(n *store.Node) (*proto.DesiredState, error) {
 		st.Rules = append(st.Rules, proto.Rule{ID: rl.ID, Port: rl.Port, Proto: rl.Proto, IPVer: rl.IPVer,
 			Target4: v.IPv4, Target6: v.IPv6, TargetPort: rl.TargetPort, Public: u.Role == "admin"})
 	}
+	m.webState(n, st, vmByID)
 	return st, nil
 }
 

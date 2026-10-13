@@ -272,6 +272,7 @@ func (s *Server) updateNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	push := false
+	oldIP := n.Net.WANIP4
 	if n.Initialized {
 		if in.WANIP4 != nil {
 			n.Net.WANIP4 = strings.TrimSpace(*in.WANIP4)
@@ -294,6 +295,10 @@ func (s *Server) updateNode(w http.ResponseWriter, r *http.Request) {
 	if push {
 		s.mgr.Push(n.ID)
 	}
+	// 公网 IP 变化：Web 转发站点的解析记录指向新地址
+	if n.Net.WANIP4 != oldIP && n.Net.WANIP4 != "" {
+		go s.resyncNodeDNS(n.ID, n.Net.WANIP4)
+	}
 	writeJSON(w, map[string]any{"node": s.nodeOut(n)})
 }
 
@@ -304,7 +309,13 @@ func (s *Server) deleteNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cleaned := false
+	if sites, err := s.db.Sites(0, n.ID); err == nil {
+		s.deleteSitesDNS(sites)
+	}
 	if r.URL.Query().Get("cleanup") == "1" {
+		if _, st, _ := s.db.NodeWeb(n.ID); st.Location != "" {
+			s.removeWeb(r.Context(), n.ID, st.Deployed)
+		}
 		err := s.mgr.WithDriver(n.ID, func(d manager.Driver) error {
 			ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 			defer cancel()

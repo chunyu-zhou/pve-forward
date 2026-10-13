@@ -15,6 +15,7 @@ const routes = [
       { path: 'dashboard', component: () => import('./views/Dashboard.vue'), meta: { title: ['仪表盘'] } },
       { path: 'monitor', component: () => import('./views/Monitor.vue'), meta: { title: ['资源监控'] } },
       { path: 'rules', component: () => import('./views/Rules.vue'), meta: { title: ['转发管理', '转发规则'] } },
+      { path: 'web-settings', component: () => import('./views/WebSettings.vue'), meta: { title: ['转发管理', 'Web 转发设置'], admin: true } },
       { path: 'users', component: () => import('./views/Users.vue'), meta: { title: ['用户管理', '用户列表'], admin: true } },
       { path: 'users/new', component: () => import('./views/UserNew.vue'), meta: { title: ['用户管理', '添加用户'], admin: true } },
       { path: 'users/:id', component: () => import('./views/UserEdit.vue'), props: true, meta: { title: ['用户管理', '编辑用户'], admin: true, menu: '/users' } },

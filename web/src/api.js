@@ -125,6 +125,27 @@ export const pct = (u, t) => (t ? Math.round((u / t) * 100) : 0)
 // 使用率颜色
 export const lvl = p => (p >= 85 ? '#f53f3f' : p >= 65 ? '#ff7d00' : '#00b42a')
 
+// 证书到期提示：少于 7 天为错误（红色），少于 30 天为警告（橙色）
+export const expType = d => (d < 7 ? 'error' : d < 30 ? 'warning' : 'success')
+export const expColor = d => ({ error: 'rgb(var(--red-6))', warning: 'rgb(var(--orange-6))' })[expType(d)]
+
+// 证书域名是否覆盖 host（通配符只匹配一级）
+export function certCovers(domains, host) {
+  host = String(host).toLowerCase()
+  return (domains || []).some(d => {
+    d = d.toLowerCase()
+    if (d === host) return true
+    const i = host.indexOf('.')
+    return d.startsWith('*.') && i > 0 && host.slice(i + 1) === d.slice(2)
+  })
+}
+
+// 读取本地文本文件（证书、私钥）：只在浏览器中读取，不上传
+export function readTextFile(file, maxBytes = 64 * 1024) {
+  if (file.size > maxBytes) return Promise.reject(new Error(`文件过大（超过 ${maxBytes / 1024} KB）`))
+  return file.text()
+}
+
 export const protoName = { tcp: 'TCP', udp: 'UDP', both: 'TCP + UDP' }
 export const ipverName = { v4: 'IPv4', v6: 'IPv6', both: 'IPv4 + IPv6' }
 export const allocKindName = { single: '单个', multi: '多个', range: '范围' }

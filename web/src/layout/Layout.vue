@@ -42,6 +42,7 @@
             <a-menu-item key="/monitor"><template #icon><icon-desktop /></template>资源监控</a-menu-item>
             <a-sub-menu key="fwd"><template #icon><icon-swap /></template><template #title>转发管理</template>
               <a-menu-item key="/rules">转发规则</a-menu-item>
+              <a-menu-item v-if="admin" key="/web-settings">Web 转发设置</a-menu-item>
             </a-sub-menu>
             <a-sub-menu v-if="admin" key="user"><template #icon><icon-user-group /></template><template #title>用户管理</template>
               <a-menu-item key="/users">用户列表</a-menu-item>
@@ -88,7 +89,7 @@ const collapsed = ref(false)
 provide('collapsed', collapsed)
 const admin = computed(isAdmin)
 const menuKey = computed(() => route.meta.menu || route.path)
-const parentOf = { '/rules': 'fwd', '/users': 'user', '/users/new': 'user', '/nodes': 'pve', '/nodes/new': 'pve', '/vms': 'pve', '/credentials': 'pve', '/profile': 'me' }
+const parentOf = { '/rules': 'fwd', '/web-settings': 'fwd', '/users': 'user', '/users/new': 'user', '/nodes': 'pve', '/nodes/new': 'pve', '/vms': 'pve', '/credentials': 'pve', '/profile': 'me' }
 const openKeys = ref([parentOf[menuKey.value] || 'fwd'])
 watch(menuKey, k => { const p = parentOf[k]; if (p && !openKeys.value.includes(p)) openKeys.value = [...openKeys.value, p] })
 

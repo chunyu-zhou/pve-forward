@@ -35,6 +35,9 @@ body { font-family: Inter, -apple-system, BlinkMacSystemFont, "PingFang SC", "Mi
 
 /* 规则表 / 列表 */
 .grp-row .arco-table-td { background: var(--color-fill-1) !important; }
+/* 转发规则：端口转发 / Web 转发切换 */
+.form-tabs { margin: -8px 0 20px; }
+.type-tabs { margin-bottom: 16px; }
 .grp { display: flex; align-items: center; gap: 10px; user-select: none; }
 .grp .nm { font-weight: 500; color: var(--color-text-1); }
 .grp .info { display: flex; gap: 20px; margin-left: 12px; color: var(--color-text-3); font-size: 13px; flex-wrap: wrap; }

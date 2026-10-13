@@ -37,6 +37,11 @@ type fakeNode struct {
 	counters    map[int64][2]uint64
 	failCollect bool
 	rrdCalls    int
+	// Web 转发：各位置（host 或 vm:<IP>）上已下发的配置文件、执行过的操作、OpenResty 统计
+	web      map[string]map[string]string
+	webOps   []string
+	webStats map[int64][3]uint64
+	webFail  string // 下发时返回的错误（模拟 openresty -t 失败）
 }
 
 var b64Re = regexp.MustCompile(`printf '%s' '([A-Za-z0-9+/=]*)' \| base64 -d > '([^']+)'`)
@@ -44,6 +49,9 @@ var b64Re = regexp.MustCompile(`printf '%s' '([A-Za-z0-9+/=]*)' \| base64 -d > '
 func (f *fakeNode) Run(_ context.Context, script string) ([]byte, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if out, ok, err := f.webRun(script); ok {
+		return out, err
+	}
 	switch {
 	case strings.Contains(script, "##pveversion"):
 		return []byte(fakeDetect), nil
@@ -76,7 +84,7 @@ func (f *fakeNode) Run(_ context.Context, script string) ([]byte, error) {
 			}
 			return "," + strings.Join(rules, ",")
 		}() + `]}`
-		return []byte(strings.Replace(fakeCollect, "NFT", nft, 1)), nil
+		return []byte(strings.Replace(fakeCollect, "NFT", nft, 1) + f.webCollect(script)), nil
 	default:
 		f.inits = append(f.inits, script)
 		return nil, nil
@@ -557,6 +565,7 @@ func TestEndToEnd(t *testing.T) {
 
 	resp.Body.Close()
 	testMonitorRegressions(t, srv, admin, ua, ub, anon, fake, nid, vmWeb, vmVPN)
+	testWebForward(t, srv, mgr, admin, ua, ub, fake, nid, vmWeb, vmVPN)
 
 	// ---- 删除节点（含清理） ----
 	admin.do("DELETE", fmt.Sprintf("/api/nodes/%d?cleanup=1", nid), nil, 200, nil)

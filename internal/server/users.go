@@ -134,6 +134,7 @@ func (s *Server) validateAlloc(tx *sql.Tx, uid int64, a allocIn, pending []alloc
 	}
 	rng, reserved := ports.MustSet(n.Ports.Range), ports.MustSet(n.Ports.Reserved)
 	panelPort := s.settings().Port
+	webPorts := s.webPorts(n.ID)
 	mine := map[int]bool{}
 	for _, p := range pending {
 		if p.NodeID != a.NodeID || p.ID != 0 && p.ID == a.ID {
@@ -151,6 +152,9 @@ func (s *Server) validateAlloc(tx *sql.Tx, uid int64, a allocIn, pending []alloc
 		}
 		if reserved.Contains(p) || p == panelPort {
 			return "", nil, bad("端口 %d 是 %s 的保留端口", p, n.Name)
+		}
+		if webPorts[p] {
+			return "", nil, bad("端口 %d 是 %s 的 Web 转发端口", p, n.Name)
 		}
 		if mine[p] {
 			return "", nil, bad("端口 %d 已在当前用户 %s 的分配中", p, n.Name)
@@ -357,6 +361,10 @@ func (s *Server) deleteUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	nodes := s.userNodes(u.ID)
+	// 删除用户的站点前先删除自动添加的解析记录
+	if sites, err := s.db.Sites(u.ID, 0); err == nil {
+		s.deleteSitesDNS(sites)
+	}
 	if _, err := s.db.Exec(`DELETE FROM users WHERE id=?`, u.ID); err != nil {
 		fail(w, err)
 		return
@@ -367,7 +375,8 @@ func (s *Server) deleteUser(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) userNodes(uid int64) []int64 {
 	var ids []int64
-	rows, err := s.db.Query(`SELECT DISTINCT node_id FROM rules WHERE user_id=? UNION SELECT DISTINCT node_id FROM vms WHERE user_id=?`, uid, uid)
+	rows, err := s.db.Query(`SELECT DISTINCT node_id FROM rules WHERE user_id=? UNION SELECT DISTINCT node_id FROM vms WHERE user_id=?
+		UNION SELECT DISTINCT node_id FROM sites WHERE user_id=?`, uid, uid, uid)
 	if err != nil {
 		return nil
 	}

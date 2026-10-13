@@ -54,14 +54,82 @@ type sim struct {
 	vmc         map[int][5]uint64
 	dnsmasq     bool
 	busyDisk    bool
+	// Web 转发：已下发的站点（位置 → 站点 ID）与 OpenResty 统计
+	webSites map[string][]int64
+	webStats map[int64][3]uint64
 }
 
 var b64Re = regexp.MustCompile(`printf '%s' '([A-Za-z0-9+/=]*)' \| base64 -d > '([^']+)'`)
 var ruleIDRe = regexp.MustCompile(`comment "r(\d+)-up"`)
 
+var (
+	sshWrapRe  = regexp.MustCompile(`printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d \| ssh [^\n]* [a-z_][a-z0-9_.-]*@([0-9.]+) `)
+	siteConfRe = regexp.MustCompile(`base64 -d > "\$D\.tmp/sites/(\d+)\.conf"`)
+	siteChkRe  = regexp.MustCompile(`echo 's(\d+) ok'`)
+)
+
+// web 模拟 Web 转发脚本：环境检测、安装 OpenResty、下发配置、移除。入口虚拟机的脚本经 ssh 包装。
+func (s *sim) web(script string) ([]byte, bool, error) {
+	loc := "host"
+	if m := sshWrapRe.FindStringSubmatch(script); m != nil {
+		inner, _ := base64.StdEncoding.DecodeString(m[1])
+		script, loc = string(inner), "vm:"+m[2]
+	}
+	const version = "##version\nnginx version: openresty/1.27.1.2\n"
+	switch {
+	case strings.Contains(script, "##managed"):
+		time.Sleep(1200 * time.Millisecond)
+		return []byte("##uid\n0\n##os\nDebian GNU/Linux 12 (bookworm)|debian|\n##arch\nx86_64\n##apt\nyes\n##systemd\nyes\n##openresty\n##managed\n" +
+			"##listen\n0.0.0.0:22 users:((\"sshd\",pid=1,fd=3))\n##repo\n200"), true, nil
+	case strings.Contains(script, "openresty.list"):
+		time.Sleep(3 * time.Second)
+		log.Printf("安装 OpenResty（%s）", loc)
+		return []byte(version), true, nil
+	case strings.Contains(script, "-t -q -c"):
+		var ids []int64
+		for _, m := range siteConfRe.FindAllStringSubmatch(script, -1) {
+			id, _ := strconv.ParseInt(m[1], 10, 64)
+			ids = append(ids, id)
+		}
+		s.webSites[loc] = ids
+		log.Printf("下发 Web 配置（%s）：%d 个站点", loc, len(ids))
+		time.Sleep(500 * time.Millisecond)
+		return []byte(version), true, nil
+	case strings.Contains(script, "openresty-installed") && strings.Contains(script, "pvef-orig"):
+		delete(s.webSites, loc)
+		log.Printf("移除 Web 配置（%s）", loc)
+		return nil, true, nil
+	}
+	return nil, false, nil
+}
+
+// webCollect 为采集补充站点健康检查与 OpenResty 统计（请求数与流量随时间增长）。
+func (s *sim) webCollect(script string) string {
+	var b strings.Builder
+	for _, m := range siteChkRe.FindAllStringSubmatch(script, -1) {
+		b.WriteString("s" + m[1] + " ok\n")
+	}
+	if strings.Contains(script, "pvef-stats") {
+		b.WriteString("##web\n")
+		for _, ids := range s.webSites {
+			for _, id := range ids {
+				c := s.webStats[id]
+				n := uint64(5 + rand.Intn(40))
+				c = [3]uint64{c[0] + n, c[1] + n*uint64(400+rand.Intn(300)), c[2] + n*uint64(8000+rand.Intn(40000))}
+				s.webStats[id] = c
+				fmt.Fprintf(&b, "r%d %d\nu%d %d\nd%d %d\n", id, c[0], id, c[1], id, c[2])
+			}
+		}
+	}
+	return b.String()
+}
+
 func (s *sim) Run(_ context.Context, script string) ([]byte, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if out, ok, err := s.web(script); ok {
+		return out, err
+	}
 	switch {
 	case strings.Contains(script, "##pveversion"):
 		return []byte(s.detect()), nil
@@ -84,7 +152,7 @@ func (s *sim) Run(_ context.Context, script string) ([]byte, error) {
 		log.Printf("应用规则：%d 条", len(s.rules))
 		return []byte("##before\n" + before + "\n"), nil
 	case strings.Contains(script, "##diskstats"):
-		return []byte(s.collect()), nil
+		return []byte(s.collect() + s.webCollect(script)), nil
 	case strings.Contains(script, "rrddata"):
 		return []byte(s.rrd(script)), nil
 	case strings.Contains(script, "nft delete table"):
@@ -311,7 +379,11 @@ func main() {
 	name := flag.String("name", "pve-sim", "主机名")
 	cfgPath := flag.String("config", "", "保存接入信息的文件（默认 devnode-<name>.json）")
 	busy := flag.Bool("busy-disk", false, "模拟 sda 磁盘饱和")
+	dnsAddr := flag.String("dns", "", "同时模拟 Cloudflare DNS API 的监听地址，如 127.0.0.1:5091")
 	flag.Parse()
+	if *dnsAddr != "" {
+		serveFakeDNS(*dnsAddr)
+	}
 	if *cfgPath == "" {
 		*cfgPath = "devnode-" + *name + ".json"
 	}
@@ -331,7 +403,8 @@ func main() {
 		b, _ := json.Marshal(jr)
 		os.WriteFile(*cfgPath, b, 0o600)
 	}
-	s := &sim{name: *name, start: time.Now(), rules: map[int64]bool{}, counters: map[int64][2]uint64{}, ruleRate: map[int64]float64{}, vmc: map[int][5]uint64{}, busyDisk: *busy}
+	s := &sim{name: *name, start: time.Now(), rules: map[int64]bool{}, counters: map[int64][2]uint64{}, ruleRate: map[int64]float64{}, vmc: map[int][5]uint64{}, busyDisk: *busy,
+		webSites: map[string][]int64{}, webStats: map[int64][3]uint64{}}
 	rand.Seed(int64(len(*name)))
 	names := []struct {
 		t, n  string

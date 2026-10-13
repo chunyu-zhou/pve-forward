@@ -116,6 +116,7 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 	go s.updateLoop(ctx)
 	go s.confirmUpdate(ctx)
+	go s.certNotify(ctx)
 	for {
 		srv, extra, err := s.serve()
 		if err != nil {
@@ -303,6 +304,13 @@ func (s *Server) routes() http.Handler {
 	user("DELETE /api/rules/{id}", s.deleteRule)
 	user("POST /api/rules/batch", s.batchRules)
 	user("GET /api/rule-options", s.ruleOptions)
+	user("GET /api/sites", s.listSites)
+	user("POST /api/sites", s.saveSite)
+	user("PUT /api/sites/{id}", s.saveSite)
+	user("DELETE /api/sites/{id}", s.deleteSite)
+	user("POST /api/sites/batch", s.batchSites)
+	user("POST /api/sites/check-host", s.checkHost)
+	user("GET /api/site-options", s.siteOptions)
 
 	// 管理员
 	admin := func(p string, h http.HandlerFunc) { mux.Handle(p, s.auth(h, true)) }
@@ -338,6 +346,26 @@ func (s *Server) routes() http.Handler {
 	admin("GET /api/update", s.getUpdate)
 	admin("POST /api/update/check", s.postUpdateCheck)
 	admin("POST /api/update/apply", s.postUpdateApply)
+	admin("GET /api/dns-types", s.listDNSTypes)
+	admin("GET /api/dns-providers", s.listProviders)
+	admin("POST /api/dns-providers", s.saveProvider)
+	admin("PUT /api/dns-providers/{id}", s.saveProvider)
+	admin("DELETE /api/dns-providers/{id}", s.deleteProvider)
+	admin("POST /api/dns-providers/test", s.postTestProvider)
+	admin("POST /api/dns-providers/{id}/test", s.postTestProvider)
+	admin("GET /api/web-domains", s.listDomains)
+	admin("POST /api/web-domains", s.saveDomain)
+	admin("PUT /api/web-domains/{id}", s.saveDomain)
+	admin("DELETE /api/web-domains/{id}", s.deleteDomain)
+	admin("GET /api/certs", s.listCerts)
+	admin("GET /api/certs/{id}", s.getCert)
+	admin("POST /api/certs", s.saveCert)
+	admin("PUT /api/certs/{id}", s.saveCert)
+	admin("DELETE /api/certs/{id}", s.deleteCert)
+	admin("POST /api/certs/parse", s.parseCert)
+	admin("GET /api/web-entries", s.listWebEntries)
+	admin("POST /api/nodes/{id}/web/check", s.postWebCheck)
+	admin("POST /api/nodes/{id}/web", s.postWeb)
 
 	mux.Handle("/", s.spa())
 	return securityHeaders(mux)

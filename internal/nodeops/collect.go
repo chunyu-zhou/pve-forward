@@ -66,6 +66,17 @@ func collectScript(st *proto.DesiredState) string {
 			}
 			fmt.Fprintf(&health, "( timeout 2 bash -c '</dev/tcp/%s/%d' 2>/dev/null && echo '%d ok' || echo '%d fail' ) &\n", t, r.TargetPort, r.ID, r.ID)
 		}
+		// Web 转发站点：目标是否可达（以 s 前缀区分）
+		for _, x := range st.Sites {
+			if !safeAddrRe.MatchString(x.Target) || x.Port < 1 || x.Port > 65535 {
+				continue
+			}
+			fmt.Fprintf(&health, "( timeout 2 bash -c '</dev/tcp/%s/%d' 2>/dev/null && echo 's%d ok' || echo 's%d fail' ) &\n", x.Target, x.Port, x.ID, x.ID)
+		}
+	}
+	web := ""
+	if st != nil && st.WebStatus != "" {
+		web = webStatusScript(st.WebStatus)
 	}
 	return `export LC_ALL=C
 N=$(hostname -s)
@@ -86,7 +97,7 @@ for d in /sys/fs/cgroup/qemu.slice/*.scope /sys/fs/cgroup/lxc/*; do [ -f "$d/io.
 echo '##nft'; nft -j list table inet ` + TableName + ` 2>/dev/null
 echo '##listen'; ss -Hlntu 2>/dev/null | awk '{print $5}'
 echo '##conntrack'; conntrack -L -n 2>/dev/null | awk '$1=="tcp" && $4!="ESTABLISHED"{next} {d="";for(i=1;i<=NF;i++){if($i~/^dport=/){d=substr($i,7);break}} if(d!="")c[d]++} END{for(k in c)print k,c[k]}'
-` + vmip + `echo '##health'
+` + vmip + web + `echo '##health'
 ` + health.String() + `wait
 `
 }
@@ -345,11 +356,30 @@ func parseCollect(s map[string]string, prev *sample, now time.Time, st *proto.De
 		}
 	}
 	healthy := map[int64]string{}
+	siteOK := map[int64]string{}
 	for _, l := range strings.Split(s["health"], "\n") {
 		f := strings.Fields(l)
 		if len(f) == 2 {
+			if sid, ok := strings.CutPrefix(f[0], "s"); ok {
+				id, _ := strconv.ParseInt(sid, 10, 64)
+				siteOK[id] = f[1]
+				continue
+			}
 			id, _ := strconv.ParseInt(f[0], 10, 64)
 			healthy[id] = f[1]
+		}
+	}
+	if st != nil && st.WebStatus != "" {
+		rep.Web = parseWebStats(s["web"])
+	}
+	if st != nil && len(st.Sites) > 0 {
+		rep.SiteHealth = map[int64]string{}
+		for _, x := range st.Sites {
+			msg := ""
+			if siteOK[x.ID] == "fail" {
+				msg = fmt.Sprintf("目标不可达：%s:%d 连接失败", x.Target, x.Port)
+			}
+			rep.SiteHealth[x.ID] = msg
 		}
 	}
 	if st != nil {

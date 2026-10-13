@@ -139,7 +139,7 @@ func (d *DB) migrate() error {
 		}
 		d.SetSetting("migrated_max_rules", "1")
 	}
-	return nil
+	return d.migrateWeb()
 }
 
 var ErrNotFound = errors.New("记录不存在")
@@ -612,7 +612,8 @@ func (d *DB) SyncVMs(nodeID int64, list []proto.VMInfo) (bool, error) {
 		changed = true
 		// 已删除的虚拟机：未被引用则删除记录，否则标记为不存在（引用它的规则会被停用）
 		var refs int
-		tx.QueryRow(`SELECT COUNT(*) FROM rules r JOIN vms v ON v.id=r.vm_id WHERE v.node_id=? AND v.vmid=?`, nodeID, id).Scan(&refs)
+		tx.QueryRow(`SELECT (SELECT COUNT(*) FROM rules r JOIN vms v ON v.id=r.vm_id WHERE v.node_id=? AND v.vmid=?)
+			+ (SELECT COUNT(*) FROM sites s JOIN vms v ON v.id=s.vm_id WHERE v.node_id=? AND v.vmid=?)`, nodeID, id, nodeID, id).Scan(&refs)
 		if refs == 0 {
 			tx.Exec(`DELETE FROM vms WHERE node_id=? AND vmid=? AND user_id IS NULL AND shared=0`, nodeID, id)
 		}
@@ -771,4 +772,5 @@ func (d *DB) Cleanup(ctx context.Context) {
 	d.ExecContext(ctx, `DELETE FROM events WHERE ts<?`, t-30*86400)
 	d.ExecContext(ctx, `DELETE FROM traffic WHERE hour<?`, t-90*86400)
 	d.ExecContext(ctx, `DELETE FROM node_traffic WHERE hour<?`, t-90*86400)
+	d.ExecContext(ctx, `DELETE FROM site_traffic WHERE hour<?`, t-90*86400)
 }
