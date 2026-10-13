@@ -265,7 +265,7 @@ export DEBIAN_FRONTEND=noninteractive LC_ALL=C
 ` + webLocate + `if [ -x "$BIN" ]; then echo '##version'; "$BIN" -v 2>&1; exit 0; fi
 command -v apt-get >/dev/null 2>&1 || { echo "自动安装仅支持 Debian / Ubuntu，请手动安装 OpenResty 后选择「已自行安装」" >&2; exit 2; }
 . /etc/os-release
-need=""; for p in curl gnupg ca-certificates; do dpkg -s "$p" >/dev/null 2>&1 || need="$need $p"; done
+need=""; for p in curl gnupg gpgv ca-certificates; do dpkg -s "$p" >/dev/null 2>&1 || need="$need $p"; done
 if [ -n "$need" ]; then apt-get install -y -q $need >/dev/null 2>&1 || { apt-get update -q >/dev/null 2>&1; apt-get install -y -q $need >&2; }; fi
 case "$ID" in ubuntu) D=ubuntu; C=main ;; *) D=debian; C=openresty ;; esac
 A=""; [ "$(uname -m)" = aarch64 ] && A=arm64/
@@ -278,9 +278,15 @@ if ! curl -fsS -m 10 -o /dev/null "$U/dists/$CODE/Release"; then
   done
 fi
 curl -fsSL -m 30 https://openresty.org/package/pubkey.gpg | gpg --dearmor --yes -o /usr/share/keyrings/openresty.gpg
-echo "deb [signed-by=/usr/share/keyrings/openresty.gpg] $U $CODE $C" > /etc/apt/sources.list.d/openresty.list
-apt-get update -q -o Dir::Etc::sourcelist=sources.list.d/openresty.list -o Dir::Etc::sourceparts=- -o APT::Get::List-Cleanup=0 >/dev/null
-apt-get install -y -q --no-install-recommends openresty >/dev/null
+L=/etc/apt/sources.list.d/openresty.list
+echo "deb [signed-by=/usr/share/keyrings/openresty.gpg] $U $CODE $C" > $L
+# OpenResty 的签名密钥使用 SHA1 绑定，Debian 13 起默认的 sqv 拒绝该密钥（软件源数据本身为 SHA512 签名）。
+# 只在安装 OpenResty 的这两条命令中改用 gpgv 校验，不修改系统的加密策略；
+# 这类系统上安装后移除该软件源，避免之后的 apt update 报错
+G="-o APT::Key::GPGVCommand=gpgv"
+if command -v sqv >/dev/null 2>&1; then trap 'rm -f '$L EXIT; fi
+apt-get update -q $G -o Dir::Etc::sourcelist=sources.list.d/openresty.list -o Dir::Etc::sourceparts=- -o APT::Get::List-Cleanup=0 >/dev/null
+apt-get install -y -q $G --no-install-recommends openresty >/dev/null
 mkdir -p ` + Dir + ` && touch ` + webMarker + `
 # 安装包会以默认配置启动并占用 80 端口：先停止，下发配置后再启动
 systemctl stop openresty 2>/dev/null || true

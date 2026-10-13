@@ -254,6 +254,30 @@ curl -sS http://127.0.0.1:61080/pvef-stats | sort
 	}
 }
 
+// Debian 13（apt 默认用 sqv 校验）上自动安装 OpenResty：仅本次安装改用 gpgv，安装后移除软件源，系统 apt update 正常
+func TestDockerInstallTrixie(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+	defer cancel()
+	exec.Command("docker", "rm", "-f", "pvef-trixie").Run()
+	sh(t, "run", "-d", "--name", "pvef-trixie", "debian:trixie", "sleep", "infinity")
+	t.Cleanup(func() { exec.Command("docker", "rm", "-f", "pvef-trixie").Run() })
+	c := dockerExec{"pvef-trixie"}
+	run(t, c, "export DEBIAN_FRONTEND=noninteractive; apt-get update -q >/dev/null && apt-get install -y -q iproute2 >/dev/null")
+	res, err := Web(ctx, c, &proto.WebReq{Op: "install", Target: proto.WebTarget{Mode: "host"}})
+	if err != nil || !strings.Contains(res.Version, "openresty") {
+		t.Fatalf("安装 %+v %v", res, err)
+	}
+	t.Logf("已安装 %s", res.Version)
+	out := run(t, c, "ls /etc/apt/sources.list.d/; apt-get update -q >/dev/null 2>&1 && echo apt-ok")
+	if strings.Contains(out, "openresty.list") || !strings.Contains(out, "apt-ok") {
+		t.Fatalf("安装后软件源 %s", out)
+	}
+	// 再次安装（已安装）直接返回版本
+	if res, err := Web(ctx, c, &proto.WebReq{Op: "install", Target: proto.WebTarget{Mode: "host"}}); err != nil || res.Version == "" {
+		t.Fatalf("重复安装 %+v %v", res, err)
+	}
+}
+
 // mustKey 生成 ED25519 密钥对（不能引用 sshx：它依赖本包）。
 func mustKey(t *testing.T) (string, string) {
 	pk, sk, _ := ed25519.GenerateKey(rand.Reader)
