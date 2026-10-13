@@ -4,6 +4,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -62,7 +64,24 @@ func (d *DB) migrateWeb() error {
 			}
 		}
 	}
-	return nil
+	tx, err := d.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var has int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('sites') WHERE name='ports_json'`).Scan(&has); err != nil {
+		return err
+	}
+	if has == 0 {
+		if _, err := tx.Exec(`ALTER TABLE sites ADD COLUMN ports_json TEXT NOT NULL DEFAULT ''`); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(`UPDATE sites SET ports_json='[' || port || ']' WHERE ports_json=''`); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // ---------------- 节点 Web 入口 ----------------
@@ -72,9 +91,11 @@ type NodeWeb struct {
 	Enabled        bool   `json:"enabled"`
 	Mode           string `json:"mode"`   // host（宿主机运行）| vm（指定虚拟机运行）
 	VMID           int64  `json:"vmId"`   // 入口虚拟机（vms.id）
-	Deploy         string `json:"deploy"` // binary | docker | manual；旧 auto 迁移为 binary
+	Deploy         string `json:"deploy"` // binary | docker | manual（使用已安装的）；已检测到 OpenResty 时直接使用，不按此安装
 	Image          string `json:"image"`
 	DownloadMirror string `json:"downloadMirror"` // 空为直连；加速须显式选择
+	DockerSource   string `json:"dockerSource"`   // 未安装 Docker 时的 Docker CE 软件源（空为官方源）
+	Registry       string `json:"registry"`       // Docker Hub 镜像加速（空为官方）
 	SSHUser        string `json:"sshUser"`
 	SSHPort        int    `json:"sshPort"`
 	SSHAuth        string `json:"sshAuth"` // node（宿主机的 Web 转发密钥）| password | key | cred（SSH 凭证）
@@ -378,17 +399,18 @@ func (d *DB) SaveCert(c *Cert) error {
 
 // SiteOpts 为站点的高级参数。
 type SiteOpts struct {
-	WS         bool   `json:"ws"`         // 支持 WebSocket
-	RealIP     bool   `json:"realIp"`     // 传递真实客户端 IP
-	Block      bool   `json:"block"`      // 拦截常见攻击
-	Cache      bool   `json:"cache"`      // 缓存静态资源
-	ForceHTTPS bool   `json:"forceHttps"` // HTTP 自动跳转 HTTPS
-	AuthUser   string `json:"authUser"`   // 访问密码（HTTP Basic Auth）用户名；为空表示不启用
-	AuthHash   string `json:"authHash"`   // 密码的 {SSHA} 摘要
-	BodyMax    int    `json:"bodyMax"`    // 上传大小上限（MB）
-	Timeout    int    `json:"timeout"`    // 超时（秒）
-	Headers    string `json:"headers"`    // 自定义请求头，每行 "名称: 值"
-	Custom     string `json:"custom"`     // 自定义配置（仅管理员），写入 server 块
+	ForceHTTPSPort int    `json:"forceHttpsPort"`
+	WS             bool   `json:"ws"`         // 支持 WebSocket
+	RealIP         bool   `json:"realIp"`     // 传递真实客户端 IP
+	Block          bool   `json:"block"`      // 拦截常见攻击
+	Cache          bool   `json:"cache"`      // 缓存静态资源
+	ForceHTTPS     bool   `json:"forceHttps"` // HTTP 自动跳转 HTTPS
+	AuthUser       string `json:"authUser"`   // 访问密码（HTTP Basic Auth）用户名；为空表示不启用
+	AuthHash       string `json:"authHash"`   // 密码的 {SSHA} 摘要
+	BodyMax        int    `json:"bodyMax"`    // 上传大小上限（MB）
+	Timeout        int    `json:"timeout"`    // 超时（秒）
+	Headers        string `json:"headers"`    // 自定义请求头，每行 "名称: 值"
+	Custom         string `json:"custom"`     // 自定义配置（仅管理员），写入 server 块
 }
 
 type SiteHost struct {
@@ -407,6 +429,7 @@ type Site struct {
 	UserID     int64       `json:"userId"`
 	NodeID     int64       `json:"nodeId"`
 	Port       int         `json:"port"`
+	Ports      []int       `json:"ports"`
 	Scheme     string      `json:"scheme"`
 	VMID       int64       `json:"vmId"`
 	TargetPort int         `json:"targetPort"`
@@ -422,18 +445,57 @@ type Site struct {
 	Hosts      []*SiteHost `json:"hosts"`
 }
 
-const siteCols = `id,user_id,node_id,port,scheme,vm_id,target_port,cert_id,remark,enabled,opts_json,error_msg,requests,bytes_up,bytes_down,created_at`
+// NormalizeSitePorts validates and canonicalizes a site's entry ports.
+func NormalizeSitePorts(ports []int) ([]int, error) {
+	if len(ports) == 0 {
+		return nil, errors.New("请至少选择一个入口端口")
+	}
+	seen := map[int]bool{}
+	result := make([]int, 0, len(ports))
+	for _, p := range ports {
+		if p < 1 || p > 65535 {
+			return nil, fmt.Errorf("入口端口 %d 无效", p)
+		}
+		if !seen[p] {
+			seen[p] = true
+			result = append(result, p)
+		}
+	}
+	sort.Ints(result)
+	return result, nil
+}
+
+func (s *Site) EntryPorts() []int {
+	if s.Ports == nil {
+		return []int{s.Port}
+	}
+	return s.Ports
+}
+
+const siteCols = `id,user_id,node_id,port,scheme,vm_id,target_port,cert_id,remark,enabled,opts_json,error_msg,requests,bytes_up,bytes_down,created_at,ports_json`
 
 func scanSite(r interface{ Scan(...any) error }) (*Site, error) {
 	s := &Site{}
-	var opts string
+	var opts, ports string
 	err := r.Scan(&s.ID, &s.UserID, &s.NodeID, &s.Port, &s.Scheme, &s.VMID, &s.TargetPort, &s.CertID, &s.Remark, &s.Enabled,
-		&opts, &s.Error, &s.Requests, &s.BytesUp, &s.BytesDown, &s.CreatedAt)
+		&opts, &s.Error, &s.Requests, &s.BytesUp, &s.BytesDown, &s.CreatedAt, &ports)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
+	if err != nil {
+		return nil, err
+	}
+	if ports == "" {
+		s.Ports = []int{s.Port}
+	} else if err := json.Unmarshal([]byte(ports), &s.Ports); err != nil {
+		return nil, err
+	}
+	s.Ports, err = NormalizeSitePorts(s.Ports)
+	if err != nil {
+		return nil, err
+	}
 	json.Unmarshal([]byte(opts), &s.Opts)
-	return s, err
+	return s, nil
 }
 
 func (d *DB) Site(id int64) (*Site, error) {
@@ -515,6 +577,13 @@ func (d *DB) HostOwner(host string) int64 {
 // SaveSite 保存站点与域名（事务内）。域名按 host 匹配：保留已有记录的 DNS 解析信息，删除不再使用的。
 // 返回被移除的域名（调用方负责删除其 DNS 解析）。
 func (d *DB) SaveSite(s *Site) ([]*SiteHost, error) {
+	ports, err := NormalizeSitePorts(s.EntryPorts())
+	if err != nil {
+		return nil, err
+	}
+	s.Ports = ports
+	s.Port = ports[0]
+	portsJSON, _ := json.Marshal(ports)
 	tx, err := d.Begin()
 	if err != nil {
 		return nil, err
@@ -523,14 +592,14 @@ func (d *DB) SaveSite(s *Site) ([]*SiteHost, error) {
 	opts, _ := json.Marshal(s.Opts)
 	if s.ID == 0 {
 		s.CreatedAt = now()
-		r, err := tx.Exec(`INSERT INTO sites(user_id,node_id,port,scheme,vm_id,target_port,cert_id,remark,enabled,opts_json,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
-			s.UserID, s.NodeID, s.Port, s.Scheme, s.VMID, s.TargetPort, s.CertID, s.Remark, s.Enabled, string(opts), s.CreatedAt)
+		r, err := tx.Exec(`INSERT INTO sites(user_id,node_id,port,scheme,vm_id,target_port,cert_id,remark,enabled,opts_json,created_at,ports_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+			s.UserID, s.NodeID, s.Port, s.Scheme, s.VMID, s.TargetPort, s.CertID, s.Remark, s.Enabled, string(opts), s.CreatedAt, string(portsJSON))
 		if err != nil {
 			return nil, err
 		}
 		s.ID, _ = r.LastInsertId()
-	} else if _, err := tx.Exec(`UPDATE sites SET user_id=?,node_id=?,port=?,scheme=?,vm_id=?,target_port=?,cert_id=?,remark=?,enabled=?,opts_json=?,error_msg='' WHERE id=?`,
-		s.UserID, s.NodeID, s.Port, s.Scheme, s.VMID, s.TargetPort, s.CertID, s.Remark, s.Enabled, string(opts), s.ID); err != nil {
+	} else if _, err := tx.Exec(`UPDATE sites SET user_id=?,node_id=?,port=?,scheme=?,vm_id=?,target_port=?,cert_id=?,remark=?,enabled=?,opts_json=?,ports_json=?,error_msg='' WHERE id=?`,
+		s.UserID, s.NodeID, s.Port, s.Scheme, s.VMID, s.TargetPort, s.CertID, s.Remark, s.Enabled, string(opts), string(portsJSON), s.ID); err != nil {
 		return nil, err
 	}
 	rows, err := tx.Query(`SELECT id,site_id,sub,domain_id,host,record_id,record_ip,dns_error FROM site_hosts WHERE site_id=?`, s.ID)

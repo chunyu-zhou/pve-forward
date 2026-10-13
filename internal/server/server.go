@@ -370,6 +370,7 @@ func (s *Server) routes() http.Handler {
 	admin("DELETE /api/certs/{id}", s.deleteCert)
 	admin("POST /api/certs/parse", s.parseCert)
 	admin("GET /api/web-entries", s.listWebEntries)
+	admin("GET /api/web-mirrors", s.listWebMirrors)
 	admin("POST /api/nodes/{id}/web/check", s.postWebCheck)
 	admin("POST /api/nodes/{id}/web/pubkey", s.postWebPubkey)
 	admin("GET /api/dns-providers/{id}/zones", s.providerZones)

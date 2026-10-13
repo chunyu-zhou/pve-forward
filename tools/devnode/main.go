@@ -57,6 +57,9 @@ type sim struct {
 	// Web 转发：已下发的站点（位置 → 站点 ID）与 OpenResty 统计
 	webSites map[string][]int64
 	webStats map[int64][3]uint64
+	// 各位置的 OpenResty 运行方式；宿主机上模拟一个占用 80 / 443 的 Nginx Proxy Manager 容器（stopped 为被停止）
+	webRT      map[string]string
+	npmStopped bool
 }
 
 var b64Re = regexp.MustCompile(`printf '%s' '([A-Za-z0-9+/=]*)' \| base64 -d > '([^']+)'`)
@@ -76,16 +79,51 @@ func (s *sim) web(script string) ([]byte, bool, error) {
 		script, loc = string(inner), "vm:"+m[2]
 	}
 	const version = "##version\nnginx version: openresty/1.27.1.2\n"
+	if s.webRT == nil {
+		s.webRT = map[string]string{}
+	}
 	switch {
-	case strings.Contains(script, "##managed"):
+	case strings.Contains(script, "##containers"):
+		// 环境检测：入口虚拟机内已通过 apt 安装 OpenResty；宿主机未安装，Nginx Proxy Manager 容器占用 80 / 443
 		time.Sleep(1200 * time.Millisecond)
-		return []byte("##uid\n0\n##os\nDebian GNU/Linux 12 (bookworm)|debian|\n##arch\nx86_64\n##apt\nyes\n##systemd\nyes\n##openresty\n##managed\n" +
-			"##listen\n0.0.0.0:22 users:((\"sshd\",pid=1,fd=3))\n##repo\n200"), true, nil
-	case strings.Contains(script, "openresty.list"):
+		rt := s.webRT[loc]
+		if rt == "" && strings.HasPrefix(loc, "vm:") {
+			rt = "system"
+		}
+		var b strings.Builder
+		b.WriteString("##uid\n0\n##os\nDebian GNU/Linux 13 (trixie)|debian|\n##arch\nx86_64\n##apt\nyes\n##systemd\nyes\n##openresty\n")
+		if rt != "" {
+			b.WriteString("nginx version: openresty/1.27.1.2\n##runtime\n" + rt + "\n##bin\n/usr/local/openresty/bin/openresty\n")
+		}
+		b.WriteString("##docker\n29.0.0\n##containers\n")
+		listen := "##listen\n0.0.0.0:22 users:((\"sshd\",pid=1,fd=3)) other\n"
+		if loc == "host" {
+			running := !s.npmStopped
+			b.WriteString(fmt.Sprintf("nginx-proxy-manager|jc21/nginx-proxy-manager:2.16.0|sha256:%s|npm_default|%v||80,81,443,\n", strings.Repeat("f", 64), running))
+			if running {
+				listen += "0.0.0.0:80 users:((\"docker-proxy\",pid=11,fd=8)) ct:nginx-proxy-manager\n0.0.0.0:443 users:((\"docker-proxy\",pid=12,fd=8)) ct:nginx-proxy-manager\n"
+			}
+		}
+		b.WriteString(listen)
+		return []byte(b.String()), true, nil
+	case strings.Contains(script, "NEW=binary") || strings.Contains(script, "NEW=docker"):
 		time.Sleep(3 * time.Second)
-		log.Printf("安装 OpenResty（%s）", loc)
-		return []byte(version), true, nil
-	case strings.Contains(script, "-t -q -c"):
+		rt := "binary"
+		if strings.Contains(script, "NEW=docker") {
+			rt = "docker"
+		}
+		s.webRT[loc] = rt
+		log.Printf("安装 OpenResty（%s，%s）", loc, rt)
+		return []byte("正在安装…\n" + version), true, nil
+	case strings.Contains(script, "docker stop -t 10 \"$C\""):
+		s.npmStopped = true
+		log.Printf("停止容器（%s）", loc)
+		return []byte("正在停止容器 nginx-proxy-manager…\n"), true, nil
+	case strings.Contains(script, "restore_adopted '"):
+		s.npmStopped = false
+		log.Printf("恢复容器（%s）", loc)
+		return nil, true, nil
+	case strings.Contains(script, `if ! or_test "$D/nginx.conf"`):
 		var ids []int64
 		for _, m := range siteConfRe.FindAllStringSubmatch(script, -1) {
 			id, _ := strconv.ParseInt(m[1], 10, 64)
@@ -97,6 +135,9 @@ func (s *sim) web(script string) ([]byte, bool, error) {
 		return []byte(version), true, nil
 	case strings.Contains(script, "openresty-installed") && strings.Contains(script, "pvef-orig"):
 		delete(s.webSites, loc)
+		if loc == "host" {
+			s.npmStopped = false
+		}
 		log.Printf("移除 Web 配置（%s）", loc)
 		return nil, true, nil
 	}

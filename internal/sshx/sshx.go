@@ -195,6 +195,11 @@ func (e *Executor) Run(ctx context.Context, script string) ([]byte, error) {
 	var out, errb bytes.Buffer
 	s.Stdin = strings.NewReader(script)
 	s.Stdout, s.Stderr = &out, &errb
+	var live *nodeops.CommandOutput
+	if log := nodeops.OutputLog(ctx); log != nil {
+		live = nodeops.NewCommandOutput(log)
+		s.Stdout, s.Stderr = live, live
+	}
 	done := make(chan error, 1)
 	go func() { done <- s.Run(e.shell()) }()
 	select {
@@ -202,7 +207,17 @@ func (e *Executor) Run(ctx context.Context, script string) ([]byte, error) {
 	case <-ctx.Done():
 		s.Signal(ssh.SIGKILL)
 		s.Close()
+		<-done
+		if live != nil {
+			return live.Bytes(), ctx.Err()
+		}
 		return out.Bytes(), ctx.Err()
+	}
+	if live != nil {
+		if err != nil {
+			return live.Bytes(), &nodeops.ExecError{Err: err, Stderr: string(live.Bytes())}
+		}
+		return live.Bytes(), nil
 	}
 	if err != nil {
 		return out.Bytes(), &nodeops.ExecError{Err: err, Stderr: errb.String()}

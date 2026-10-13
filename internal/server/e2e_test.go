@@ -38,10 +38,11 @@ type fakeNode struct {
 	failCollect bool
 	rrdCalls    int
 	// Web 转发：各位置（host 或 vm:<IP>）上已下发的配置文件、执行过的操作、OpenResty 统计
-	web      map[string]map[string]string
-	webOps   []string
-	webStats map[int64][3]uint64
-	webFail  string // 下发时返回的错误（模拟 openresty -t 失败）
+	web        map[string]map[string]string
+	webOps     []string
+	webRuntime map[string]string // 各位置已安装的 OpenResty 运行方式（binary | docker | system）
+	webStats   map[int64][3]uint64
+	webFail    string // 下发时返回的错误（模拟 openresty -t 失败）
 }
 
 var b64Re = regexp.MustCompile(`printf '%s' '([A-Za-z0-9+/=]*)' \| base64 -d > '([^']+)'`)

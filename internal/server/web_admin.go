@@ -7,12 +7,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"pveforward/internal/dnsapi"
@@ -632,6 +634,16 @@ func (s *Server) webEntry(n *store.Node) *webEntryOut {
 	return o
 }
 
+// listWebMirrors 返回部署 OpenResty 时可选的下载加速、Docker CE 软件源与镜像加速。
+func (s *Server) listWebMirrors(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, map[string]any{
+		"download":     []nodeops.Mirror{{Value: "", Label: "直连 GitHub（默认）"}, {Value: webbundle.DefaultMirror, Label: "大陆加速：ghfast.top（第三方，需信任该服务）"}},
+		"dockerSource": nodeops.DockerCESources,
+		"registry":     nodeops.RegistryMirrors,
+		"defaultImage": nodeops.DefaultWebImage,
+	})
+}
+
 func (s *Server) listWebEntries(w http.ResponseWriter, r *http.Request) {
 	nodes, err := s.db.Nodes()
 	if err != nil {
@@ -652,15 +664,19 @@ type webIn struct {
 	Deploy         string `json:"deploy"`
 	Image          string `json:"image"`
 	DownloadMirror string `json:"downloadMirror"`
+	DockerSource   string `json:"dockerSource"`
+	Registry       string `json:"registry"`
 	SSHUser        string `json:"sshUser"`
 	SSHPort        int    `json:"sshPort"`
 	SSHAuth        string `json:"sshAuth"`
 	SSHSecret      string `json:"sshSecret"` // 留空沿用已保存的
 	CredID         int64  `json:"credId"`
 	TakeOver       bool   `json:"takeOver"` // 部署时接管（删除）Web 端口上的端口转发规则
-	HTTP           []int  `json:"http"`
-	HTTPS          []int  `json:"https"`
-	Default        int    `json:"default"`
+	// 部署时停止这些占用 Web 端口的容器（保留容器，停用 Web 转发时恢复）；只用于本次检测与部署，不保存
+	Stop    []string `json:"stop"`
+	HTTP    []int    `json:"http"`
+	HTTPS   []int    `json:"https"`
+	Default int      `json:"default"`
 }
 
 // buildWeb 校验并生成节点的 Web 入口配置。
@@ -703,6 +719,16 @@ func (s *Server) buildWeb(n *store.Node, in webIn) (store.NodeWeb, error) {
 		}
 		w.DownloadMirror = strings.TrimRight(w.DownloadMirror, "/") + "/"
 	}
+	w.DockerSource, w.Registry = strings.TrimSpace(in.DockerSource), strings.TrimSpace(in.Registry)
+	if w.DockerSource == "" {
+		w.DockerSource = nodeops.DockerSourceOfficial
+	}
+	if !nodeops.ValidDockerSource(w.DockerSource) {
+		return w, bad("不支持的 Docker 软件源 %q", w.DockerSource)
+	}
+	if !nodeops.ValidRegistryMirror(w.Registry) {
+		return w, bad("不支持的镜像加速 %q", w.Registry)
+	}
 	if w.HTTP == nil {
 		w.HTTP = []int{}
 	}
@@ -741,13 +767,18 @@ func (s *Server) buildWeb(n *store.Node, in webIn) (store.NodeWeb, error) {
 			return w, bad("端口 %d 已分配给用户 %s，请先收回分配", p, holder)
 		}
 	}
-	// 已有站点使用的端口不能移除
-	var inUse int
-	for _, p := range old.Ports() {
-		if !seen[p] {
-			s.db.QueryRow(`SELECT COUNT(*) FROM sites WHERE node_id=? AND port=?`, n.ID, p).Scan(&inUse)
-			if inUse > 0 {
-				return w, bad("有 %d 个站点使用入口端口 %d，不能移除", inUse, p)
+	// 已有站点的每个入口都必须保留原协议。
+	sites, err := s.db.Sites(0, n.ID)
+	if err != nil {
+		return w, err
+	}
+	for _, site := range sites {
+		for _, p := range site.EntryPorts() {
+			if !seen[p] {
+				return w, bad("站点 %d 使用入口端口 %d，不能移除", site.ID, p)
+			}
+			if old.IsHTTPS(p) != w.IsHTTPS(p) {
+				return w, bad("站点 %d 使用入口端口 %d，不能修改协议", site.ID, p)
 			}
 		}
 	}
@@ -881,7 +912,7 @@ func (s *Server) postWebCheck(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	ports := cfg.Ports()
 	// 已部署在同一位置时，自己占用的端口不算冲突（脚本按“由本系统部署”识别）
-	res, err := s.mgr.WebOp(ctx, n.ID, &proto.WebReq{Op: "check", Target: target, Ports: ports, Deploy: cfg.Deploy})
+	res, err := s.mgr.WebOp(ctx, n.ID, &proto.WebReq{Op: "check", Target: target, Ports: ports, Deploy: cfg.Deploy, DockerSource: cfg.DockerSource, Stop: in.Stop})
 	if err != nil {
 		fail(w, bad("%v", err))
 		return
@@ -896,57 +927,116 @@ func (s *Server) postWebCheck(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, res)
 }
 
-// installWeb 在下载之前检测架构；包经校验缓存后分块传送，节点安装时再次校验。
-func (s *Server) installWeb(ctx context.Context, id int64, cfg store.NodeWeb, target proto.WebTarget) (*proto.WebResult, error) {
-	check, err := s.mgr.WebOp(ctx, id, &proto.WebReq{Op: "check", Target: target, Deploy: cfg.Deploy, Ports: cfg.Ports()})
+// installWeb 检测运行位置：已安装 OpenResty（本系统部署的、自行安装的或 Docker 容器的镜像）时直接使用，
+// 不重新安装；否则按部署方式安装。管理员确认停止的容器在检测通过后停止，返回已停止的容器（部署失败时恢复）。
+// 二进制包在下载之前检测架构，经校验缓存后分块传送，节点安装时再次校验。
+func (s *Server) installWeb(ctx context.Context, id int64, cfg store.NodeWeb, target proto.WebTarget, stop []string) (res *proto.WebResult, freed []string, err error) {
+	log := func(text string) {
+		if emit := nodeops.OutputLog(ctx); emit != nil {
+			emit(text + "\n")
+		}
+	}
+	log("正在检测安装环境…")
+	check, err := s.mgr.WebOp(ctx, id, &proto.WebReq{Op: "check", Target: target, Deploy: cfg.Deploy, DockerSource: cfg.DockerSource, Ports: cfg.Ports(), Stop: stop})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	for _, c := range check.Checks {
 		if !c.OK {
-			return nil, fmt.Errorf("%s: %s", c.Name, c.Detail)
+			return nil, nil, fmt.Errorf("%s: %s", c.Name, c.Detail)
 		}
 	}
-	req := &proto.WebReq{Op: "install", Target: target, Deploy: cfg.Deploy, Image: cfg.Image}
+	if len(stop) > 0 {
+		if _, err := s.mgr.WebOp(ctx, id, &proto.WebReq{Op: "free", Target: target, Stop: stop}); err != nil {
+			return nil, nil, err
+		}
+		freed = stop
+		defer func() {
+			if err != nil {
+				s.restoreFreed(id, target, freed)
+				freed = nil
+			}
+		}()
+	}
+	if ex := check.Existing; ex != nil {
+		if ex.Kind != "container" {
+			log("已安装 " + ex.Version + "，直接使用，跳过安装")
+			return &proto.WebResult{Version: ex.Version}, freed, nil
+		}
+		log(fmt.Sprintf("使用 Docker 容器 %s 的镜像 %s（%s），不重新下载", ex.Container, ex.Image, ex.Version))
+		res, err = s.mgr.WebOp(ctx, id, &proto.WebReq{Op: "install", Target: target, Deploy: "adopt", Image: ex.ImageID})
+		return res, freed, err
+	}
+	if cfg.Deploy == "manual" {
+		return nil, freed, bad("未检测到已安装的 OpenResty")
+	}
+	req := &proto.WebReq{Op: "install", Target: target, Deploy: cfg.Deploy, Image: nodeops.PullImage(cfg.Image, cfg.Registry), DockerSource: cfg.DockerSource}
 	if cfg.Deploy == "binary" {
-		arch, err := webbundle.Arch(check.Arch)
-		if err != nil {
-			return nil, err
+		if req.SHA256, err = s.uploadBundle(ctx, id, target, check.Arch, cfg.DownloadMirror); err != nil {
+			return nil, freed, err
 		}
-		path, err := webbundle.Fetch(ctx, filepath.Join(s.dataDir, "openresty-cache"), arch, cfg.DownloadMirror)
-		if err != nil {
-			return nil, err
-		}
-		f, err := os.Open(path)
-		if err != nil {
-			return nil, err
-		}
-		defer f.Close()
-		h := sha256.New()
-		buf := make([]byte, 256<<10)
-		var offset int64
-		for {
-			n, readErr := f.Read(buf)
-			if n > 0 {
-				h.Write(buf[:n])
-				if _, err := s.mgr.WebOp(ctx, id, &proto.WebReq{Op: "upload", Target: target, Offset: offset, Data: buf[:n]}); err != nil {
-					return nil, err
-				}
-				offset += int64(n)
-			}
-			if readErr == io.EOF {
-				break
-			}
-			if readErr != nil {
-				return nil, readErr
-			}
-		}
-		if offset == 0 {
-			return nil, fmt.Errorf("OpenResty 包为空")
-		}
-		req.SHA256 = hex.EncodeToString(h.Sum(nil))
 	}
-	return s.mgr.WebOp(ctx, id, req)
+	res, err = s.mgr.WebOp(ctx, id, req)
+	return res, freed, err
+}
+
+// restoreFreed 部署失败时恢复本次为空出端口而停止的容器。
+func (s *Server) restoreFreed(id int64, target proto.WebTarget, names []string) {
+	if len(names) == 0 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	if _, err := s.mgr.WebOp(ctx, id, &proto.WebReq{Op: "restore", Target: target, Stop: names}); err != nil {
+		log.Printf("恢复容器 %s 失败: %v", strings.Join(names, "、"), err)
+	}
+}
+
+// uploadBundle 下载（缓存）并校验 OpenResty 二进制包后分块上传到运行位置，返回包的 SHA256。
+func (s *Server) uploadBundle(ctx context.Context, id int64, target proto.WebTarget, machineArch, mirror string) (string, error) {
+	log := func(text string) {
+		if emit := nodeops.OutputLog(ctx); emit != nil {
+			emit(text + "\n")
+		}
+	}
+	arch, err := webbundle.Arch(machineArch)
+	if err != nil {
+		return "", err
+	}
+	log("正在获取并校验 OpenResty 安装包…")
+	path, err := webbundle.Fetch(ctx, filepath.Join(s.dataDir, "openresty-cache"), arch, mirror)
+	if err != nil {
+		return "", err
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	buf := make([]byte, 256<<10)
+	var offset int64
+	for {
+		n, readErr := f.Read(buf)
+		if n > 0 {
+			h.Write(buf[:n])
+			if _, err := s.mgr.WebOp(ctx, id, &proto.WebReq{Op: "upload", Target: target, Offset: offset, Data: buf[:n]}); err != nil {
+				return "", err
+			}
+			offset += int64(n)
+			log(fmt.Sprintf("已上传 %d KiB", offset/1024))
+		}
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			return "", readErr
+		}
+	}
+	if offset == 0 {
+		return "", fmt.Errorf("OpenResty 包为空")
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // postWeb 保存 Web 入口配置并部署，以 NDJSON 流式返回每一步。
@@ -979,12 +1069,25 @@ func (s *Server) postWeb(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/x-ndjson; charset=utf-8")
 	w.Header().Set("X-Accel-Buffering", "no")
-	flusher, _ := w.(http.Flusher)
+	var sendMu sync.Mutex
+	streamOpen := true
+	defer func() { sendMu.Lock(); streamOpen = false; sendMu.Unlock() }()
 	send := func(v any) {
+		sendMu.Lock()
+		defer sendMu.Unlock()
+		if !streamOpen {
+			return
+		}
+		controller := http.NewResponseController(w)
+		_ = controller.SetWriteDeadline(time.Now().Add(5 * time.Second))
+		defer controller.SetWriteDeadline(time.Time{})
 		b, _ := json.Marshal(v)
-		w.Write(append(b, '\n'))
-		if flusher != nil {
-			flusher.Flush()
+		if _, err := w.Write(append(b, '\n')); err != nil {
+			streamOpen = false
+			return
+		}
+		if err := controller.Flush(); err != nil {
+			streamOpen = false
 		}
 	}
 	step := func(name string, err error) bool {
@@ -1004,17 +1107,22 @@ func (s *Server) postWeb(w http.ResponseWriter, r *http.Request) {
 	}
 	if cfg.Enabled {
 		target, err := s.mgr.WebTarget(cfg)
-		if err == nil && cfg.Deploy != "manual" {
+		if err == nil {
 			var res *proto.WebResult
-			res, err = s.installWeb(ctx, n.ID, cfg, target)
+			var freed []string
+			installCtx := nodeops.WithOutputLog(ctx, func(log string) { send(map[string]string{"log": log}) })
+			res, freed, err = s.installWeb(installCtx, n.ID, cfg, target, in.Stop)
 			if err == nil {
 				st.Version = res.Version
 			}
-			if !step("安装 OpenResty", err) {
+			if !step("准备 OpenResty", err) {
 				send(map[string]any{"error": err.Error()})
 				return
 			}
-		} else if err != nil {
+			if len(freed) > 0 {
+				step("停止容器 "+strings.Join(freed, "、")+"（停用 Web 转发时恢复）", nil)
+			}
+		} else {
 			step("连接运行位置", err)
 			send(map[string]any{"error": err.Error()})
 			return

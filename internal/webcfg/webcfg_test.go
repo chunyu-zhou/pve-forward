@@ -29,6 +29,40 @@ func testCert(t *testing.T, days int, names ...string) (string, string) {
 	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})), string(pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: kb}))
 }
 
+func TestMultiPortServers(t *testing.T) {
+	s := Site{ID: 1, Hosts: []string{"app.example.com"}, HTTPPorts: []int{8080, 80}, HTTPSPorts: []int{8443, 443}, Scheme: "http", Target: "10.0.0.2", TargetPort: 9000, CertID: 2}
+	conf := renderSite(s, true, 80)
+	if strings.Count(conf, "server {\n") != 2 || strings.Count(conf, "proxy_pass") != 2 {
+		t.Fatalf("expected two proxy blocks: %s", conf)
+	}
+	for _, want := range []string{"listen 80;", "listen 8080;", "listen 443 ssl;", "listen 8443 ssl;"} {
+		if !strings.Contains(conf, want) {
+			t.Fatalf("missing %s: %s", want, conf)
+		}
+	}
+	if strings.Count(conf, "ssl_certificate ") != 1 || strings.Count(conf, "http2 on;") != 1 {
+		t.Fatalf("TLS must only be in HTTPS block: %s", conf)
+	}
+	s.Opts.ForceHTTPS = true
+	s.Opts.ForceHTTPSPort = 8443
+	conf = renderSite(s, false, 80)
+	if !strings.Contains(conf, "return 301 https://$host:8443$request_uri;") || strings.Count(conf, "proxy_pass") != 1 {
+		t.Fatal(conf)
+	}
+	s.Opts.ForceHTTPSPort = 0
+	if conf = renderSite(s, true, 80); !strings.Contains(conf, "return 301 https://$host$request_uri;") {
+		t.Fatal(conf)
+	}
+	s.HTTPPorts = nil
+	if conf = renderSite(s, true, 8080); !strings.Contains(conf, "listen 8080;") {
+		t.Fatal(conf)
+	}
+	s.Opts.ForceHTTPS = false
+	if conf = renderSite(s, true, 8080); strings.Contains(conf, "listen 8080;") || strings.Contains(conf, "return 301") {
+		t.Fatal(conf)
+	}
+}
+
 func TestParseCert(t *testing.T) {
 	c, k := testCert(t, 89, "*.Example.com", "example.com")
 	info, err := ParseCert(c, k)

@@ -15,23 +15,30 @@ import (
 
 // ---------------- Web 转发站点 ----------------
 
+type siteEntry struct {
+	Port  int  `json:"port"`
+	HTTPS bool `json:"https"`
+}
+
 type siteOut struct {
 	*store.Site
-	Owner      string `json:"owner"`
-	Public     bool   `json:"public"`
-	NodeName   string `json:"nodeName"`
-	NodeStatus string `json:"nodeStatus"`
-	HTTPS      bool   `json:"https"`
-	VMName     string `json:"vmName"`
-	VMVMID     int    `json:"vmVmid"`
-	VMShared   bool   `json:"vmShared"`
-	Target4    string `json:"target4"`
-	CertName   string `json:"certName"`
-	CertDays   int    `json:"certDays"`
-	Auth       bool   `json:"auth"`
-	Req24      int64  `json:"req24"`
-	Up24       int64  `json:"up24"`
-	Down24     int64  `json:"down24"`
+	Entries    []siteEntry `json:"entries"`
+	HasHTTPS   bool        `json:"hasHttps"`
+	Owner      string      `json:"owner"`
+	Public     bool        `json:"public"`
+	NodeName   string      `json:"nodeName"`
+	NodeStatus string      `json:"nodeStatus"`
+	HTTPS      bool        `json:"https"`
+	VMName     string      `json:"vmName"`
+	VMVMID     int         `json:"vmVmid"`
+	VMShared   bool        `json:"vmShared"`
+	Target4    string      `json:"target4"`
+	CertName   string      `json:"certName"`
+	CertDays   int         `json:"certDays"`
+	Auth       bool        `json:"auth"`
+	Req24      int64       `json:"req24"`
+	Up24       int64       `json:"up24"`
+	Down24     int64       `json:"down24"`
 }
 
 func (s *Server) siteRows(uid int64) ([]*siteOut, error) {
@@ -105,6 +112,11 @@ func (s *Server) siteRows(uid int64) ([]*siteOut, error) {
 		if n := nodes[st.NodeID]; n != nil && nw != nil {
 			o.NodeName, o.NodeStatus = n.Name, nw.state
 			o.HTTPS = nw.w.IsHTTPS(st.Port)
+			for _, p := range st.EntryPorts() {
+				https := nw.w.IsHTTPS(p)
+				o.Entries = append(o.Entries, siteEntry{Port: p, HTTPS: https})
+				o.HasHTTPS = o.HasHTTPS || https
+			}
 		}
 		if st.Enabled {
 			o.Error = s.siteError(st, o, nw)
@@ -146,7 +158,7 @@ func (s *Server) siteError(st *store.Site, o *siteOut, nw *siteNode) string {
 			return "自动解析 " + h.Host + " 失败：" + h.DNSError
 		}
 	}
-	if o.HTTPS && o.CertDays < 0 {
+	if o.HasHTTPS && o.CertDays < 0 {
 		return "证书 " + o.CertName + " 已过期"
 	}
 	return ""
@@ -175,6 +187,7 @@ type siteIn struct {
 	UserID     int64        `json:"userId"`
 	NodeID     int64        `json:"nodeId"`
 	Port       int          `json:"port"`
+	Ports      []int        `json:"ports"`
 	Scheme     string       `json:"scheme"`
 	VMID       int64        `json:"vmId"`
 	TargetPort int          `json:"targetPort"`
@@ -262,8 +275,23 @@ func (s *Server) validateSite(ctx context.Context, me, owner *store.User, old *s
 	if !web.Enabled {
 		return nil, bad("节点 %s 未启用 Web 转发", n.Name)
 	}
-	if !web.HasPort(in.Port) {
-		return nil, bad("入口端口 %d 不是节点 %s 的 Web 端口", in.Port, n.Name)
+	if in.Ports == nil {
+		if old != nil && len(old.EntryPorts()) > 1 {
+			return nil, bad("请刷新页面后编辑多端口站点")
+		}
+		in.Ports = []int{in.Port}
+	}
+	in.Ports, err = store.NormalizeSitePorts(in.Ports)
+	if err != nil {
+		return nil, bad("%v", err)
+	}
+	in.Port = in.Ports[0]
+	hasHTTPS := false
+	for _, p := range in.Ports {
+		if !web.HasPort(p) {
+			return nil, bad("入口端口 %d 不是节点 %s 的 Web 端口", p, n.Name)
+		}
+		hasHTTPS = hasHTTPS || web.IsHTTPS(p)
 	}
 	if n.Net.WANIP4 == "" {
 		return nil, bad("节点 %s 没有公网 IPv4 地址，无法自动解析", n.Name)
@@ -299,7 +327,7 @@ func (s *Server) validateSite(ctx context.Context, me, owner *store.User, old *s
 			mine[h.Host] = true
 		}
 	}
-	site := &store.Site{UserID: owner.ID, NodeID: n.ID, Port: in.Port, Scheme: in.Scheme, VMID: v.ID, TargetPort: in.TargetPort, Enabled: true}
+	site := &store.Site{UserID: owner.ID, NodeID: n.ID, Port: in.Port, Ports: in.Ports, Scheme: in.Scheme, VMID: v.ID, TargetPort: in.TargetPort, Enabled: true}
 	if old != nil {
 		site.ID, site.Enabled = old.ID, old.Enabled
 	}
@@ -336,7 +364,7 @@ func (s *Server) validateSite(ctx context.Context, me, owner *store.User, old *s
 	}
 
 	// 证书：HTTPS 入口必须选择覆盖全部域名的证书
-	if web.IsHTTPS(in.Port) {
+	if hasHTTPS {
 		if in.CertID == nil {
 			return nil, bad("HTTPS 入口需要选择证书")
 		}
@@ -393,8 +421,22 @@ func (s *Server) validateSite(ctx context.Context, me, owner *store.User, old *s
 	if len(o.Custom) > 8000 {
 		return nil, bad("自定义配置太长")
 	}
-	if !web.IsHTTPS(in.Port) {
+	if !hasHTTPS {
 		o.ForceHTTPS = false
+		o.ForceHTTPSPort = 0
+	} else if o.ForceHTTPS && o.ForceHTTPSPort != 0 {
+		valid := false
+		for _, p := range in.Ports {
+			if p == o.ForceHTTPSPort && web.IsHTTPS(p) {
+				valid = true
+			}
+		}
+		if !valid {
+			return nil, bad("HTTPS 跳转目标必须是已选择的 HTTPS 入口")
+		}
+	}
+	if !o.ForceHTTPS {
+		o.ForceHTTPSPort = 0
 	}
 	site.Opts = o
 	site.Remark = strings.TrimSpace(in.Remark)

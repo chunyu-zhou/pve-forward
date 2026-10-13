@@ -79,112 +79,34 @@
           <a-space direction="vertical" :size="16" fill>
             <a-empty v-if="!entries.length" description="还没有节点" />
             <div v-for="e in entries" :key="e.node.id" class="entry-card">
-              <a-row justify="space-between" align="center" style="margin-bottom:16px">
+              <a-row justify="space-between" align="center">
                 <a-space wrap>
                   <b>{{ e.node.name }}</b><span class="muted mono">{{ e.node.wanIp4 }}</span>
-                  <a-badge v-if="e.state.location && e.report && !e.report.up" status="danger" :text="e.report.error || 'OpenResty 未运行'" />
-                  <a-badge v-else-if="e.state.location" status="success" :text="`OpenResty 运行中 · ${shortVersion(e.state.version)} · ${locName(e, e.state.location)}`" />
-                  <a-tag v-if="e.state.error" color="red" size="small">配置下发失败</a-tag>
+                  <template v-if="e.web.enabled && e.state.location">
+                    <a-badge v-if="e.report && !e.report.up" status="danger" :text="e.report.error || 'OpenResty 未运行'" />
+                    <a-badge v-else status="success" :text="`运行中 · ${shortVersion(e.state.version)}`" />
+                  </template>
+                  <a-tag v-else-if="e.web.enabled" color="orange" size="small">未部署</a-tag>
+                  <a-tag v-else size="small">未启用</a-tag>
                 </a-space>
-                <a-space><span class="muted">启用 Web 转发</span><a-switch v-model="forms[e.node.id].enabled" :disabled="!e.node.initialized" /></a-space>
-              </a-row>
-              <a-alert v-if="e.state.error" type="error" style="margin-bottom:16px" title="最近一次配置下发失败（站点保持原配置运行）">{{ e.state.error }}</a-alert>
-              <template v-if="forms[e.node.id].enabled">
-                <a-form :model="forms[e.node.id]" layout="vertical">
-                  <a-form-item label="部署方式" extra="旧版自动安装配置已迁移为二进制安装；宿主机和入口虚拟机均可使用以下方式。">
-                    <a-radio-group v-model="forms[e.node.id].deploy" @change="checks[e.node.id] = null"><a-radio value="binary">二进制安装</a-radio><a-radio value="docker">Docker</a-radio><a-radio value="manual">已自行安装</a-radio></a-radio-group>
-                  </a-form-item>
-                  <a-form-item v-if="forms[e.node.id].deploy === 'binary'" label="下载方式" extra="控制端下载并校验 SHA256 后上传，目标机器无需访问外网。大陆网络可主动选择第三方加速；不自动切换下载源。">
-                    <a-select v-model="forms[e.node.id].downloadMirror" :options="[{ label: '直连 GitHub（默认）', value: '' }, { label: '大陆加速：ghfast.top（第三方，需信任该服务）', value: 'https://ghfast.top/' }]" />
-                  </a-form-item>
-                  <a-form-item v-if="forms[e.node.id].deploy === 'docker'" label="OpenResty 镜像" extra="默认从 Docker Hub 拉取官方镜像；大陆网络可显式填写可信镜像仓库完整引用（含标签或 sha256 摘要），不会自动使用第三方镜像。无 Docker 时通过 apt 安装 docker.io。">
-                    <a-input v-model="forms[e.node.id].image" placeholder="openresty/openresty:1.31.1.1-0-bookworm-fat" />
-                  </a-form-item>
-                  <a-form-item label="运行方式">
-                    <a-radio-group v-model="forms[e.node.id].mode" class="mode-cards">
-                      <a-radio value="host"><div class="t">宿主机运行</div>
-                        <div class="d">OpenResty 安装在 PVE 宿主机上，直接监听 Web 端口。部署简单，不占用虚拟机；会在宿主机安装软件。</div></a-radio>
-                      <a-radio value="vm"><div class="t">指定虚拟机运行</div>
-                        <div class="d">宿主机只把 Web 端口转发到指定虚拟机，OpenResty 在该虚拟机内转发到其他虚拟机。宿主机不装软件，与宿主机隔离。</div></a-radio>
-                    </a-radio-group>
-                  </a-form-item>
-                </a-form>
-                <div class="flow" style="margin-bottom:16px">
-                  <div class="box">客户端<div class="muted">http(s)://子域名.主域名</div></div><span class="arrow">→</span>
-                  <template v-if="forms[e.node.id].mode === 'host'">
-                    <div class="box hl">{{ e.node.name }} {{ e.node.wanIp4 }}<div class="muted">宿主机 OpenResty 按域名分流</div></div><span class="arrow">→</span>
-                  </template>
-                  <template v-else>
-                    <div class="box dashed">{{ e.node.name }} {{ e.node.wanIp4 }}<div class="muted">公网端口自行转发到入口虚拟机</div></div><span class="arrow">→</span>
-                    <div class="box hl">{{ vmLabel(e, forms[e.node.id].vmId) || '入口虚拟机' }}<div class="muted">虚拟机内 OpenResty 按域名分流</div></div><span class="arrow">→</span>
-                  </template>
-                  <div class="box">目标虚拟机内网 IP:端口</div>
-                </div>
-                <a-form v-if="forms[e.node.id].mode === 'vm'" :model="forms[e.node.id]" layout="vertical">
-                  <a-row :gutter="40">
-                    <a-col :xs="24" :md="8"><a-form-item label="入口虚拟机" required extra="需要能访问同一内网的其他虚拟机">
-                      <a-select v-model="forms[e.node.id].vmId" placeholder="选择虚拟机" allow-search @change="checks[e.node.id] = null">
-                        <a-option v-for="v in e.vms" :key="v.id" :value="v.id" :label="`${v.vmid} ${v.name}（${v.ipv4 || '未分配 IP'}）`" :disabled="!v.ipv4">
-                          <div class="ip-opt"><span><span class="mono">{{ v.vmid }}</span> {{ v.name }}</span><span class="mono muted">{{ v.ipv4 || '未分配 IP' }}</span></div></a-option>
-                      </a-select></a-form-item></a-col>
-                    <a-col :xs="24" :md="8"><a-form-item label="SSH 连接" :extra="`由节点 ${e.node.name} 连接虚拟机，虚拟机的 SSH 不需要对外开放`">
-                      <a-input-group style="width:100%"><a-input v-model="forms[e.node.id].sshUser" style="width:90px" placeholder="用户" />
-                        <a-input-number v-model="forms[e.node.id].sshPort" :min="1" :max="65535" style="width:90px"><template #prefix>:</template></a-input-number>
-                        <a-select v-model="forms[e.node.id].sshAuth" style="flex:1" :options="[{ label: 'SSH 凭证', value: 'cred' }, { label: '宿主机密钥', value: 'node' }, { label: '密码', value: 'password' }, { label: '私钥', value: 'key' }]" /></a-input-group>
-                    </a-form-item></a-col>
-                  </a-row>
-                  <a-row v-if="forms[e.node.id].sshAuth === 'cred'" :gutter="40"><a-col :xs="24" :md="12">
-                    <a-form-item label="SSH 凭证" required extra="在「PVE 节点 → SSH 凭证」中管理；使用凭证中的用户名">
-                      <a-select v-model="forms[e.node.id].credId" placeholder="选择凭证" :options="creds.map(c => ({ label: `${c.name}（${c.username} · ${c.type === 'key' ? '私钥' : '密码'}）`, value: c.id }))">
-                        <template #empty><div style="padding:12px;text-align:center" class="muted">还没有 SSH 凭证</div></template></a-select>
-                    </a-form-item></a-col></a-row>
-                  <a-row v-else-if="forms[e.node.id].sshAuth !== 'node'" :gutter="40"><a-col :xs="24" :md="12">
-                    <a-form-item :label="forms[e.node.id].sshAuth === 'password' ? 'SSH 密码' : 'SSH 私钥'" :extra="hasSecret(e) ? '已保存，留空则不修改' : '加密保存'">
-                      <a-input-password v-if="forms[e.node.id].sshAuth === 'password'" v-model="forms[e.node.id].sshSecret" :placeholder="hasSecret(e) ? '留空不修改' : ''" />
-                      <a-textarea v-else v-model="forms[e.node.id].sshSecret" class="mono" spellcheck="false" :auto-size="{ minRows: 2, maxRows: 5 }" :placeholder="hasSecret(e) ? '留空不修改' : '-----BEGIN OPENSSH PRIVATE KEY-----'" />
-                    </a-form-item></a-col></a-row>
-                  <a-alert v-if="forms[e.node.id].sshAuth === 'node'" style="margin-bottom:16px">
-                    使用宿主机的 Web 转发专用密钥登录虚拟机：把下面的公钥加入虚拟机 {{ forms[e.node.id].sshUser }} 用户的 ~/.ssh/authorized_keys
-                    <div v-if="pubkeys[e.node.id]" class="cmd mono" style="margin-top:8px">{{ pubkeys[e.node.id] }}
-                      <a-button class="copy" size="mini" @click="copyText(pubkeys[e.node.id])">复制</a-button></div>
-                    <a-button v-else size="mini" style="margin-top:8px" :loading="pubkeys[e.node.id] === null" @click="loadPubkey(e)">获取宿主机公钥</a-button>
-                  </a-alert>
-                  <a-alert type="info" style="margin-bottom:16px">
-                    OpenResty 在入口虚拟机内监听下面的 Web 端口，并按域名转发到用户的虚拟机；本系统不会改动宿主机端口。公网如何到达入口虚拟机由你自行配置（例如在端口转发中添加公共规则，把公网 80 / 443 转发到入口虚拟机）。
-                    <div v-if="vmEntryRules(e).length" style="margin-top:4px">当前宿主机端口转发：{{ vmEntryRules(e).map(r => `${r.port} → ${vmLabel(e, r.vmId) || '虚拟机'}:${r.targetPort}`).join('；') }}</div>
-                    <div style="margin-top:4px">入口虚拟机停止时，该节点的全部 Web 转发都会中断，建议使用开机自启、不常重启的虚拟机。</div>
-                  </a-alert>
-                </a-form>
-                <a-form :model="forms[e.node.id]" layout="vertical">
-                  <a-row :gutter="40">
-                    <a-col :xs="24" :md="8"><a-form-item label="HTTP 端口"><a-input-tag v-model="forms[e.node.id].httpText" placeholder="输入端口后回车" allow-clear @change="v => onPorts(e, 'http', v)" /></a-form-item></a-col>
-                    <a-col :xs="24" :md="8"><a-form-item label="HTTPS 端口"><a-input-tag v-model="forms[e.node.id].httpsText" placeholder="输入端口后回车" allow-clear @change="v => onPorts(e, 'https', v)" /></a-form-item></a-col>
-                    <a-col :xs="24" :md="8"><a-form-item label="默认入口端口" extra="用户添加站点时默认选中">
-                      <a-select v-model="forms[e.node.id].default" :options="allPorts(e).map(p => ({ label: `${forms[e.node.id].https.includes(p) ? 'HTTPS' : 'HTTP'} ${p}`, value: p }))" /></a-form-item></a-col>
-                  </a-row>
-                </a-form>
-                <a-alert v-if="conflicts(e).length" type="warning" style="margin-bottom:8px" title="以下宿主机端口正被端口转发规则使用，部署时将由 Web 转发接管（删除这些规则）">
-                  <div v-for="c in conflicts(e)" :key="c.id" class="conflict-row">
-                    <span>端口 <b class="mono">{{ c.port }}</b>「{{ c.remark || c.port }}」（{{ c.owner }}）→ <span class="mono">{{ vmLabel(e, c.vmId) || '虚拟机' }}:{{ c.targetPort }}</span></span>
-                    <a-link @click="dropPort(e, c.port)">不使用此端口</a-link>
-                  </div>
-                  <div class="muted" style="margin-top:4px">接管后，这些端口的访问将按域名转发；如果仍要保留原来的端口转发，请点「不使用此端口」把它从 Web 端口中移除。</div>
-                </a-alert>
-                <div v-if="checks[e.node.id]" class="checks">
-                  <div v-for="c in checks[e.node.id]" :key="c.name" :class="c.ok ? 'ok' : 'no'"><icon-check-circle-fill v-if="c.ok" /><icon-close-circle-fill v-else /> {{ c.name }}<span v-if="c.detail" class="muted" style="margin-left:6px">{{ c.detail }}</span></div>
-                </div>
-              </template>
-              <span v-else class="muted">{{ e.node.initialized ? '未启用：该节点上不能添加 Web 转发' : '节点尚未完成网络初始化' }}</span>
-              <a-row justify="space-between" align="center" style="margin-top:16px">
-                <span class="muted">{{ forms[e.node.id].enabled ? (forms[e.node.id].mode === 'host' ? 'Web 端口自动成为该节点的保留端口，不能再用于端口转发或分配给用户。' : '') : e.state.location ? '保存后将停止该节点的 Web 转发（站点保留，重新启用后恢复）' : '' }}</span>
                 <a-space>
-                  <a-button v-if="forms[e.node.id].enabled" :loading="checking === e.node.id" @click="check(e)"><template #icon><icon-check-circle /></template>检测环境</a-button>
-                  <a-popconfirm v-if="forms[e.node.id].enabled && conflicts(e).length" type="warning" @ok="deploy(e, true)"
-                    :content="`部署后将删除端口 ${conflicts(e).map(c => c.port).join('、')} 的端口转发规则，改由 Web 转发处理，确定继续？`">
-                    <a-button type="primary">保存并部署</a-button></a-popconfirm>
-                  <a-button v-else-if="forms[e.node.id].enabled || e.state.location" type="primary" @click="deploy(e)">{{ forms[e.node.id].enabled ? '保存并部署' : '保存' }}</a-button>
+                  <template v-if="e.node.initialized">
+                    <a-button type="primary" size="small" @click="openWizard(e)">{{ e.web.enabled ? '修改配置' : '启用 Web 转发' }}</a-button>
+                    <a-popconfirm v-if="e.web.enabled" type="warning" content="停用后该节点的站点停止访问（站点保留，重新启用后恢复），确定停用？" @ok="disable(e)">
+                      <a-button size="small" status="danger">停用</a-button></a-popconfirm>
+                  </template>
+                  <span v-else class="muted">节点尚未完成网络初始化</span>
                 </a-space>
               </a-row>
+              <a-descriptions v-if="e.web.enabled" class="entry-sum" :column="{ xs: 1, md: 4 }" size="small" :data="[
+                { label: '运行位置', value: e.web.mode === 'vm' ? `入口虚拟机 ${vmLabel(e, e.web.vmId) || ''}` : '宿主机' },
+                { label: 'OpenResty', value: e.state.location ? shortVersion(e.state.version) : '未部署' },
+                { label: 'HTTP 端口', value: (e.web.http || []).join('、') || '-' },
+                { label: 'HTTPS 端口', value: (e.web.https || []).join('、') || '-' } ]" />
+              <a-alert v-if="e.state.error" type="error" style="margin-top:12px" title="最近一次配置下发失败（站点保持原配置运行）">
+                {{ e.state.error }}
+                <template #action><a-button size="mini" @click="openWizard(e, true)">重试</a-button></template>
+              </a-alert>
             </div>
           </a-space>
         </a-tab-pane>
@@ -249,21 +171,169 @@
       </a-form>
     </a-modal>
 
-    <!-- 部署进度 -->
-    <a-modal v-model:visible="deploying.visible" :title="deploying.title" :footer="deploying.done" :mask-closable="false" :closable="deploying.done" hide-cancel ok-text="完成" @ok="deploying.visible = false">
-      <div class="deploy-steps">
-        <div v-for="(s, i) in deploying.steps" :key="i" :class="s.ok ? 'ok' : 'no'">
-          <icon-check-circle-fill v-if="s.ok" /><icon-close-circle-fill v-else /> {{ s.name }}<div v-if="s.error" class="err">{{ s.error }}</div></div>
-        <div v-if="!deploying.done" class="wait"><icon-loading /> 正在执行（安装 OpenResty 可能需要几分钟）…</div>
-        <a-alert v-if="deploying.error" type="error" style="margin-top:12px">{{ deploying.error }}</a-alert>
-        <a-alert v-else-if="deploying.done" type="success" style="margin-top:12px">完成</a-alert>
-      </div>
+    <!-- Web 入口：分步配置并部署 -->
+    <a-modal v-model:visible="wz.visible" :title="wz.e ? `${wz.f.enabled === false ? '停用' : '配置'} ${wz.e.node.name} 的 Web 转发` : ''" :width="860" :footer="false"
+             :mask-closable="false" :closable="!wz.running" unmount-on-close>
+      <template v-if="wz.e">
+        <a-steps v-if="wz.f.enabled !== false" :current="wz.step + 1" size="small" style="margin-bottom:24px">
+          <a-step>运行位置</a-step><a-step>OpenResty</a-step><a-step>Web 端口</a-step><a-step>确认部署</a-step>
+        </a-steps>
+
+        <!-- 1. 运行位置 -->
+        <div v-show="wz.step === 0">
+          <a-radio-group v-model="wz.f.mode" class="mode-cards">
+            <a-radio value="host"><div class="t">宿主机运行</div>
+              <div class="d">OpenResty 运行在 PVE 宿主机上，直接监听 Web 端口。部署简单，不占用虚拟机。</div></a-radio>
+            <a-radio value="vm"><div class="t">指定虚拟机运行</div>
+              <div class="d">OpenResty 运行在入口虚拟机内，按域名转发到其他虚拟机。宿主机不装软件；公网到入口虚拟机的转发由你自行配置。</div></a-radio>
+          </a-radio-group>
+          <div class="flow" style="margin:16px 0">
+            <div class="box">客户端<div class="muted">http(s)://子域名.主域名</div></div><span class="arrow">→</span>
+            <template v-if="wz.f.mode === 'host'">
+              <div class="box hl">{{ wz.e.node.name }} {{ wz.e.node.wanIp4 }}<div class="muted">宿主机 OpenResty 按域名分流</div></div><span class="arrow">→</span>
+            </template>
+            <template v-else>
+              <div class="box dashed">{{ wz.e.node.name }} {{ wz.e.node.wanIp4 }}<div class="muted">公网端口自行转发到入口虚拟机</div></div><span class="arrow">→</span>
+              <div class="box hl">{{ vmLabel(wz.e, wz.f.vmId) || '入口虚拟机' }}<div class="muted">虚拟机内 OpenResty 按域名分流</div></div><span class="arrow">→</span>
+            </template>
+            <div class="box">目标虚拟机内网 IP:端口</div>
+          </div>
+          <a-form v-if="wz.f.mode === 'vm'" :model="wz.f" layout="vertical">
+            <a-row :gutter="24">
+              <a-col :xs="24" :md="12"><a-form-item label="入口虚拟机" required extra="需要能访问同一内网的其他虚拟机；建议开机自启、不常重启">
+                <a-select v-model="wz.f.vmId" placeholder="选择虚拟机" allow-search>
+                  <a-option v-for="v in wz.e.vms" :key="v.id" :value="v.id" :label="`${v.vmid} ${v.name}（${v.ipv4 || '未分配 IP'}）`" :disabled="!v.ipv4">
+                    <div class="ip-opt"><span><span class="mono">{{ v.vmid }}</span> {{ v.name }}</span><span class="mono muted">{{ v.ipv4 || '未分配 IP' }}</span></div></a-option>
+                </a-select></a-form-item></a-col>
+              <a-col :xs="24" :md="12"><a-form-item label="SSH 连接" :extra="`由节点 ${wz.e.node.name} 连接虚拟机，SSH 不需要对外开放`">
+                <a-input-group style="width:100%"><a-input v-model="wz.f.sshUser" style="width:90px" placeholder="用户" />
+                  <a-input-number v-model="wz.f.sshPort" :min="1" :max="65535" style="width:90px"><template #prefix>:</template></a-input-number>
+                  <a-select v-model="wz.f.sshAuth" style="flex:1" :options="[{ label: 'SSH 凭证', value: 'cred' }, { label: '宿主机密钥', value: 'node' }, { label: '密码', value: 'password' }, { label: '私钥', value: 'key' }]" /></a-input-group>
+              </a-form-item></a-col>
+            </a-row>
+            <a-form-item v-if="wz.f.sshAuth === 'cred'" label="SSH 凭证" required extra="在「PVE 节点 → SSH 凭证」中管理；使用凭证中的用户名">
+              <a-select v-model="wz.f.credId" placeholder="选择凭证" :options="creds.map(c => ({ label: `${c.name}（${c.username} · ${c.type === 'key' ? '私钥' : '密码'}）`, value: c.id }))">
+                <template #empty><div style="padding:12px;text-align:center" class="muted">还没有 SSH 凭证</div></template></a-select>
+            </a-form-item>
+            <a-form-item v-else-if="wz.f.sshAuth !== 'node'" :label="wz.f.sshAuth === 'password' ? 'SSH 密码' : 'SSH 私钥'" :extra="hasSecret(wz.e, wz.f) ? '已保存，留空则不修改' : '加密保存'">
+              <a-input-password v-if="wz.f.sshAuth === 'password'" v-model="wz.f.sshSecret" :placeholder="hasSecret(wz.e, wz.f) ? '留空不修改' : ''" />
+              <a-textarea v-else v-model="wz.f.sshSecret" class="mono" spellcheck="false" :auto-size="{ minRows: 2, maxRows: 5 }" :placeholder="hasSecret(wz.e, wz.f) ? '留空不修改' : '-----BEGIN OPENSSH PRIVATE KEY-----'" />
+            </a-form-item>
+            <a-alert v-else>
+              把宿主机的 Web 转发公钥加入虚拟机 {{ wz.f.sshUser }} 用户的 ~/.ssh/authorized_keys
+              <div v-if="pubkeys[wz.e.node.id]" class="cmd mono" style="margin-top:8px">{{ pubkeys[wz.e.node.id] }}
+                <a-button class="copy" size="mini" @click="copyText(pubkeys[wz.e.node.id])">复制</a-button></div>
+              <a-button v-else size="mini" style="margin-top:8px" :loading="pubkeys[wz.e.node.id] === null" @click="loadPubkey(wz.e)">获取宿主机公钥</a-button>
+            </a-alert>
+          </a-form>
+        </div>
+
+        <!-- 2. OpenResty：先检测，已安装的直接使用，未安装才选择安装方式 -->
+        <div v-show="wz.step === 1">
+          <div v-if="wz.checking" class="wz-loading"><icon-loading /> 正在检测{{ wz.f.mode === 'vm' ? '入口虚拟机' : '宿主机' }}的环境…</div>
+          <template v-else-if="wz.check">
+            <div class="checks"><div v-for="c in envChecks" :key="c.name" :class="c.ok ? 'ok' : 'no'"><icon-check-circle-fill v-if="c.ok" /><icon-close-circle-fill v-else /> {{ c.name }}<span v-if="c.detail" class="muted">，{{ c.detail }}</span></div></div>
+            <a-alert v-if="wz.check.existing" type="success" style="margin-top:16px" title="已检测到 OpenResty，直接使用，无需选择安装方式">
+              {{ existingText(wz.check.existing) }}
+            </a-alert>
+            <a-form v-else :model="wz.f" layout="vertical" style="margin-top:16px">
+              <a-form-item label="安装方式" extra="未检测到已安装的 OpenResty（apt、源码编译、Docker 均可识别），请选择安装方式">
+                <a-radio-group v-model="wz.f.deploy" type="button" @change="recheck">
+                  <a-radio value="binary">二进制安装</a-radio><a-radio value="docker">Docker</a-radio></a-radio-group>
+              </a-form-item>
+              <a-form-item v-if="wz.f.deploy === 'binary'" label="下载方式" extra="控制端下载并校验 SHA256 后上传，目标机器无需访问外网">
+                <a-select v-model="wz.f.downloadMirror" :options="mirrors.download.map(m => ({ label: m.label, value: m.value }))" />
+              </a-form-item>
+              <template v-else>
+                <a-form-item label="OpenResty 镜像" :extra="registryHint">
+                  <a-input-group style="width:100%">
+                    <a-input v-model="wz.f.image" style="flex:1" :placeholder="mirrors.defaultImage" />
+                    <a-select v-model="wz.f.registry" style="width:250px" :disabled="hasRegistryHost(wz.f.image)" :options="mirrors.registry.map(m => ({ label: m.label, value: m.value }))">
+                      <template #prefix>镜像源</template></a-select>
+                  </a-input-group>
+                </a-form-item>
+                <a-form-item v-if="!wz.check.docker" label="安装 Docker" extra="目标机器未安装 Docker，将从所选软件源安装 Docker CE；会校验软件源的 GPG 密钥是否为 Docker 官方密钥">
+                  <a-select v-model="wz.f.dockerSource" allow-search :options="mirrors.dockerSource.map(m => ({ label: m.label, value: m.value }))" @change="recheck" />
+                </a-form-item>
+                <div v-else class="muted">已安装 Docker {{ wz.check.docker }}</div>
+              </template>
+            </a-form>
+          </template>
+          <a-alert v-else-if="wz.checkError" type="error">{{ wz.checkError }}</a-alert>
+        </div>
+
+        <!-- 3. Web 端口 -->
+        <div v-show="wz.step === 2">
+          <a-form :model="wz.f" layout="vertical">
+            <a-row :gutter="24">
+              <a-col :xs="24" :md="8"><a-form-item label="HTTP 端口"><a-input-tag v-model="wz.f.httpText" placeholder="输入端口后回车" allow-clear @change="v => onPorts('http', v)" /></a-form-item></a-col>
+              <a-col :xs="24" :md="8"><a-form-item label="HTTPS 端口"><a-input-tag v-model="wz.f.httpsText" placeholder="输入端口后回车" allow-clear @change="v => onPorts('https', v)" /></a-form-item></a-col>
+              <a-col :xs="24" :md="8"><a-form-item label="默认入口端口" extra="用户添加站点时默认选中">
+                <a-select v-model="wz.f.default" :options="allPorts().map(p => ({ label: `${wz.f.https.includes(p) ? 'HTTPS' : 'HTTP'} ${p}`, value: p }))" /></a-form-item></a-col>
+            </a-row>
+          </a-form>
+          <div class="muted" style="margin:-8px 0 12px">{{ wz.f.mode === 'host' ? 'Web 端口自动成为该节点的保留端口，不能再用于端口转发或分配给用户。' : 'OpenResty 在入口虚拟机内监听这些端口；本系统不改动宿主机端口。' }}</div>
+          <a-alert v-if="conflicts.length" type="warning" style="margin-bottom:12px" title="以下宿主机端口正被端口转发规则使用，部署时由 Web 转发接管（删除这些规则）">
+            <div v-for="c in conflicts" :key="c.id" class="conflict-row">
+              <span>端口 <b class="mono">{{ c.port }}</b>「{{ c.remark || c.port }}」（{{ c.owner }}）→ <span class="mono">{{ vmLabel(wz.e, c.vmId) || '虚拟机' }}:{{ c.targetPort }}</span></span>
+              <a-link @click="dropPort(c.port)">不使用此端口</a-link>
+            </div>
+          </a-alert>
+          <div v-if="wz.checking" class="wz-loading"><icon-loading /> 正在检测端口…</div>
+          <template v-else-if="wz.check">
+            <div v-if="portCheck" class="checks one" :class="portCheck.ok ? 'ok' : 'no'">
+              <div :class="portCheck.ok ? 'ok' : 'no'"><icon-check-circle-fill v-if="portCheck.ok" /><icon-close-circle-fill v-else /> {{ portCheck.name }}<span v-if="portCheck.detail" class="muted">，{{ portCheck.detail }}</span></div>
+            </div>
+            <a-alert v-if="busyContainers.length" type="warning" style="margin-top:12px" title="端口被 Docker 容器占用">
+              <div v-for="c in busyContainers" :key="c.name" style="margin-top:4px">
+                <a-checkbox :model-value="wz.f.stop.includes(c.name)" @change="v => toggleStop(c.name, v)">
+                  部署时停止容器 <b class="mono">{{ c.name }}</b>（占用 {{ c.ports.join('、') }}）</a-checkbox>
+              </div>
+              <div class="muted" style="margin-top:6px">容器只停止、不删除，并暂时取消其自动重启；停用 Web 转发时恢复原状态。该容器提供的服务（如 Nginx Proxy Manager 中的站点）会在停止期间中断。也可以改用其他端口。</div>
+            </a-alert>
+          </template>
+        </div>
+
+        <!-- 4. 确认并部署 -->
+        <div v-show="wz.step === 3">
+          <a-descriptions v-if="!wz.started && wz.f.enabled !== false" :column="1" size="small" bordered :data="summary" />
+          <div v-if="wz.started" class="deploy-steps">
+            <div v-for="(s, i) in wz.steps" :key="i" :class="s.ok ? 'ok' : 'no'">
+              <icon-check-circle-fill v-if="s.ok" /><icon-close-circle-fill v-else /> {{ s.name }}<div v-if="s.error" class="err">{{ s.error }}</div></div>
+            <div v-if="wz.running" class="wait"><icon-loading /> 正在执行（安装 OpenResty 或 Docker 可能需要几分钟）…</div>
+            <pre ref="installLog" class="install-log" tabindex="0" aria-label="部署日志" @scroll="onLogScroll">{{ wz.log || '等待输出…' }}</pre>
+            <a-alert v-if="wz.error" type="error" style="margin-top:12px">{{ wz.error }}</a-alert>
+            <a-alert v-else-if="!wz.running" type="success" style="margin-top:12px">{{ wz.f.enabled === false ? '已停用' : '部署完成' }}</a-alert>
+          </div>
+        </div>
+
+        <a-row justify="space-between" style="margin-top:24px">
+          <span class="muted">{{ stepHint }}</span>
+          <a-space>
+            <template v-if="!wz.started">
+              <a-button v-if="wz.step > 0" @click="wz.step--">上一步</a-button>
+              <a-button v-if="wz.step === 1 || wz.step === 2" :loading="wz.checking" @click="runCheck">重新检测</a-button>
+              <a-button v-if="wz.step < 3" type="primary" :disabled="wz.checking" @click="next">下一步</a-button>
+              <a-popconfirm v-else-if="conflicts.length" type="warning" :content="`部署后将删除端口 ${conflicts.map(c => c.port).join('、')} 的端口转发规则，改由 Web 转发处理，确定继续？`" @ok="deploy(true)">
+                <a-button type="primary">部署</a-button></a-popconfirm>
+              <a-button v-else type="primary" @click="deploy(false)">部署</a-button>
+            </template>
+            <template v-else-if="!wz.running">
+              <template v-if="wz.error">
+                <a-button v-if="wz.f.enabled !== false" @click="backToEdit">返回修改</a-button>
+                <a-button type="primary" @click="deploy(wz.takeOver)"><template #icon><icon-refresh /></template>重试</a-button>
+              </template>
+              <a-button v-else type="primary" @click="wz.visible = false">完成</a-button>
+            </template>
+          </a-space>
+        </a-row>
+      </template>
     </a-modal>
   </div>
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { Message } from '@arco-design/web-vue'
 import { api, copyText, expColor, expType, readTextFile, streamNDJSON } from '../api'
@@ -281,9 +351,7 @@ const users = ref([])
 const creds = ref([])
 const pubkeys = reactive({})
 const entries = ref([])
-const forms = reactive({})
-const checks = reactive({})
-const checking = ref(0)
+const mirrors = reactive({ download: [], dockerSource: [], registry: [], defaultImage: '' })
 const testing = ref(0)
 
 const fmtDate = ts => { if (!ts) return '-'; const d = typeof ts === 'number' ? new Date(ts * 1000) : new Date(ts); const p = n => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}` }
@@ -292,10 +360,11 @@ const typeOf = t => types.value.find(x => x.type === t)
 async function load() {
   loading.value = true
   try {
-    const [d, p, t, c, u, e, cr] = await Promise.all([api.get('/api/web-domains'), api.get('/api/dns-providers'), api.get('/api/dns-types'),
-      api.get('/api/certs'), api.get('/api/users'), api.get('/api/web-entries'), api.get('/api/credentials')])
+    const [d, p, t, c, u, e, cr, m] = await Promise.all([api.get('/api/web-domains'), api.get('/api/dns-providers'), api.get('/api/dns-types'),
+      api.get('/api/certs'), api.get('/api/users'), api.get('/api/web-entries'), api.get('/api/credentials'), api.get('/api/web-mirrors')])
     domains.value = d; providers.value = p; types.value = t; certs.value = c; users.value = u; creds.value = cr
-    setEntries(e)
+    Object.assign(mirrors, m)
+    entries.value = e
     loaded.value = true
   } finally { loading.value = false }
 }
@@ -425,23 +494,88 @@ async function saveCert(done) {
   } catch { done(false) } finally { saving.value = false }
 }
 
-// ---------------- Web 入口 ----------------
-function setEntries(list) {
-  entries.value = list
-  for (const e of list) {
-    const w = e.web
-    forms[e.node.id] = { enabled: w.enabled, mode: w.mode || 'host', vmId: w.vmId || undefined, deploy: !w.deploy || w.deploy === 'auto' ? 'binary' : w.deploy, image: w.image || 'openresty/openresty:1.31.1.1-0-bookworm-fat', downloadMirror: w.downloadMirror || '', sshUser: w.sshUser || 'root', credId: w.credId || undefined,
-      sshPort: w.sshPort || 22, sshAuth: w.sshAuth || 'node', sshSecret: '', http: [...(w.http || [])], https: [...(w.https || [])],
-      httpText: (w.http || []).map(String), httpsText: (w.https || []).map(String), default: w.default }
+// ---------------- Web 入口：分步配置 ----------------
+const vmLabel = (e, id) => { const v = e.vms.find(x => x.id === id); return v ? `${v.vmid} ${v.name} ${v.ipv4}` : '' }
+const shortVersion = v => (v || '').replace(/^nginx version:\s*/, '') || 'OpenResty'
+const hasSecret = (e, f) => e.hasSecret && e.web.sshAuth === f.sshAuth
+// 镜像是否自带仓库地址（此时不使用镜像源）
+function hasRegistryHost(img) {
+  const i = (img || '').indexOf('/')
+  if (i < 0) return false
+  const first = img.slice(0, i)
+  return /[.:]/.test(first) || first === 'localhost'
+}
+function formOf(e) {
+  const w = e.web
+  return { enabled: true, mode: w.mode || 'host', vmId: w.vmId || undefined, deploy: w.deploy === 'docker' ? 'docker' : 'binary',
+    image: w.image || mirrors.defaultImage, downloadMirror: w.downloadMirror || '', dockerSource: w.dockerSource || 'download.docker.com', registry: w.registry || '',
+    sshUser: w.sshUser || 'root', credId: w.credId || undefined, sshPort: w.sshPort || 22, sshAuth: w.sshAuth || 'node', sshSecret: '',
+    http: [...(w.http || [])], https: [...(w.https || [])], httpText: (w.http || []).map(String), httpsText: (w.https || []).map(String), default: w.default, stop: [] }
+}
+
+const wz = reactive({ visible: false, e: null, f: {}, step: 0, check: null, checkKey: '', checkError: '', checking: false, seenBusy: {},
+  started: false, running: false, steps: [], log: '', error: '', takeOver: false })
+function webBody() {
+  const f = wz.f
+  return { enabled: f.enabled, mode: f.mode, vmId: f.vmId || 0, deploy: f.deploy, image: f.image, downloadMirror: f.downloadMirror, dockerSource: f.dockerSource, registry: f.registry,
+    sshUser: f.sshUser, sshPort: f.sshPort, sshAuth: f.sshAuth, sshSecret: f.sshSecret, credId: f.credId || 0, http: f.http, https: f.https, default: f.default, stop: f.stop }
+}
+const bodyKey = () => JSON.stringify(webBody())
+function resetRun() { Object.assign(wz, { started: false, running: false, steps: [], log: '', error: '' }) }
+function openWizard(e, retry = false) {
+  Object.assign(wz, { visible: true, e, f: formOf(e), step: retry ? 3 : 0, check: null, checkKey: '', checkError: '', seenBusy: {}, takeOver: false })
+  resetRun()
+  if (retry) deploy(false)
+}
+function disable(e) {
+  Object.assign(wz, { visible: true, e, f: { ...formOf(e), enabled: false }, step: 3, check: null, checkKey: '' })
+  resetRun()
+  deploy(false)
+}
+
+async function runCheck() {
+  wz.checking = true
+  wz.checkError = ''
+  const key = bodyKey()
+  try {
+    wz.check = await api.post(`/api/nodes/${wz.e.node.id}/web/check`, webBody(), { silent: true })
+    wz.checkKey = key
+    for (const b of wz.check.busy || []) {
+      if (!b.container) continue
+      const ports = wz.seenBusy[b.container] || []
+      if (!ports.includes(b.port)) wz.seenBusy[b.container] = [...ports, b.port].sort((x, y) => x - y)
+    }
+  } catch (err) { wz.check = null; wz.checkError = err.message } finally { wz.checking = false }
+}
+const recheck = () => { if (wz.step >= 1) runCheck() }
+const isPortCheck = c => c.name.startsWith('端口 ')
+const envChecks = computed(() => (wz.check?.checks || []).filter(c => !isPortCheck(c)))
+const portCheck = computed(() => (wz.check?.checks || []).find(isPortCheck))
+// 占用 Web 端口的容器（含已勾选停止、因此不再显示为占用的）
+const busyContainers = computed(() => Object.entries(wz.seenBusy).map(([name, ports]) => ({ name, ports })))
+function toggleStop(name, on) {
+  wz.f.stop = on ? [...new Set([...wz.f.stop, name])] : wz.f.stop.filter(x => x !== name)
+  runCheck()
+}
+function existingText(x) {
+  switch (x.kind) {
+    case 'binary': return `${x.version}（本系统安装的二进制版）`
+    case 'docker': return `${x.version}（Docker 镜像 ${x.path}），部署时使用该镜像运行`
+    case 'system': return `${x.version}（${x.path}，如 apt 或源码安装），部署时原主配置备份为 nginx.conf.pvef-orig，停用时恢复`
+    default: return `${x.version}（Docker 容器 ${x.container} 的镜像 ${x.image}），部署时使用该镜像运行，无需重新下载`
   }
 }
-const hasSecret = e => e.hasSecret && e.web.sshAuth === forms[e.node.id].sshAuth
-const allPorts = e => [...forms[e.node.id].http, ...forms[e.node.id].https].sort((a, b) => a - b)
-const vmLabel = (e, id) => { const v = e.vms.find(x => x.id === id); return v ? `${v.vmid} ${v.name} ${v.ipv4}` : '' }
-const locName = (e, loc) => (loc.startsWith('vm:') ? `虚拟机 ${vmLabel(e, Number(loc.slice(3))) || loc.slice(3)}` : '宿主机')
-const shortVersion = v => (v || '').replace(/^nginx version:\s*/, '') || 'OpenResty'
-function onPorts(e, kind, vals) {
-  const f = forms[e.node.id]
+const registryHint = computed(() => {
+  const f = wz.f
+  if (hasRegistryHost(f.image)) return '镜像地址已包含仓库，不使用镜像源'
+  if (!f.registry) return '从 Docker Hub 拉取；大陆网络可在右侧选择镜像源（参考 LinuxMirrors）'
+  if (f.image === mirrors.defaultImage) return '通过所选镜像源按官方摘要拉取默认镜像，内容与官方镜像一致'
+  return '通过第三方镜像源拉取，请确认信任该服务'
+})
+
+const allPorts = () => [...wz.f.http, ...wz.f.https].sort((a, b) => a - b)
+function onPorts(kind, vals) {
+  const f = wz.f
   const nums = []
   for (const v of vals) {
     const n = Number(String(v).trim())
@@ -451,54 +585,105 @@ function onPorts(e, kind, vals) {
   }
   f[kind] = nums
   f[kind + 'Text'] = nums.map(String)
-  if (!allPorts(e).includes(f.default)) f.default = allPorts(e)[0]
+  if (!allPorts().includes(f.default)) f.default = allPorts()[0]
 }
-function dropPort(e, p) {
-  const f = forms[e.node.id]
+function dropPort(p) {
+  const f = wz.f
   f.http = f.http.filter(x => x !== p); f.https = f.https.filter(x => x !== p)
   f.httpText = f.http.map(String); f.httpsText = f.https.map(String)
-  if (f.default === p) f.default = allPorts(e)[0]
+  if (f.default === p) f.default = allPorts()[0]
 }
 // 宿主机运行时，与 Web 端口冲突的端口转发规则（入口虚拟机模式不使用宿主机端口）
-const conflicts = e => (forms[e.node.id]?.enabled && forms[e.node.id].mode === 'host' ? e.rules.filter(r => allPorts(e).includes(r.port)) : [])
-// 入口虚拟机模式：宿主机上与 Web 端口同号的端口转发（仅展示，便于核对公网是否已转发到入口虚拟机）
-const vmEntryRules = e => e.rules.filter(r => allPorts(e).includes(r.port))
-function webBody(e) {
-  const f = forms[e.node.id]
-  return { enabled: f.enabled, mode: f.mode, vmId: f.vmId || 0, deploy: f.deploy, image: f.image, downloadMirror: f.downloadMirror, sshUser: f.sshUser, sshPort: f.sshPort, sshAuth: f.sshAuth, sshSecret: f.sshSecret, credId: f.credId || 0,
-    http: f.http, https: f.https, default: f.default }
+const conflicts = computed(() => (wz.e && wz.f.mode === 'host' ? wz.e.rules.filter(r => allPorts().includes(r.port)) : []))
+
+async function next() {
+  const f = wz.f
+  if (wz.step === 0) {
+    if (f.mode === 'vm') {
+      if (!f.vmId) { Message.warning('请选择入口虚拟机'); return }
+      if (f.sshAuth === 'cred' && !f.credId) { Message.warning('请选择 SSH 凭证'); return }
+      if ((f.sshAuth === 'password' || f.sshAuth === 'key') && !f.sshSecret && !hasSecret(wz.e, f)) { Message.warning('请填写 SSH 密码或私钥'); return }
+    }
+    wz.step = 1
+    if (wz.checkKey !== bodyKey()) runCheck()
+    return
+  }
+  if (wz.checkKey !== bodyKey() || !wz.check) { await runCheck(); if (!wz.check) return }
+  if (wz.step === 1) {
+    const bad = envChecks.value.find(c => !c.ok)
+    if (bad) { Message.warning(`${bad.name}：${bad.detail || '未通过'}`); return }
+    wz.step = 2
+    return
+  }
+  if (!allPorts().length) { Message.warning('请至少设置一个 HTTP 或 HTTPS 端口'); return }
+  if (!allPorts().includes(f.default)) { Message.warning('请选择默认入口端口'); return }
+  if (portCheck.value && !portCheck.value.ok) { Message.warning(`${portCheck.value.name}：${portCheck.value.detail}`); return }
+  wz.step = 3
 }
+const stepHint = computed(() => ['选择 OpenResty 的运行位置', '已安装的 OpenResty 会直接使用，不会重新安装', '设置用户站点可以使用的 Web 端口', wz.started ? '' : '确认后保存配置并部署'][wz.step])
+const summary = computed(() => {
+  const f = wz.f, c = wz.check, label = (list, v) => list.find(m => m.value === v)?.label || v
+  let or = '部署时检测'
+  if (c?.existing) or = '直接使用已安装的 ' + existingText(c.existing)
+  else if (c && f.deploy === 'binary') or = `二进制安装（${label(mirrors.download, f.downloadMirror)}）`
+  else if (c) or = `Docker 镜像 ${f.image}（${hasRegistryHost(f.image) ? '自带仓库' : label(mirrors.registry, f.registry)}）` + (c.docker ? '' : `；先从 ${label(mirrors.dockerSource, f.dockerSource)} 安装 Docker`)
+  const rows = [
+    { label: '运行位置', value: f.mode === 'vm' ? `入口虚拟机 ${vmLabel(wz.e, f.vmId)}` : `宿主机 ${wz.e.node.name}` },
+    { label: 'OpenResty', value: or },
+    { label: 'HTTP 端口', value: f.http.join('、') || '-' },
+    { label: 'HTTPS 端口', value: f.https.join('、') || '-' },
+    { label: '默认入口端口', value: f.default },
+  ]
+  if (f.stop.length) rows.push({ label: '停止容器', value: f.stop.join('、') + '（停用 Web 转发时恢复）' })
+  if (conflicts.value.length) rows.push({ label: '接管端口转发', value: conflicts.value.map(r => `${r.port}「${r.remark || r.port}」`).join('、') })
+  return rows
+})
+
 async function loadPubkey(e) {
   pubkeys[e.node.id] = null
   try { pubkeys[e.node.id] = (await api.post(`/api/nodes/${e.node.id}/web/pubkey`)).publicKey } catch { delete pubkeys[e.node.id] }
 }
-async function check(e) {
-  checking.value = e.node.id
-  try {
-    const r = await api.post(`/api/nodes/${e.node.id}/web/check`, webBody(e))
-    checks[e.node.id] = r.checks || []
-    if (checks[e.node.id].every(c => c.ok)) Message.success('环境检测通过')
-  } finally { checking.value = 0 }
+const installLog = ref(null)
+let followLog = true
+function onLogScroll() {
+  const el = installLog.value
+  if (el) followLog = el.scrollHeight - el.scrollTop - el.clientHeight <= 4
 }
-const deploying = reactive({ visible: false, title: '', steps: [], done: false, error: '' })
-async function deploy(e, takeOver = false) {
-  const f = forms[e.node.id]
-  if (f.enabled && f.mode === 'vm' && !f.vmId) { Message.warning('请选择入口虚拟机'); return }
-  Object.assign(deploying, { visible: true, title: `${f.enabled ? '部署' : '停用'} ${e.node.name} 的 Web 转发`, steps: [], done: false, error: '' })
+function appendLog(text) {
+  const shouldFollow = followLog
+  wz.log = (wz.log + text.replace(/\r\n/g, '\n').replace(/\r/g, '\n')).slice(-256 * 1024)
+  nextTick(() => {
+    if (shouldFollow && followLog && installLog.value) installLog.value.scrollTop = installLog.value.scrollHeight
+  })
+}
+// 部署（失败后可直接重试，使用同样的参数）
+async function deploy(takeOver) {
+  wz.takeOver = takeOver
+  resetRun()
+  Object.assign(wz, { started: true, running: true })
+  followLog = true
   try {
-    await streamNDJSON(`/api/nodes/${e.node.id}/web`, { ...webBody(e), takeOver }, m => {
-      if (m.step) deploying.steps.push(m.step)
-      if (m.error) deploying.error = m.error
+    await streamNDJSON(`/api/nodes/${wz.e.node.id}/web`, { ...webBody(), takeOver }, m => {
+      if (m.log) appendLog(m.log)
+      if (m.step) { wz.steps.push(m.step); appendLog(`${m.step.name}：${m.step.ok ? '完成' : m.step.error || '失败'}\n`) }
+      if (m.error) wz.error = m.error
     })
-  } catch (err) { deploying.error = err.message }
-  deploying.done = true
-  const fresh = await api.get('/api/web-entries')
-  setEntries(fresh)
+  } catch (err) { wz.error = err.message }
+  wz.running = false
+  entries.value = await api.get('/api/web-entries')
+}
+function backToEdit() {
+  resetRun()
+  wz.step = 1
+  runCheck()
 }
 </script>
 
 <style scoped>
 .entry-card { border: 1px solid var(--color-border-2); border-radius: 4px; padding: 16px 20px; }
+.entry-sum { margin-top: 12px; }
+.wz-loading { padding: 24px; text-align: center; color: var(--color-text-3); }
+.checks.one { grid-template-columns: 1fr; }
 .mode-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; width: 100%; }
 .mode-cards :deep(.arco-radio) { margin: 0; padding: 12px 14px; border: 1px solid var(--color-border-2); border-radius: 4px; align-items: flex-start; }
 .mode-cards :deep(.arco-radio-checked) { border-color: rgb(var(--primary-6)); background: rgb(var(--primary-1)); }
@@ -513,6 +698,7 @@ async function deploy(e, takeOver = false) {
 .checks .ok { color: rgb(var(--green-6)); }
 .checks .no { color: rgb(var(--red-6)); }
 .pem-read { margin-bottom: 8px; }
+.install-log { box-sizing: border-box; width: 100%; height: 280px; overflow: auto; margin: 12px 0 0; padding: 12px; background: #0d0d0d; color: #e5e5e5; border-radius: 4px; font: 12px/1.6 Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; overflow-anchor: none; }
 .deploy-steps { line-height: 2; }
 .deploy-steps .ok { color: rgb(var(--green-6)); }
 .deploy-steps .no { color: rgb(var(--red-6)); }

@@ -33,21 +33,25 @@
       </div>
     </a-form-item>
 
-    <a-form-item label="入口端口" required :extra="`访问地址：${f.hosts[0]?.sub && f.hosts[0]?.domainId ? url(f.hosts[0]) : 'http(s)://子域名.主域名'}`">
-      <a-radio-group v-model="f.port" class="entry-port" @change="onPortChange">
-        <a-radio v-for="p in entryPorts" :key="p" :value="p">
+    <a-form-item label="入口端口" required :extra="`访问地址：${f.hosts[0]?.sub && f.hosts[0]?.domainId ? f.ports.map(p => url(f.hosts[0], p)).join('、') : 'http(s)://子域名.主域名'}`">
+      <a-checkbox-group v-model="f.ports" class="entry-port" @change="onPortChange">
+        <a-checkbox v-for="p in entryPorts" :key="p" :value="p">
           <div class="pt">{{ portLabel(p) }}</div><span v-if="p === node?.default" class="def">默认</span>
           <div class="muted">{{ isHttps(p) ? '需要证书' : p === 80 ? '直接访问' : '需带端口访问' }}</div>
-        </a-radio>
-      </a-radio-group>
+        </a-checkbox>
+      </a-checkbox-group>
     </a-form-item>
-    <a-form-item v-if="isHttps(f.port)" label="证书" required :extra="certChoices.length ? '只列出覆盖所填域名的证书' : undefined">
+    <a-form-item v-if="hasHttps" label="证书" required :extra="certChoices.length ? '只列出覆盖所填域名的证书' : undefined">
       <a-select v-model="f.certId" placeholder="选择证书">
         <a-option v-for="c in certChoices" :key="c.id" :value="c.id" :label="`${c.name}（${c.domains.join('、')}）`">
           <div class="ip-opt"><span>{{ c.name }} <span class="muted">{{ c.domains.join('、') }}</span></span><span :style="{ color: expColor(c.days), fontSize: '12px' }">{{ c.days }} 天后到期</span></div>
         </a-option>
         <template #empty><div style="padding:12px;text-align:center" class="muted">没有覆盖所填域名的证书，请联系管理员添加，或改用 HTTP 入口</div></template>
       </a-select>
+    </a-form-item>
+
+    <a-form-item v-if="hasHttps && f.opts.forceHttps" label="HTTPS 跳转目标" :extra="redirectHint">
+      <a-select v-model="f.opts.forceHttpsPort" :options="redirectChoices" />
     </a-form-item>
 
     <a-form-item label="转发到" required :extra="isPublic ? '节点上的全部虚拟机' : '只能选择自己的虚拟机或公共虚拟机'">
@@ -72,7 +76,7 @@
           <a-checkbox v-model="f.opts.realIp">传递真实客户端 IP（X-Forwarded-For / X-Real-IP）</a-checkbox>
           <a-checkbox v-model="f.opts.block">拦截常见攻击（SQL 注入、路径穿越等）</a-checkbox>
           <a-checkbox v-model="f.opts.cache">缓存静态资源</a-checkbox>
-          <a-checkbox v-if="isHttps(f.port)" v-model="f.opts.forceHttps">HTTP 自动跳转 HTTPS</a-checkbox>
+          <a-checkbox v-if="hasHttps" v-model="f.opts.forceHttps">HTTP 自动跳转 HTTPS</a-checkbox>
         </a-space>
       </a-form-item>
       <a-form-item label="访问密码" :extra="auth && editingAuth ? '密码留空则沿用原密码' : '浏览器弹出登录框（HTTP Basic Auth）'">
@@ -109,7 +113,7 @@ const isPublic = computed(() => admin.value && f.userId === session.user?.id)
 const opts = reactive({ nodes: [], domains: [], certs: [], vms: [] })
 const adv = ref(false)
 const auth = ref(false)
-const f = reactive({ hosts: [], opts: {} })
+const f = reactive({ hosts: [], ports: [], opts: {} })
 
 const node = computed(() => opts.nodes.find(n => n.id === f.nodeId))
 const entryPorts = computed(() => (node.value ? [...node.value.http, ...node.value.https].sort((a, b) => a - b) : []))
@@ -118,7 +122,16 @@ const portLabel = p => (isHttps(p) ? 'HTTPS ' : 'HTTP ') + p
 const domainName = id => opts.domains.find(d => d.id === id)?.name || ''
 const norm = d => ({ sub: (d.sub || '').trim().toLowerCase(), domainId: d.domainId })
 const host = d => `${norm(d).sub}.${domainName(d.domainId)}`
-const url = d => `${isHttps(f.port) ? 'https' : 'http'}://${host(d)}${[80, 443].includes(f.port) ? '' : ':' + f.port}`
+const httpsPorts = computed(() => f.ports.filter(isHttps))
+const hasHttps = computed(() => httpsPorts.value.length > 0)
+const redirectChoices = computed(() => [{ label: '自动（优先 443，否则最小 HTTPS 端口）', value: 0 }, ...httpsPorts.value.map(p => ({ label: portLabel(p), value: p }))])
+const redirectHint = computed(() => {
+  if (f.ports.some(p => !isHttps(p))) return '所选 HTTP 入口将跳转到目标 HTTPS 入口'
+  const ports = [...(node.value?.http || [])].sort((a, b) => a - b)
+  const p = ports.includes(80) ? 80 : ports[0]
+  return p ? `自动使用 HTTP ${p} 接收跳转请求` : '节点没有 HTTP 入口，无法接收 HTTP 跳转请求'
+})
+const url = (d, p) => `${isHttps(p) ? 'https' : 'http'}://${host(d)}${p === (isHttps(p) ? 443 : 80) ? '' : ':' + p}`
 const editingAuth = computed(() => !!props.site?.auth && props.site.opts?.authUser === f.opts.authUser)
 
 // 证书：覆盖全部所填域名
@@ -126,9 +139,15 @@ const certChoices = computed(() => {
   const hosts = f.hosts.filter(d => d.domainId).map(d => `${norm(d).sub || 'x'}.${domainName(d.domainId)}`)
   return hosts.length ? opts.certs.filter(c => hosts.every(h => certCovers(c.domains, h))) : []
 })
-watch(certChoices, cs => { if (isHttps(f.port) && !cs.some(c => c.id === f.certId)) f.certId = cs[0]?.id })
-function onPortChange(p) {
-  if (isHttps(p)) { f.certId = certChoices.value[0]?.id; if (!props.site) f.opts.forceHttps = true } else f.certId = undefined
+watch(certChoices, cs => { if (hasHttps.value && !cs.some(c => c.id === f.certId)) f.certId = cs[0]?.id })
+function onPortChange() {
+  if (hasHttps.value) {
+    if (!certChoices.value.some(c => c.id === f.certId)) f.certId = certChoices.value[0]?.id
+  } else { f.certId = undefined; f.opts.forceHttpsPort = 0 }
+  if (f.opts.forceHttpsPort && !httpsPorts.value.includes(f.opts.forceHttpsPort)) {
+    f.opts.forceHttpsPort = 0
+    Message.info('跳转目标已移除，已改为自动选择')
+  }
 }
 
 async function loadOpts(withNode = true) {
@@ -149,10 +168,10 @@ watch(() => props.active, async v => {
   const o = s?.opts || {}
   Object.assign(f, {
     userId: s ? s.userId : admin.value ? props.userId || users.value[0]?.id : session.user.id,
-    nodeId: s?.nodeId, port: s?.port, scheme: s?.scheme || 'http', vmId: s?.vmId, targetPort: s?.targetPort ?? 80,
+    nodeId: s?.nodeId, ports: s ? [...(s.ports || [s.port])] : [], scheme: s?.scheme || 'http', vmId: s?.vmId, targetPort: s?.targetPort ?? 80,
     certId: s?.certId ?? undefined, remark: s?.remark || '',
     hosts: s ? s.hosts.map(h => ({ sub: h.sub, domainId: h.domainId })) : [{ sub: '', domainId: undefined }],
-    opts: { ws: o.ws ?? true, realIp: o.realIp ?? true, block: o.block ?? true, cache: o.cache ?? false, forceHttps: o.forceHttps ?? true,
+    opts: { ws: o.ws ?? true, realIp: o.realIp ?? true, block: o.block ?? true, cache: o.cache ?? false, forceHttps: o.forceHttps ?? true, forceHttpsPort: o.forceHttpsPort || 0,
       authUser: o.authUser || '', authPassword: '', bodyMax: o.bodyMax || 100, timeout: o.timeout || 60, headers: o.headers || '', custom: o.custom || '' },
   })
   auth.value = !!o.authUser
@@ -160,9 +179,9 @@ watch(() => props.active, async v => {
   if (!f.nodeId) f.nodeId = (opts.nodes.find(n => n.status === 'online') || opts.nodes[0])?.id
   if (f.nodeId) await loadOpts()
   if (!s) {
-    f.port = node.value?.default
+    f.ports = node.value?.default ? [node.value.default] : []
     f.hosts[0].domainId = opts.domains[0]?.id
-    onPortChange(f.port)
+    onPortChange()
   }
   recheck(true)
 }, { immediate: true })
@@ -172,14 +191,17 @@ async function onUserChange() {
   await loadOpts(false)
   f.nodeId = (opts.nodes.find(n => n.status === 'online') || opts.nodes[0])?.id
   if (f.nodeId) await loadOpts()
-  f.port = node.value?.default
+  f.ports = node.value?.default ? [node.value.default] : []
+  onPortChange()
   for (const h of f.hosts) if (!opts.domains.some(d => d.id === h.domainId)) h.domainId = opts.domains[0]?.id
   recheck(true)
 }
 async function onNodeChange() {
   f.vmId = undefined
   await loadOpts()
-  if (!entryPorts.value.includes(f.port)) { f.port = node.value?.default; onPortChange(f.port) }
+  f.ports = f.ports.filter(p => entryPorts.value.includes(p))
+  if (!f.ports.length) f.ports = node.value?.default ? [node.value.default] : []
+  onPortChange()
 }
 
 // ---------------- 域名检查：输入后查询解析，已被使用则不能保存 ----------------
@@ -215,15 +237,15 @@ function recheck(all) {
 }
 watch(() => f.hosts.map(d => `${d.sub}|${d.domainId}`).join(','), () => recheck())
 
-const canSave = computed(() => !!f.nodeId && !!f.port && !!f.remark?.trim() && f.hosts.length > 0 && f.hosts.every(d => norm(d).sub && d.domainId && d.st === 'ok') &&
-  (!isHttps(f.port) || !!f.certId))
+const canSave = computed(() => !!f.nodeId && f.ports.length > 0 && f.ports.every(p => entryPorts.value.includes(p)) && !!f.remark?.trim() && f.hosts.length > 0 && f.hosts.every(d => norm(d).sub && d.domainId && d.st === 'ok') &&
+  (!hasHttps.value || !!f.certId))
 
 async function save() {
   if (!f.vmId || !f.targetPort) { Message.warning('请选择目标虚拟机并填写端口'); return false }
   if (auth.value && !f.opts.authUser) { Message.warning('请填写访问密码的用户名'); return false }
   const body = {
-    userId: f.userId, nodeId: f.nodeId, port: f.port, scheme: f.scheme, vmId: f.vmId, targetPort: f.targetPort,
-    certId: isHttps(f.port) ? f.certId : null, remark: f.remark, hosts: f.hosts.map(norm),
+    userId: f.userId, nodeId: f.nodeId, ports: [...f.ports].sort((a, b) => a - b), scheme: f.scheme, vmId: f.vmId, targetPort: f.targetPort,
+    certId: hasHttps.value ? f.certId : null, remark: f.remark, hosts: f.hosts.map(norm),
     opts: { ...f.opts, authUser: auth.value ? f.opts.authUser.trim() : '', authPassword: auth.value ? f.opts.authPassword : '' },
   }
   const r = props.site?.id ? await api.put(`/api/sites/${props.site.id}`, body) : await api.post('/api/sites', body)
@@ -244,8 +266,8 @@ defineExpose({ canSave, save })
 .domain-st.bad { color: rgb(var(--red-6)); }
 .domain-st.wait { color: var(--color-text-3); }
 .entry-port { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; width: 100%; }
-.entry-port :deep(.arco-radio) { position: relative; overflow: hidden; margin: 0; padding: 8px 10px; min-width: 0; border: 1px solid var(--color-border-2); border-radius: 4px; }
-.entry-port :deep(.arco-radio-checked) { border-color: rgb(var(--primary-6)); background: rgb(var(--primary-1)); }
+.entry-port :deep(.arco-checkbox) { position: relative; overflow: hidden; margin: 0; padding: 8px 10px; min-width: 0; border: 1px solid var(--color-border-2); border-radius: 4px; }
+.entry-port :deep(.arco-checkbox-checked) { border-color: rgb(var(--primary-6)); background: rgb(var(--primary-1)); }
 .entry-port .pt { font-weight: 500; white-space: nowrap; }
 .entry-port .muted { white-space: nowrap; }
 .entry-port .def { position: absolute; top: 0; right: 0; padding: 0 6px; font-size: 12px; line-height: 18px; color: rgb(var(--primary-6)); background: rgb(var(--primary-2)); border-bottom-left-radius: 4px; }

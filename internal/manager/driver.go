@@ -177,7 +177,15 @@ func (d *agentDriver) RRD(ctx context.Context, req proto.RRDReq) ([]proto.RRDPoi
 }
 func (d *agentDriver) Web(ctx context.Context, req *proto.WebReq) (*proto.WebResult, error) {
 	var r proto.WebResult
-	return &r, d.c.Call(ctx, "web", req, &r, nil)
+	var progress func(proto.Step)
+	if log := nodeops.OutputLog(ctx); log != nil {
+		progress = func(s proto.Step) {
+			if s.Log != "" {
+				log(s.Log)
+			}
+		}
+	}
+	return &r, d.c.Call(ctx, "web", req, &r, progress)
 }
 func (d *agentDriver) Cleanup(ctx context.Context) error {
 	return d.c.Call(ctx, "cleanup", nil, nil, nil)
@@ -252,6 +260,9 @@ func handleAgentCall(ctx context.Context, m proto.RPCMessage, ex nodeops.Executo
 		var req proto.WebReq
 		if err := json.Unmarshal(m.Params, &req); err != nil {
 			return nil, err
+		}
+		if req.Op == "install" && progress != nil {
+			ctx = nodeops.WithOutputLog(ctx, func(log string) { progress(proto.Step{Log: log}) })
 		}
 		return nodeops.Web(ctx, ex, &req)
 	case "rrd":

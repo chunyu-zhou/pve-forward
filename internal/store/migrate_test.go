@@ -4,6 +4,58 @@ import (
 	"testing"
 )
 
+func TestSitePortsMigration(t *testing.T) {
+	dir := t.TempDir()
+	d, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Recreate the old column layout while keeping all unrelated schema intact.
+	if _, err := d.Exec(`PRAGMA foreign_keys=OFF; ALTER TABLE sites DROP COLUMN ports_json;
+	INSERT INTO sites(id,user_id,node_id,port,vm_id,target_port,created_at) VALUES(1,1,1,443,1,80,1)`); err != nil {
+		t.Fatal(err)
+	}
+	d.Close()
+	for i := 0; i < 2; i++ {
+		d, err = Open(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		s, err := d.Site(1)
+		if err != nil || len(s.Ports) != 1 || s.Ports[0] != 443 {
+			t.Fatalf("migration: %+v %v", s, err)
+		}
+		d.Close()
+	}
+	d, err = Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	if _, err := d.Exec(`PRAGMA foreign_keys=OFF`); err != nil {
+		t.Fatal(err)
+	}
+	s, _ := d.Site(1)
+	s.Ports = []int{8443, 80, 443, 80}
+	if _, err := d.SaveSite(s); err != nil {
+		t.Fatal(err)
+	}
+	s, err = d.Site(1)
+	if err != nil || len(s.Ports) != 3 || s.Ports[0] != 80 || s.Ports[2] != 8443 {
+		t.Fatalf("round trip: %+v %v", s, err)
+	}
+	s.Ports = []int{}
+	if _, err := d.SaveSite(s); err == nil {
+		t.Fatal("empty ports accepted")
+	}
+	if _, err := d.Exec(`UPDATE sites SET ports_json='broken' WHERE id=1`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Site(1); err == nil {
+		t.Fatal("invalid persisted ports ignored")
+	}
+}
+
 // 旧版本的节点没有端口策略：升级后可分配范围为 1-65535，保留端口沿用旧的列表。
 func TestMigrateNodePorts(t *testing.T) {
 	dir := t.TempDir()

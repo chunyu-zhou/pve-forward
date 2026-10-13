@@ -163,14 +163,22 @@ func (f *fakeNode) webRun(script string) ([]byte, bool, error) {
 	}
 	const version = "##version\nnginx version: openresty/1.27.1.2\n"
 	switch {
-	case strings.Contains(script, "##managed"):
+	case strings.Contains(script, "##containers"):
 		f.webOps = append(f.webOps, "check "+loc)
-		return []byte("##uid\n0\n##os\nDebian GNU/Linux 12 (bookworm)|debian|\n##arch\nx86_64\n##apt\nyes\n##systemd\nyes\n##openresty\n##managed\n##listen\n0.0.0.0:22 users:((\"sshd\",pid=1,fd=3))\n##repo\n200"), true, nil
+		installed := ""
+		if rt := f.webRuntime[loc]; rt != "" {
+			installed = "nginx version: openresty/1.27.1.2\n##runtime\n" + rt + "\n##bin\n/usr/local/openresty/bin/openresty\n"
+		}
+		return []byte("##uid\n0\n##os\nDebian GNU/Linux 12 (bookworm)|debian|\n##arch\nx86_64\n##apt\nyes\n##systemd\nyes\n##openresty\n" + installed + "##containers\n##listen\n0.0.0.0:22 users:((\"sshd\",pid=1,fd=3)) other\n"), true, nil
 	case strings.Contains(script, "base64 -d") && strings.Contains(script, "stat -c %s /tmp/pve-forward-openresty.tgz"):
 		f.webOps = append(f.webOps, "upload "+loc)
 		return nil, true, nil
 	case strings.Contains(script, "NEW=binary") || strings.Contains(script, "NEW=docker"):
 		f.webOps = append(f.webOps, "install "+loc)
+		if f.webRuntime == nil {
+			f.webRuntime = map[string]string{}
+		}
+		f.webRuntime[loc] = map[bool]string{true: "binary", false: "docker"}[strings.Contains(script, "NEW=binary")]
 		return []byte(version), true, nil
 	case strings.Contains(script, `if ! or_test "$D/nginx.conf"`):
 		if f.webFail != "" {
@@ -189,6 +197,7 @@ func (f *fakeNode) webRun(script string) ([]byte, bool, error) {
 		return []byte(version), true, nil
 	case strings.Contains(script, "openresty-installed") && strings.Contains(script, "pvef-orig"):
 		delete(f.web, loc)
+		delete(f.webRuntime, loc)
 		f.webOps = append(f.webOps, "remove "+loc)
 		return nil, true, nil
 	}
@@ -440,7 +449,7 @@ func testWebForward(t *testing.T, srv *Server, mgr *manager.Manager, admin, alic
 			t.Fatal("接管后应删除 80 端口的规则")
 		}
 	}
-	if !strings.Contains(stream, `"done":true`) || strings.Contains(stream, `"error"`) || !strings.Contains(stream, "安装 OpenResty") {
+	if !strings.Contains(stream, `"done":true`) || strings.Contains(stream, `"error"`) || !strings.Contains(stream, "准备 OpenResty") {
 		t.Fatalf("部署 %s", stream)
 	}
 	if ops := fake.ops(); ops != "check host; check host; upload host; install host; apply host" {
@@ -449,8 +458,8 @@ func testWebForward(t *testing.T, srv *Server, mgr *manager.Manager, admin, alic
 	if conf := fake.webConf("host", "nginx.conf"); !strings.Contains(conf, "listen 8080 default_server;") || !strings.Contains(conf, "listen 127.0.0.1:61080;") {
 		t.Fatalf("主配置 %s", conf)
 	}
-	// 部署枚举、镜像和加速配置必须由后端校验。
-	for key, value := range map[string]string{"deploy": "bogus", "image": "x:y;id", "downloadMirror": "http://untrusted/"} {
+	// 部署枚举、镜像、加速与 Docker 软件源必须由后端校验（只能从列表中选择）。
+	for key, value := range map[string]string{"deploy": "bogus", "image": "x:y;id", "downloadMirror": "http://untrusted/", "dockerSource": "evil.example.com/docker-ce", "registry": "evil.example.com"} {
 		old := webCfg[key]
 		webCfg[key] = value
 		admin.do("POST", fmt.Sprintf("/api/nodes/%d/web/check", nid), webCfg, 400, nil)
@@ -460,9 +469,21 @@ func testWebForward(t *testing.T, srv *Server, mgr *manager.Manager, admin, alic
 			webCfg[key] = old
 		}
 	}
-	// 切换 Docker：带显式镜像，不下载/上传二进制包。
+	// 已安装 OpenResty 时改选 Docker 不重新安装：直接使用已有的
 	webCfg["deploy"], webCfg["image"] = "docker", "registry.example.com:5000/openresty:test"
 	beforeDocker := fake.ops()
+	stream = admin.do("POST", fmt.Sprintf("/api/nodes/%d/web", nid), webCfg, 200, nil)
+	if !strings.Contains(stream, `"done":true`) || strings.Contains(stream, `"error"`) || !strings.Contains(stream, "直接使用") {
+		t.Fatalf("已安装时部署 %s", stream)
+	}
+	if added := strings.TrimPrefix(fake.ops(), beforeDocker); added != "; check host; apply host" {
+		t.Fatalf("已安装时不应重新安装 %s", added)
+	}
+	// 未安装时按 Docker 安装：带显式镜像，不下载/上传二进制包。
+	fake.mu.Lock()
+	delete(fake.webRuntime, "host")
+	fake.mu.Unlock()
+	beforeDocker = fake.ops()
 	stream = admin.do("POST", fmt.Sprintf("/api/nodes/%d/web", nid), webCfg, 200, nil)
 	if !strings.Contains(stream, `"done":true`) || strings.Contains(stream, `"error"`) {
 		t.Fatalf("Docker 部署 %s", stream)
@@ -549,6 +570,43 @@ func testWebForward(t *testing.T, srv *Server, mgr *manager.Manager, admin, alic
 	if fake.webConf("host", fmt.Sprintf("certs/%d.key", cert.ID)) == "" || fake.webConf("host", fmt.Sprintf("htpasswd/%d", sid)) == "" {
 		t.Fatal("证书私钥与访问密码文件应下发")
 	}
+	// 同站点多个入口：空集合/非法端口拒绝，混合协议共用证书和域名。
+	siteURL := fmt.Sprintf("/api/sites/%d", sid)
+	site["ports"] = []int{}
+	alice.do("PUT", siteURL, site, 400, nil)
+	site["ports"] = []int{80, 9999}
+	alice.do("PUT", siteURL, site, 400, nil)
+	site["ports"] = []int{8080, 443, 80, 443}
+	siteOpts := site["opts"].(map[string]any)
+	siteOpts["forceHttps"], siteOpts["forceHttpsPort"] = true, 8080
+	alice.do("PUT", siteURL, site, 400, nil)
+	siteOpts["forceHttpsPort"] = 443
+	alice.do("PUT", siteURL, site, 200, nil)
+	stored, err := srv.db.Site(sid)
+	if err != nil || len(stored.Ports) != 3 || stored.Ports[0] != 80 {
+		t.Fatalf("multi ports: %+v %v", stored, err)
+	}
+	var multiRows []siteOut
+	alice.do("GET", "/api/sites", nil, 200, &multiRows)
+	if len(multiRows) != 1 || len(multiRows[0].Entries) != 3 || !multiRows[0].HasHTTPS {
+		t.Fatalf("multi rows: %+v", multiRows)
+	}
+	if err := mgr.RunOnce(ctx, nid); err != nil {
+		t.Fatal(err)
+	}
+	multiConf := fake.webConf("host", fmt.Sprintf("sites/%d.conf", sid))
+	for _, want := range []string{"listen 80;", "listen 8080;", "listen 443 ssl;", "return 301 https://$host$request_uri;"} {
+		if !strings.Contains(multiConf, want) {
+			t.Fatalf("missing %s: %s", want, multiConf)
+		}
+	}
+	delete(site, "ports")
+	alice.do("PUT", siteURL, site, 400, nil) // old client must not discard extra ports
+	site["ports"] = []int{443}
+	siteOpts["forceHttps"], siteOpts["forceHttpsPort"] = false, 0
+	alice.do("PUT", siteURL, site, 200, nil)
+	delete(site, "ports")
+
 	// bob 看不到、改不了 alice 的站点
 	var bobSites []siteOut
 	bob.do("GET", "/api/sites", nil, 200, &bobSites)
@@ -622,11 +680,18 @@ func testWebForward(t *testing.T, srv *Server, mgr *manager.Manager, admin, alic
 		t.Fatalf("缺少 SSH 密码 %s", body)
 	}
 	vmCfg["sshSecret"] = "vm-pass"
+	// 虚拟机内已自行安装 OpenResty（如 apt），直接使用
+	fake.mu.Lock()
+	if fake.webRuntime == nil {
+		fake.webRuntime = map[string]string{}
+	}
+	fake.webRuntime["vm:10.0.0.8"] = "system"
+	fake.mu.Unlock()
 	stream = admin.do("POST", fmt.Sprintf("/api/nodes/%d/web", nid), vmCfg, 200, nil)
-	if !strings.Contains(stream, `"done":true`) || strings.Contains(stream, `"error"`) || strings.Contains(stream, "安装 OpenResty") {
+	if !strings.Contains(stream, `"done":true`) || strings.Contains(stream, `"error"`) || strings.Contains(fake.ops(), "install vm") {
 		t.Fatalf("迁移到虚拟机 %s", stream)
 	}
-	if conf := fake.webConf("vm:10.0.0.8", "nginx.conf"); !strings.Contains(conf, "listen 10.0.0.8:61080;") || !strings.Contains(conf, "allow 10.0.0.1;") {
+	if conf := fake.webConf("vm:10.0.0.8", "nginx.conf"); !strings.Contains(conf, "listen 0.0.0.0:61080;") || !strings.Contains(conf, "allow 10.0.0.1;") || !strings.Contains(conf, "deny all;") {
 		t.Fatalf("虚拟机主配置 %s", conf)
 	}
 	if fake.webConf("host", "nginx.conf") != "" || !strings.Contains(fake.ops(), "remove host") {

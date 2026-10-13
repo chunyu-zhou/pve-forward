@@ -23,15 +23,16 @@ const (
 
 // Site 为一个要生成配置的站点（已通过校验）。
 type Site struct {
-	ID         int64
-	Hosts      []string
-	Port       int
-	HTTPS      bool
-	Scheme     string // http | https（转发到目标的协议）
-	Target     string // 目标虚拟机内网 IPv4
-	TargetPort int
-	CertID     int64
-	Opts       store.SiteOpts
+	ID                    int64
+	Hosts                 []string
+	Port                  int
+	HTTPPorts, HTTPSPorts []int
+	HTTPS                 bool
+	Scheme                string // http | https（转发到目标的协议）
+	Target                string // 目标虚拟机内网 IPv4
+	TargetPort            int
+	CertID                int64
+	Opts                  store.SiteOpts
 }
 
 // Cert 为证书与私钥（PEM）。
@@ -135,7 +136,7 @@ http {
 	}
 	for _, s := range sites {
 		files[fmt.Sprintf("sites/%d.conf", s.ID)] = renderSite(s, h2Directive, redirectPort)
-		if s.HTTPS {
+		if s.HTTPS || len(s.HTTPSPorts) > 0 {
 			usedCerts[s.CertID] = true
 		}
 		if s.Opts.AuthUser != "" && s.Opts.AuthHash != "" {
@@ -190,25 +191,68 @@ func h2On(version string) bool {
 const attackRe = `(\.\./|\.\.%2f|%2e%2e|%00|<script|%3cscript|\bunion(%[0-9a-f]{2}|[^a-z0-9%])+(all(%[0-9a-f]{2}|[^a-z0-9%])+)?select\b|information_schema|(sleep|benchmark)(\(|%28)|/etc/passwd|/\.git/|/\.env|/\.svn/)`
 
 func renderSite(s Site, h2Directive bool, redirectPort int) string {
+	httpPorts, httpsPorts := sortedPorts(s.HTTPPorts), sortedPorts(s.HTTPSPorts)
+	if len(httpPorts) == 0 && len(httpsPorts) == 0 && s.Port > 0 {
+		if s.HTTPS {
+			httpsPorts = []int{s.Port}
+		} else {
+			httpPorts = []int{s.Port}
+		}
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "# 站点 %d\n", s.ID)
+	if len(httpsPorts) > 0 && s.Opts.ForceHTTPS {
+		targetPort := s.Opts.ForceHTTPSPort
+		if targetPort == 0 {
+			targetPort = httpsPorts[0]
+			for _, p := range httpsPorts {
+				if p == 443 {
+					targetPort = p
+				}
+			}
+		}
+		target := "https://$host"
+		if targetPort != 443 {
+			target += ":" + strconv.Itoa(targetPort)
+		}
+		if len(httpPorts) == 0 && redirectPort > 0 {
+			httpPorts = []int{redirectPort}
+		}
+		if len(httpPorts) > 0 {
+			b.WriteString("server {\n")
+			for _, p := range httpPorts {
+				fmt.Fprintf(&b, "    listen %d;\n", p)
+			}
+			fmt.Fprintf(&b, "    server_name %s;\n    set $pvef_site %d;\n    return 301 %s$request_uri;\n}\n", strings.Join(s.Hosts, " "), s.ID, target)
+		}
+	} else if len(httpPorts) > 0 {
+		s.HTTPS = false
+		b.WriteString(renderProxyServer(s, httpPorts, h2Directive))
+	}
+	if len(httpsPorts) > 0 {
+		s.HTTPS = true
+		b.WriteString(renderProxyServer(s, httpsPorts, h2Directive))
+	}
+	return b.String()
+}
+
+func renderProxyServer(s Site, ports []int, h2Directive bool) string {
 	var b strings.Builder
 	o := s.Opts
-	fmt.Fprintf(&b, "# 站点 %d\n", s.ID)
-	if s.HTTPS && o.ForceHTTPS && redirectPort > 0 {
-		target := "https://$host"
-		if s.Port != 443 {
-			target += ":" + strconv.Itoa(s.Port)
-		}
-		fmt.Fprintf(&b, "server {\n    listen %d;\n    server_name %s;\n    set $pvef_site %d;\n    return 301 %s$request_uri;\n}\n", redirectPort, strings.Join(s.Hosts, " "), s.ID, target)
-	}
 	b.WriteString("server {\n")
-	if s.HTTPS {
-		if h2Directive {
-			fmt.Fprintf(&b, "    listen %d ssl;\n    http2 on;\n", s.Port)
+	for _, p := range ports {
+		if s.HTTPS {
+			if h2Directive {
+				fmt.Fprintf(&b, "    listen %d ssl;\n", p)
+			} else {
+				fmt.Fprintf(&b, "    listen %d ssl http2;\n", p)
+			}
 		} else {
-			fmt.Fprintf(&b, "    listen %d ssl http2;\n", s.Port)
+			fmt.Fprintf(&b, "    listen %d;\n", p)
 		}
-	} else {
-		fmt.Fprintf(&b, "    listen %d;\n", s.Port)
+	}
+	if s.HTTPS && h2Directive {
+		b.WriteString("    http2 on;\n")
 	}
 	fmt.Fprintf(&b, "    server_name %s;\n", strings.Join(s.Hosts, " "))
 	fmt.Fprintf(&b, "    set $pvef_site %d;\n", s.ID)

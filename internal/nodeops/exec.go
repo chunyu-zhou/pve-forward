@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"sync"
+	"unicode/utf8"
 )
 
 // Executor 在节点上以 root 权限运行 bash 脚本。
@@ -20,9 +22,81 @@ type Executor interface {
 // LocalExecutor 在本机执行（Agent 使用）。
 type LocalExecutor struct{}
 
+type outputLogKey struct{}
+
+func WithOutputLog(ctx context.Context, log func(string)) context.Context {
+	return context.WithValue(ctx, outputLogKey{}, log)
+}
+
+func OutputLog(ctx context.Context) func(string) {
+	log, _ := ctx.Value(outputLogKey{}).(func(string))
+	return log
+}
+
+// CommandOutput bounds retained output while forwarding each chunk as it arrives.
+// The same instance accepts stdout and stderr, serializing callbacks.
+type CommandOutput struct {
+	mu      sync.Mutex
+	data    []byte
+	log     func(string)
+	pending []byte
+}
+
+func NewCommandOutput(log func(string)) *CommandOutput { return &CommandOutput{log: log} }
+
+func (w *CommandOutput) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	const limit = 256 << 10
+	if w.log != nil {
+		for rest := p; len(rest) > 0; {
+			n := min(len(rest), 4096-len(w.pending))
+			w.pending = append(w.pending, rest[:n]...)
+			rest = rest[n:]
+			end := 0
+			for end < len(w.pending) && utf8.FullRune(w.pending[end:]) {
+				_, size := utf8.DecodeRune(w.pending[end:])
+				end += size
+			}
+			if end > 0 {
+				w.log(strings.ToValidUTF8(string(w.pending[:end]), "�"))
+				w.pending = append(w.pending[:0], w.pending[end:]...)
+			}
+		}
+	}
+	if len(p) >= limit {
+		w.data = append(w.data[:0], p[len(p)-limit:]...)
+	} else {
+		if len(w.data)+len(p) > limit {
+			w.data = w.data[len(w.data)+len(p)-limit:]
+		}
+		w.data = append(w.data, p...)
+	}
+	return len(p), nil
+}
+
+func (w *CommandOutput) Bytes() []byte {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if len(w.pending) > 0 && w.log != nil {
+		w.log(strings.ToValidUTF8(string(w.pending), "�"))
+		w.pending = nil
+	}
+	return append([]byte(nil), w.data...)
+}
+
 func (LocalExecutor) Run(ctx context.Context, script string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "bash", "-s")
 	cmd.Stdin = strings.NewReader(script)
+	if log := OutputLog(ctx); log != nil {
+		out := NewCommandOutput(log)
+		cmd.Stdout, cmd.Stderr = out, out
+		err := cmd.Run()
+		if err != nil {
+			return out.Bytes(), &ExecError{Err: err, Stderr: string(out.Bytes())}
+		}
+		return out.Bytes(), nil
+	}
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	if err := cmd.Run(); err != nil {

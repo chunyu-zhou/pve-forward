@@ -61,6 +61,7 @@ type NetInit struct {
 }
 
 type Step struct {
+	Log   string `json:"log,omitempty"`
 	Name  string `json:"name"`
 	OK    bool   `json:"ok"`
 	Error string `json:"error,omitempty"`
@@ -119,13 +120,18 @@ type WebTarget struct {
 
 // WebReq 为对 OpenResty 的一次操作。
 type WebReq struct {
-	Op     string    `json:"op"` // check | upload | install | apply | remove | pubkey
+	Op     string    `json:"op"` // check | upload | install | free | restore | apply | remove | pubkey
 	Target WebTarget `json:"target"`
 	Ports  []int     `json:"ports,omitempty"`  // check：需要空闲的 Web 端口
-	Deploy string    `json:"deploy,omitempty"` // check / install：binary（二进制）| docker | manual（已自行安装）
-	// install：二进制包的 SHA256（包已通过 upload 上传）；Docker 镜像（可带国内镜像仓库前缀）
+	Deploy string    `json:"deploy,omitempty"` // check / install：binary（二进制）| docker | manual（使用已安装的）| adopt（使用已有容器的镜像）
+	// install：二进制包的 SHA256（包已通过 upload 上传）；Docker 镜像（可带国内镜像仓库前缀；adopt 时为镜像 ID）
 	SHA256 string `json:"sha256,omitempty"`
 	Image  string `json:"image,omitempty"`
+	// install（docker）：未安装 Docker 时使用的 Docker CE 软件源
+	DockerSource string `json:"dockerSource,omitempty"`
+	// check：将要停止的容器（其占用的端口视为空闲）；free：停止这些容器以空出 Web 端口（记录原状态，停用时恢复）；
+	// restore：恢复本次停止的容器
+	Stop []string `json:"stop,omitempty"`
 	// upload：二进制包的一段内容，Offset 为 0 时重新开始
 	Data   []byte `json:"data,omitempty"`
 	Offset int64  `json:"offset,omitempty"`
@@ -141,11 +147,44 @@ type WebCheck struct {
 }
 
 type WebResult struct {
-	Checks    []WebCheck `json:"checks,omitempty"`
-	Version   string     `json:"version,omitempty"`   // openresty -v
-	PublicKey string     `json:"publicKey,omitempty"` // pubkey：宿主机 Web 转发专用密钥的公钥
-	Arch      string     `json:"arch,omitempty"`      // check：uname -m
-	Runtime   string     `json:"runtime,omitempty"`   // check：当前的运行方式 binary | docker | system，未安装为空
+	Checks     []WebCheck     `json:"checks,omitempty"`
+	Version    string         `json:"version,omitempty"`    // openresty -v
+	PublicKey  string         `json:"publicKey,omitempty"`  // pubkey：宿主机 Web 转发专用密钥的公钥
+	Arch       string         `json:"arch,omitempty"`       // check：uname -m
+	Runtime    string         `json:"runtime,omitempty"`    // check：当前的运行方式 binary | docker | system，未安装为空
+	Existing   *WebExisting   `json:"existing,omitempty"`   // check：已安装的 OpenResty（部署时直接使用，不重新安装）
+	Containers []WebContainer `json:"containers,omitempty"` // check：检测到的 OpenResty 容器
+	Busy       []WebBusy      `json:"busy,omitempty"`       // check：被占用的 Web 端口
+	OS         string         `json:"os,omitempty"`         // check：系统名称
+	Docker     string         `json:"docker,omitempty"`     // check：已安装的 Docker 版本
+}
+
+// WebExisting 为检测到的已安装 OpenResty。
+type WebExisting struct {
+	Kind      string `json:"kind"` // binary | docker（本系统安装）| system（apt、官方包或源码编译）| container（其他容器的镜像）
+	Version   string `json:"version"`
+	Path      string `json:"path,omitempty"`      // binary / system：openresty 可执行文件；docker：镜像
+	Container string `json:"container,omitempty"` // container：容器名
+	Image     string `json:"image,omitempty"`     // container：镜像名称（展示用）
+	ImageID   string `json:"imageId,omitempty"`   // container：镜像 ID（部署时使用）
+}
+
+// WebContainer 为运行或安装了 OpenResty 的 Docker 容器。
+type WebContainer struct {
+	Name    string `json:"name"`
+	Image   string `json:"image"`
+	ImageID string `json:"imageId"`
+	Network string `json:"network"`
+	Running bool   `json:"running"`
+	Version string `json:"version,omitempty"` // 镜像中 openresty 命令的版本；为空表示镜像不能直接用于本系统
+	Ports   []int  `json:"ports,omitempty"`   // 发布到主机的端口
+}
+
+// WebBusy 为被占用的端口及占用者。
+type WebBusy struct {
+	Port      int    `json:"port"`
+	Process   string `json:"process"`
+	Container string `json:"container,omitempty"` // 占用端口的 Docker 容器（可选择停止）
 }
 
 // WebCounter 为站点的累计请求数与流量（OpenResty 重启后清零）。

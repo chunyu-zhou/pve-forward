@@ -64,16 +64,16 @@
       </template>
       <template #node="{ record }"><a-tag size="small" :color="record.nodeStatus === 'online' ? 'arcoblue' : 'gray'">{{ record.nodeName }}</a-tag></template>
       <template #domains="{ record }"><div class="lines">
-        <div v-for="h in record.hosts" :key="h.host"><a :href="url(record, h)" target="_blank" rel="noopener" class="site-link">{{ url(record, h) }}</a>
+        <div v-for="h in record.hosts" :key="h.host"><div v-for="e in entries(record)" :key="entryKey(e)"><a :href="url(e, h)" target="_blank" rel="noopener" class="site-link">{{ url(e, h) }}</a></div>
           <a-tooltip v-if="h.dnsError" :content="'自动解析失败：' + h.dnsError"><icon-exclamation-circle style="color:rgb(var(--orange-6));margin-left:4px" /></a-tooltip></div>
         <div v-if="record.remark" class="muted">{{ record.remark }}</div></div></template>
-      <template #entry="{ record }"><a-tag size="small" :color="record.https ? 'green' : 'arcoblue'">{{ record.https ? 'HTTPS' : 'HTTP' }} {{ record.port }}</a-tag></template>
+      <template #entry="{ record }"><a-space wrap :size="4"><a-tag v-for="e in entries(record)" :key="entryKey(e)" size="small" :color="e.https ? 'green' : 'arcoblue'">{{ e.https ? 'HTTPS' : 'HTTP' }} {{ e.port }}</a-tag></a-space></template>
       <template #target="{ record }"><div class="lines">
         <div class="mono">{{ record.scheme }}://{{ record.target4 || '-' }}:{{ record.targetPort }}</div>
         <a-space :size="4"><span class="muted"><span class="mono">{{ record.vmVmid }}</span> {{ record.vmName }}</span><a-tag v-if="record.vmShared" size="small" color="arcoblue">公共</a-tag></a-space>
       </div></template>
       <template #cert="{ record }">
-        <span v-if="!record.https" class="muted">无（HTTP）</span>
+        <span v-if="!entries(record).some(e => e.https)" class="muted">无（HTTP）</span>
         <div v-else class="lines"><div><icon-safe style="color:rgb(var(--green-6))" /> {{ record.certName || '-' }}</div>
           <div class="muted" :style="{ color: expColor(record.certDays) }">{{ record.certDays < 0 ? '已过期' : `${record.certDays} 天后到期` }}</div></div>
       </template>
@@ -126,16 +126,18 @@ onUnmounted(() => clearInterval(timer))
 defineExpose({ load })
 
 function reset() { for (const k of Object.keys(q)) delete q[k] }
-const url = (s, h) => `${s.https ? 'https' : 'http'}://${h.host}${[80, 443].includes(s.port) ? '' : ':' + s.port}`
+const entries = s => s.entries || (s.port ? [{ port: s.port, https: s.https }] : [])
+const entryKey = e => `${e.https ? 'https' : 'http'}:${e.port}`
+const url = (e, h) => `${e.https ? 'https' : 'http'}://${h.host}${e.port === (e.https ? 443 : 80) ? '' : ':' + e.port}`
 const firstHost = s => s.hosts[0]?.host || `站点 ${s.id}`
 const state = s => (!s.enabled ? 'off' : s.error ? 'err' : 'on')
 const filtered = computed(() => sites.value.filter(s =>
-  (!q.node || s.nodeId === q.node) && (!q.owner || s.owner === q.owner) && (!q.port || s.port === q.port) && (!q.status || state(s) === q.status) &&
+  (!q.node || s.nodeId === q.node) && (!q.owner || s.owner === q.owner) && (!q.port || entries(s).some(e => entryKey(e) === q.port)) && (!q.status || state(s) === q.status) &&
   (!q.kw || [s.hosts.map(h => h.host).join(' '), s.remark, s.target4, s.vmName, s.vmVmid].join(' ').toLowerCase().includes(q.kw.toLowerCase()))))
 const errSites = computed(() => sites.value.filter(s => s.enabled && s.error))
 const nodeOptions = computed(() => [...new Map(sites.value.map(s => [s.nodeId, { label: s.nodeName, value: s.nodeId }])).values()])
 const ownerOptions = computed(() => (admin.value ? [{ label: '公共', value: '公共' }, ...users.value.filter(u => u.role !== 'admin').map(u => ({ label: u.username, value: u.username }))] : []))
-const portOptions = computed(() => [...new Map(sites.value.map(s => [s.port, { label: `${s.https ? 'HTTPS' : 'HTTP'} ${s.port}`, value: s.port }])).values()].sort((a, b) => a.value - b.value))
+const portOptions = computed(() => [...new Map(sites.value.flatMap(s => entries(s)).map(e => [entryKey(e), { label: `${e.https ? 'HTTPS' : 'HTTP'} ${e.port}`, value: entryKey(e), port: e.port }])).values()].sort((a, b) => a.port - b.port))
 
 const tableRows = computed(() => {
   const list = filtered.value.map(s => Object.assign(s, { key: 's' + s.id }))

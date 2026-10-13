@@ -105,7 +105,7 @@ func (m *Manager) RenderWeb(n *store.Node, w store.NodeWeb, st store.WebState) (
 		if err != nil {
 			return nil, nil, errors.New("节点内网网关地址无效")
 		}
-		cfg.StatusListen, cfg.StatusAllow = v.IPv4, gw.Addr().String()
+		cfg.StatusListen, cfg.StatusAllow = "0.0.0.0", gw.Addr().String()
 	}
 	vms := map[int64]*store.VM{}
 	if list, err := m.db.VMs(n.ID); err == nil {
@@ -141,7 +141,19 @@ func (m *Manager) RenderWeb(n *store.Node, w store.NodeWeb, st store.WebState) (
 			continue
 		}
 		u, v := users[s.UserID], vms[s.VMID]
-		https := w.IsHTTPS(s.Port)
+		var httpPorts, httpsPorts []int
+		invalidPort := 0
+		for _, p := range s.EntryPorts() {
+			if !w.HasPort(p) {
+				invalidPort = p
+			}
+			if w.IsHTTPS(p) {
+				httpsPorts = append(httpsPorts, p)
+			} else {
+				httpPorts = append(httpPorts, p)
+			}
+		}
+		https := len(httpsPorts) > 0
 		var cert *store.Cert
 		if s.CertID != nil {
 			cert = certs[*s.CertID]
@@ -162,8 +174,8 @@ func (m *Manager) RenderWeb(n *store.Node, w store.NodeWeb, st store.WebState) (
 			reason = "目标虚拟机已不属于该用户"
 		case v.IPv4 == "":
 			reason = "目标虚拟机没有 IPv4 地址"
-		case !w.HasPort(s.Port):
-			reason = fmt.Sprintf("入口端口 %d 已停用", s.Port)
+		case invalidPort != 0:
+			reason = fmt.Sprintf("入口端口 %d 已停用", invalidPort)
 		case len(hosts) == 0:
 			reason = "没有域名"
 		case https && cert == nil:
@@ -187,7 +199,7 @@ func (m *Manager) RenderWeb(n *store.Node, w store.NodeWeb, st store.WebState) (
 		if reason != "" {
 			continue
 		}
-		site := webcfg.Site{ID: s.ID, Hosts: hosts, Port: s.Port, HTTPS: https, Scheme: s.Scheme, Target: v.IPv4, TargetPort: s.TargetPort, Opts: s.Opts}
+		site := webcfg.Site{ID: s.ID, Hosts: hosts, HTTPPorts: httpPorts, HTTPSPorts: httpsPorts, HTTPS: https, Scheme: s.Scheme, Target: v.IPv4, TargetPort: s.TargetPort, Opts: s.Opts}
 		if https {
 			site.CertID = cert.ID
 			cfg.Certs[cert.ID] = webcfg.Cert{Cert: cert.CertPEM, Key: key}
