@@ -643,6 +643,7 @@ type webIn struct {
 	SSHAuth   string `json:"sshAuth"`
 	SSHSecret string `json:"sshSecret"` // 留空沿用已保存的
 	CredID    int64  `json:"credId"`
+	TakeOver  bool   `json:"takeOver"` // 部署时接管（删除）Web 端口上的端口转发规则
 	HTTP      []int  `json:"http"`
 	HTTPS     []int  `json:"https"`
 	Default   int    `json:"default"`
@@ -862,7 +863,9 @@ func (s *Server) postWeb(w http.ResponseWriter, r *http.Request) {
 	}
 	cfg, err := s.buildWeb(n, in)
 	if err == nil && cfg.Enabled {
-		err = blockingConflicts(s.webConflicts(n, cfg))
+		if !in.TakeOver {
+			err = blockingConflicts(s.webConflicts(n, cfg))
+		}
 	}
 	if err != nil {
 		fail(w, err)
@@ -929,7 +932,7 @@ func (s *Server) postWeb(w http.ResponseWriter, r *http.Request) {
 	if cfg.Enabled {
 		var taken []string
 		for _, c := range s.webConflicts(n, cfg) {
-			if c.Auto {
+			if c.Auto || in.TakeOver {
 				s.db.Exec(`DELETE FROM rules WHERE id=?`, c.RuleID)
 				taken = append(taken, fmt.Sprintf("%d「%s」", c.Port, c.Remark))
 			}

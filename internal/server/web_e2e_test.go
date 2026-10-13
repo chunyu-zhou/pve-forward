@@ -274,12 +274,19 @@ func testWebForward(t *testing.T, srv *Server, mgr *manager.Manager, admin, alic
 	}
 	var rules []ruleOut
 	admin.do("GET", "/api/rules", nil, 200, &rules)
+	// 确认接管：部署成功后删除 Web 端口上的端口转发规则
+	webCfg["takeOver"] = true
+	stream := admin.do("POST", fmt.Sprintf("/api/nodes/%d/web", nid), webCfg, 200, nil)
+	delete(webCfg, "takeOver")
+	if !strings.Contains(stream, "接管端口转发规则 80「waf」") {
+		t.Fatalf("接管 %s", stream)
+	}
+	admin.do("GET", "/api/rules", nil, 200, &rules)
 	for _, r := range rules {
 		if r.Port == 80 {
-			admin.do("DELETE", fmt.Sprintf("/api/rules/%d", r.ID), nil, 200, nil) // 由 Web 转发接管
+			t.Fatal("接管后应删除 80 端口的规则")
 		}
 	}
-	stream := admin.do("POST", fmt.Sprintf("/api/nodes/%d/web", nid), webCfg, 200, nil)
 	if !strings.Contains(stream, `"done":true`) || strings.Contains(stream, `"error"`) || !strings.Contains(stream, "安装 OpenResty") {
 		t.Fatalf("部署 %s", stream)
 	}

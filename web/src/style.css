@@ -40,6 +40,7 @@ body { font-family: Inter, -apple-system, BlinkMacSystemFont, "PingFang SC", "Mi
 /* 转发规则：端口转发 / Web 转发切换 */
 .form-tabs { margin: -8px 0 20px; }
 .cmd { word-break: break-all; white-space: pre-wrap; }
+.conflict-row { display: flex; justify-content: space-between; gap: 16px; line-height: 1.9; }
 .type-tabs { margin-bottom: 16px; }
 .grp { display: flex; align-items: center; gap: 10px; user-select: none; }
 .grp .nm { font-weight: 500; color: var(--color-text-1); }

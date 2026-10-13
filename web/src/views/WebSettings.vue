@@ -156,11 +156,12 @@
                 <a-alert v-if="autoConflicts(e).length" type="info" style="margin-bottom:8px">
                   宿主机端口 {{ autoConflicts(e).map(c => c.port).join('、') }} 的端口转发规则已指向该入口虚拟机的同一端口，部署时由 Web 转发自动接管（流量不中断）。
                 </a-alert>
-                <a-alert v-for="c in conflicts(e)" :key="c.id" type="warning" style="margin-bottom:8px" :title="`宿主机端口 ${c.port} 正被端口转发规则「${c.remark || c.port}」（${c.owner}）使用`">
-                  同一端口只能由一种方式使用：由 Web 转发接管（删除该端口转发规则），或从 Web 端口中移除 {{ c.port }}。
-                  <template #action><a-space>
-                    <a-popconfirm :content="`删除端口转发规则「${c.remark || c.port}」？删除后 ${c.port} 端口的流量将由 Web 转发处理`" type="warning" @ok="takeOver(c)"><a-button size="mini" type="primary">由 Web 转发接管</a-button></a-popconfirm>
-                    <a-button size="mini" @click="dropPort(e, c.port)">移除此端口</a-button></a-space></template>
+                <a-alert v-if="conflicts(e).length" type="warning" style="margin-bottom:8px" title="以下宿主机端口正被端口转发规则使用，部署时将由 Web 转发接管（删除这些规则）">
+                  <div v-for="c in conflicts(e)" :key="c.id" class="conflict-row">
+                    <span>端口 <b class="mono">{{ c.port }}</b>「{{ c.remark || c.port }}」（{{ c.owner }}）→ <span class="mono">{{ vmLabel(e, c.vmId) || '虚拟机' }}:{{ c.targetPort }}</span></span>
+                    <a-link @click="dropPort(e, c.port)">不使用此端口</a-link>
+                  </div>
+                  <div class="muted" style="margin-top:4px">接管后，这些端口的访问将按域名转发；如果仍要保留原来的端口转发，请点「不使用此端口」把它从 Web 端口中移除。</div>
                 </a-alert>
                 <div v-if="checks[e.node.id]" class="checks">
                   <div v-for="c in checks[e.node.id]" :key="c.name" :class="c.ok ? 'ok' : 'no'"><icon-check-circle-fill v-if="c.ok" /><icon-close-circle-fill v-else /> {{ c.name }}<span v-if="c.detail" class="muted" style="margin-left:6px">{{ c.detail }}</span></div>
@@ -171,7 +172,10 @@
                 <span class="muted">{{ forms[e.node.id].enabled ? 'Web 端口自动成为该节点的保留端口，不能再用于端口转发或分配给用户。' : e.state.location ? '保存后将停止该节点的 Web 转发（站点保留，重新启用后恢复）' : '' }}</span>
                 <a-space>
                   <a-button v-if="forms[e.node.id].enabled" :loading="checking === e.node.id" @click="check(e)"><template #icon><icon-check-circle /></template>检测环境</a-button>
-                  <a-button v-if="forms[e.node.id].enabled || e.state.location" type="primary" :disabled="!!conflicts(e).length" @click="deploy(e)">{{ forms[e.node.id].enabled ? '保存并部署' : '保存' }}</a-button>
+                  <a-popconfirm v-if="forms[e.node.id].enabled && conflicts(e).length" type="warning" @ok="deploy(e, true)"
+                    :content="`部署后将删除端口 ${conflicts(e).map(c => c.port).join('、')} 的端口转发规则，改由 Web 转发处理，确定继续？`">
+                    <a-button type="primary">保存并部署</a-button></a-popconfirm>
+                  <a-button v-else-if="forms[e.node.id].enabled || e.state.location" type="primary" @click="deploy(e)">{{ forms[e.node.id].enabled ? '保存并部署' : '保存' }}</a-button>
                 </a-space>
               </a-row>
             </div>
@@ -453,12 +457,6 @@ const autoTake = (e, r) => forms[e.node.id].mode === 'vm' && r.vmId === forms[e.
 const allConflicts = e => (forms[e.node.id]?.enabled ? e.rules.filter(r => allPorts(e).includes(r.port)) : [])
 const conflicts = e => allConflicts(e).filter(r => !autoTake(e, r))
 const autoConflicts = e => allConflicts(e).filter(r => autoTake(e, r))
-async function takeOver(c) {
-  await api.del(`/api/rules/${c.id}`)
-  Message.success(`已删除端口转发规则，${c.port} 端口将由 Web 转发处理`)
-  const fresh = await api.get('/api/web-entries')
-  for (const e of fresh) { const cur = entries.value.find(x => x.node.id === e.node.id); if (cur) cur.rules = e.rules }
-}
 function webBody(e) {
   const f = forms[e.node.id]
   return { enabled: f.enabled, mode: f.mode, vmId: f.vmId || 0, deploy: f.deploy, sshUser: f.sshUser, sshPort: f.sshPort, sshAuth: f.sshAuth, sshSecret: f.sshSecret, credId: f.credId || 0,
@@ -477,12 +475,12 @@ async function check(e) {
   } finally { checking.value = 0 }
 }
 const deploying = reactive({ visible: false, title: '', steps: [], done: false, error: '' })
-async function deploy(e) {
+async function deploy(e, takeOver = false) {
   const f = forms[e.node.id]
   if (f.enabled && f.mode === 'vm' && !f.vmId) { Message.warning('请选择入口虚拟机'); return }
   Object.assign(deploying, { visible: true, title: `${f.enabled ? '部署' : '停用'} ${e.node.name} 的 Web 转发`, steps: [], done: false, error: '' })
   try {
-    await streamNDJSON(`/api/nodes/${e.node.id}/web`, webBody(e), m => {
+    await streamNDJSON(`/api/nodes/${e.node.id}/web`, { ...webBody(e), takeOver }, m => {
       if (m.step) deploying.steps.push(m.step)
       if (m.error) deploying.error = m.error
     })
