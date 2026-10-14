@@ -81,6 +81,15 @@ func (d *DB) migrateWeb() error {
 	if _, err := tx.Exec(`UPDATE sites SET ports_json='[' || port || ']' WHERE ports_json=''`); err != nil {
 		return err
 	}
+	// 解析是否已暂停（站点停用或节点停用 Web 转发时）
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('site_hosts') WHERE name='dns_paused'`).Scan(&has); err != nil {
+		return err
+	}
+	if has == 0 {
+		if _, err := tx.Exec(`ALTER TABLE site_hosts ADD COLUMN dns_paused INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return err
+		}
+	}
 	return tx.Commit()
 }
 
@@ -422,6 +431,8 @@ type SiteHost struct {
 	RecordID string `json:"-"`
 	RecordIP string `json:"recordIp"`
 	DNSError string `json:"dnsError"`
+	// DNSPaused 解析已暂停：支持暂停的服务商停用记录；Cloudflare 删除记录（RecordID 为空），恢复时重新创建
+	DNSPaused bool `json:"dnsPaused"`
 }
 
 // 解析状态说明（保存在 dns_error 中）：解析已创建但备注尚未写入或写入失败时，解析本身是正常的。
@@ -578,7 +589,7 @@ func (d *DB) Sites(userID, nodeID int64) ([]*Site, error) {
 }
 
 func (d *DB) siteHosts(where string, args ...any) (map[int64][]*SiteHost, error) {
-	rows, err := d.Query(`SELECT id,site_id,sub,domain_id,host,record_id,record_ip,dns_error FROM site_hosts `+where+` ORDER BY site_id, pos, id`, args...)
+	rows, err := d.Query(`SELECT id,site_id,sub,domain_id,host,record_id,record_ip,dns_error,dns_paused FROM site_hosts `+where+` ORDER BY site_id, pos, id`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -586,7 +597,7 @@ func (d *DB) siteHosts(where string, args ...any) (map[int64][]*SiteHost, error)
 	res := map[int64][]*SiteHost{}
 	for rows.Next() {
 		h := &SiteHost{}
-		if err := rows.Scan(&h.ID, &h.SiteID, &h.Sub, &h.DomainID, &h.Host, &h.RecordID, &h.RecordIP, &h.DNSError); err != nil {
+		if err := rows.Scan(&h.ID, &h.SiteID, &h.Sub, &h.DomainID, &h.Host, &h.RecordID, &h.RecordIP, &h.DNSError, &h.DNSPaused); err != nil {
 			return nil, err
 		}
 		res[h.SiteID] = append(res[h.SiteID], h)
@@ -629,21 +640,21 @@ func (d *DB) SaveSite(s *Site) ([]*SiteHost, error) {
 		s.UserID, s.NodeID, s.Port, s.Scheme, s.VMID, s.TargetPort, s.CertID, s.Remark, s.Enabled, string(opts), string(portsJSON), s.ID); err != nil {
 		return nil, err
 	}
-	rows, err := tx.Query(`SELECT id,site_id,sub,domain_id,host,record_id,record_ip,dns_error FROM site_hosts WHERE site_id=?`, s.ID)
+	rows, err := tx.Query(`SELECT id,site_id,sub,domain_id,host,record_id,record_ip,dns_error,dns_paused FROM site_hosts WHERE site_id=?`, s.ID)
 	if err != nil {
 		return nil, err
 	}
 	old := map[string]*SiteHost{}
 	for rows.Next() {
 		h := &SiteHost{}
-		rows.Scan(&h.ID, &h.SiteID, &h.Sub, &h.DomainID, &h.Host, &h.RecordID, &h.RecordIP, &h.DNSError)
+		rows.Scan(&h.ID, &h.SiteID, &h.Sub, &h.DomainID, &h.Host, &h.RecordID, &h.RecordIP, &h.DNSError, &h.DNSPaused)
 		old[h.Host] = h
 	}
 	rows.Close()
 	for i, h := range s.Hosts {
 		h.SiteID = s.ID
 		if o := old[h.Host]; o != nil {
-			h.ID, h.RecordID, h.RecordIP, h.DNSError = o.ID, o.RecordID, o.RecordIP, o.DNSError
+			h.ID, h.RecordID, h.RecordIP, h.DNSError, h.DNSPaused = o.ID, o.RecordID, o.RecordIP, o.DNSError, o.DNSPaused
 			delete(old, h.Host)
 			if _, err := tx.Exec(`UPDATE site_hosts SET pos=? WHERE id=?`, i, h.ID); err != nil {
 				return nil, err
@@ -670,6 +681,12 @@ func (d *DB) SaveSite(s *Site) ([]*SiteHost, error) {
 }
 
 // SetHostDNS 记录域名的解析结果。
+// SetHostPaused 记录解析的暂停状态与记录 ID（Cloudflare 暂停时删除记录，记录 ID 清空）。
+func (d *DB) SetHostPaused(id int64, paused bool, recordID, ip string) error {
+	_, err := d.Exec(`UPDATE site_hosts SET dns_paused=?, record_id=?, record_ip=? WHERE id=?`, paused, recordID, ip, id)
+	return err
+}
+
 func (d *DB) SetHostDNS(id int64, recordID, ip, errMsg string) error {
 	_, err := d.Exec(`UPDATE site_hosts SET record_id=?, record_ip=?, dns_error=? WHERE id=?`, recordID, ip, errMsg, id)
 	return err

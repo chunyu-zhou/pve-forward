@@ -42,6 +42,12 @@ type AsyncRemarkProvider interface {
 	SetRemark(ctx context.Context, zone, id, remark string) error
 }
 
+// StatusProvider 用于支持暂停（停用）解析记录的服务商：阿里云、DNSPod、腾讯云、华为云。
+// Cloudflare 没有暂停功能，调用方以删除记录、恢复时重新创建代替。
+type StatusProvider interface {
+	SetStatus(ctx context.Context, zone, id string, enabled bool) error
+}
+
 // Field 为服务商参数。
 type Field struct {
 	Key    string `json:"key"`

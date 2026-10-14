@@ -559,6 +559,33 @@ func testWebForward(t *testing.T, srv *Server, mgr *manager.Manager, admin, alic
 		t.Fatalf("解析备注 %q", n)
 	}
 	sid := created.ID
+	// 停用站点暂停解析（Cloudflare 不支持暂停，删除记录），启用后重新创建并带上备注
+	alice.do("PUT", fmt.Sprintf("/api/sites/%d", sid), map[string]any{"enabled": false}, 200, nil)
+	if got := cf.lookup("dev.example.com"); got != "" {
+		t.Fatalf("停用站点后解析应暂停 %q", got)
+	}
+	alice.do("PUT", fmt.Sprintf("/api/sites/%d", sid), map[string]any{"enabled": true}, 200, nil)
+	if got := cf.lookup("dev.example.com"); got != "A 203.0.113.10" || cf.noteOf("dev.example.com") != "前端开发-alice" {
+		t.Fatalf("启用站点后解析应恢复 %q %q", got, cf.noteOf("dev.example.com"))
+	}
+	// 批量停用、启用同样暂停与恢复
+	alice.do("POST", "/api/sites/batch", map[string]any{"ids": []int64{sid}, "action": "disable"}, 200, nil)
+	if got := cf.lookup("dev.example.com"); got != "" {
+		t.Fatalf("批量停用后解析应暂停 %q", got)
+	}
+	alice.do("POST", "/api/sites/batch", map[string]any{"ids": []int64{sid}, "action": "enable"}, 200, nil)
+	if got := cf.lookup("dev.example.com"); got != "A 203.0.113.10" {
+		t.Fatalf("批量启用后解析应恢复 %q", got)
+	}
+	// 节点停用 Web 转发时暂停全部站点的解析，重新启用后恢复
+	webCfg["enabled"] = false
+	if stream := admin.do("POST", fmt.Sprintf("/api/nodes/%d/web", nid), webCfg, 200, nil); !strings.Contains(stream, "暂停站点解析") || cf.lookup("dev.example.com") != "" {
+		t.Fatalf("停用 Web 转发后解析应暂停 %q %s", cf.lookup("dev.example.com"), stream)
+	}
+	webCfg["enabled"] = true
+	if stream := admin.do("POST", fmt.Sprintf("/api/nodes/%d/web", nid), webCfg, 200, nil); !strings.Contains(stream, "恢复站点解析") || cf.lookup("dev.example.com") != "A 203.0.113.10" {
+		t.Fatalf("启用 Web 转发后解析应恢复 %q %s", cf.lookup("dev.example.com"), stream)
+	}
 	if err := mgr.RunOnce(ctx, nid); err != nil {
 		t.Fatal(err)
 	}
@@ -656,12 +683,11 @@ func testWebForward(t *testing.T, srv *Server, mgr *manager.Manager, admin, alic
 	if fake.webConf("host", fmt.Sprintf("sites/%d.conf", sid)) != "" {
 		t.Fatal("停用的站点不应下发")
 	}
-	alice.do("PUT", fmt.Sprintf("/api/sites/%d", sid), map[string]any{"enabled": true}, 200, nil)
-
-	// 下发失败：记录错误，站点显示异常；恢复后自动重试
+	// 下发失败：记录错误，站点显示异常；恢复后自动重试（先注入失败再启用站点，使启用触发的下发必然失败）
 	fake.mu.Lock()
 	fake.webFail = `[emerg] unknown directive "x"`
 	fake.mu.Unlock()
+	alice.do("PUT", fmt.Sprintf("/api/sites/%d", sid), map[string]any{"enabled": true}, 200, nil)
 	mgr.RunOnce(ctx, nid)
 	alice.do("GET", "/api/sites", nil, 200, &sites)
 	if !strings.Contains(sites[0].Error, "Web 配置下发失败") {

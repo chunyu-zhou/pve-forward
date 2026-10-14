@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -1166,6 +1167,18 @@ func (s *Server) postWeb(w http.ResponseWriter, r *http.Request) {
 		s.db.AddEvent("info", 0, n.ID, "节点 "+n.Name+" 已停用 Web 转发")
 	} else {
 		s.db.AddEvent("info", 0, n.ID, fmt.Sprintf("节点 %s 的 Web 转发已部署到%s", n.Name, locationName(s, newLoc)))
+	}
+	// 停用 Web 转发时暂停该节点全部站点的解析，启用时恢复（站点本身停用的保持暂停）
+	if sites, err := s.db.Sites(0, n.ID); err == nil && len(sites) > 0 {
+		ids := make([]int64, 0, len(sites))
+		for _, site := range sites {
+			ids = append(ids, site.ID)
+		}
+		var dnsErr error
+		if failed := s.reconcileSitesDNS(ctx, ids); len(failed) > 0 {
+			dnsErr = errors.New(strings.Join(failed, "；"))
+		}
+		step(map[bool]string{true: "恢复站点解析", false: "暂停站点解析"}[cfg.Enabled], dnsErr)
 	}
 	send(map[string]any{"done": true})
 }

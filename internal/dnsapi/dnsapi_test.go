@@ -30,6 +30,19 @@ type fakeDNS struct {
 	next int
 	recs map[string]Record // id → 记录
 	note map[string]string // id → 备注
+	stat map[string]string // id → 状态（enable / disable）
+}
+
+func (f *fakeDNS) setStat(id, st string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.stat[id] = strings.ToLower(st)
+}
+
+func (f *fakeDNS) statOf(id string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.stat[id]
 }
 
 func (f *fakeDNS) setNote(id, n string) {
@@ -45,7 +58,7 @@ func (f *fakeDNS) noteOf(id string) string {
 }
 
 func newFake() *fakeDNS {
-	return &fakeDNS{next: 100, recs: map[string]Record{"7": {ID: "7", Name: "www", Type: "A", Value: "1.1.1.1"}}, note: map[string]string{}}
+	return &fakeDNS{next: 100, recs: map[string]Record{"7": {ID: "7", Name: "www", Type: "A", Value: "1.1.1.1"}}, note: map[string]string{}, stat: map[string]string{}}
 }
 
 func (f *fakeDNS) list(sub string) []Record {
@@ -136,6 +149,17 @@ func exercise(t *testing.T, p Provider, f *fakeDNS) {
 	if rs := f.list("dev"); len(rs) != 1 || rs[0].Value != "203.0.113.11" {
 		t.Fatalf("修改后 %+v", rs)
 	}
+	// 暂停与恢复解析（Cloudflare 不支持，由调用方删除记录代替）
+	if sp, ok := p.(StatusProvider); ok {
+		if err := sp.SetStatus(ctx, "example.com", id, false); err != nil || f.statOf(id) != "disable" {
+			t.Fatalf("暂停 %q %v", f.statOf(id), err)
+		}
+		if err := sp.SetStatus(ctx, "example.com", id, true); err != nil || f.statOf(id) != "enable" {
+			t.Fatalf("恢复 %q %v", f.statOf(id), err)
+		}
+	} else if _, isCF := p.(*cloudflare); !isCF {
+		t.Fatalf("%T 应支持暂停解析", p)
+	}
 	if err := p.Delete(ctx, "example.com", id); err != nil {
 		t.Fatalf("Delete %v", err)
 	}
@@ -170,6 +194,9 @@ func TestDNSPod(t *testing.T) {
 			ok("")
 		case "/Record.Remark":
 			f.setNote(r.Form.Get("record_id"), r.Form.Get("remark"))
+			ok("")
+		case "/Record.Status":
+			f.setStat(r.Form.Get("record_id"), r.Form.Get("status"))
 			ok("")
 		case "/Record.Remove":
 			f.del(r.Form.Get("record_id"))
@@ -219,6 +246,9 @@ func TestAliyun(t *testing.T) {
 			w.Write([]byte(`{"RecordId":"` + id + `"}`))
 		case "UpdateDomainRecordRemark":
 			f.setNote(q.Get("RecordId"), q.Get("Remark"))
+			w.Write([]byte(`{}`))
+		case "SetDomainRecordStatus":
+			f.setStat(q.Get("RecordId"), q.Get("Status"))
 			w.Write([]byte(`{}`))
 		case "UpdateDomainRecord":
 			f.set(q.Get("RecordId"), Record{Name: q.Get("RR"), Type: q.Get("Type"), Value: q.Get("Value")})
@@ -290,6 +320,9 @@ func TestTencent(t *testing.T) {
 		case "DeleteRecord":
 			f.del(num("RecordId"))
 			resp(map[string]any{})
+		case "ModifyRecordStatus":
+			f.setStat(num("RecordId"), str("Status"))
+			resp(map[string]any{})
 		}
 	}))
 	defer ts.Close()
@@ -336,6 +369,11 @@ func TestHuawei(t *testing.T) {
 			id := f.add(Record{Name: strings.TrimSuffix(in.Name, ".example.com."), Type: in.Type, Value: in.Records[0]})
 			f.setNote(id, in.Description)
 			w.Write([]byte(`{"id":"` + id + `"}`))
+		case r.Method == "PUT" && strings.HasPrefix(r.URL.Path, "/v2.1/recordsets/") && strings.HasSuffix(r.URL.Path, "/statuses/set"):
+			var in struct{ Status string }
+			json.Unmarshal(body, &in)
+			f.setStat(strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/v2.1/recordsets/"), "/statuses/set"), in.Status)
+			w.Write([]byte(`{}`))
 		case r.Method == "PUT":
 			var in struct {
 				Name, Type, Description string

@@ -123,6 +123,10 @@ func (d *dnspod) Update(ctx context.Context, zone, id, sub, typ, value, remark s
 	return nil
 }
 
+func (d *dnspod) SetStatus(ctx context.Context, zone, id string, enabled bool) error {
+	return d.call(ctx, "Record.Status", url.Values{"domain": {zone}, "record_id": {id}, "status": {map[bool]string{true: "enable", false: "disable"}[enabled]}}, nil)
+}
+
 func (d *dnspod) Delete(ctx context.Context, zone, id string) error {
 	err := d.call(ctx, "Record.Remove", url.Values{"domain": {zone}, "record_id": {id}}, nil)
 	if err != nil && strings.Contains(err.Error(), "（8）") { // 记录不存在
@@ -253,6 +257,10 @@ func (a *aliyun) Update(ctx context.Context, zone, id, sub, typ, value, remark s
 	return nil
 }
 
+func (a *aliyun) SetStatus(ctx context.Context, zone, id string, enabled bool) error {
+	return a.call(ctx, "SetDomainRecordStatus", map[string]string{"RecordId": id, "Status": map[bool]string{true: "Enable", false: "Disable"}[enabled]}, nil)
+}
+
 func (a *aliyun) Delete(ctx context.Context, zone, id string) error {
 	err := a.call(ctx, "DeleteDomainRecord", map[string]string{"RecordId": id}, nil)
 	if err != nil && strings.Contains(err.Error(), "DomainRecordNotBelongToUser") {
@@ -378,6 +386,11 @@ func (t *tencent) Create(ctx context.Context, zone, sub, typ, value, remark stri
 func (t *tencent) Update(ctx context.Context, zone, id, sub, typ, value, remark string) error {
 	rid, _ := strconv.ParseUint(id, 10, 64)
 	return t.call(ctx, "ModifyRecord", map[string]any{"Domain": zone, "RecordId": rid, "SubDomain": sub, "RecordType": typ, "RecordLine": "默认", "Value": value, "Remark": remark}, nil)
+}
+
+func (t *tencent) SetStatus(ctx context.Context, zone, id string, enabled bool) error {
+	rid, _ := strconv.ParseUint(id, 10, 64)
+	return t.call(ctx, "ModifyRecordStatus", map[string]any{"Domain": zone, "RecordId": rid, "Status": map[bool]string{true: "ENABLE", false: "DISABLE"}[enabled]}, nil)
 }
 
 func (t *tencent) Delete(ctx context.Context, zone, id string) error {
@@ -565,6 +578,12 @@ func (h *huawei) Update(ctx context.Context, zone, id, sub, typ, value, remark s
 	}
 	return h.call(ctx, "PUT", "/v2/zones/"+zid+"/recordsets/"+url.PathEscape(id), nil,
 		map[string]any{"name": sub + "." + zone + ".", "type": typ, "records": []string{value}, "ttl": 300, "description": remark}, nil)
+}
+
+// SetStatus 使用华为云 v2.1 接口设置记录集状态。
+func (h *huawei) SetStatus(ctx context.Context, zone, id string, enabled bool) error {
+	return h.call(ctx, "PUT", "/v2.1/recordsets/"+url.PathEscape(id)+"/statuses/set", nil,
+		map[string]string{"status": map[bool]string{true: "ENABLE", false: "DISABLE"}[enabled]}, nil)
 }
 
 func (h *huawei) Delete(ctx context.Context, zone, id string) error {

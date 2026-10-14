@@ -220,11 +220,13 @@ func (s *Server) saveSite(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	// 只切换启用状态
+	// 只切换启用状态：停用时暂停解析，启用时恢复
 	if old != nil && in.NodeID == 0 && in.Enabled != nil {
 		s.db.Exec(`UPDATE sites SET enabled=?, error_msg='' WHERE id=?`, *in.Enabled, id)
 		s.mgr.Kick(old.NodeID)
-		writeJSON(w, map[string]bool{"ok": true})
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
+		defer cancel()
+		writeJSON(w, map[string]any{"ok": true, "dnsFailed": s.reconcileSitesDNS(ctx, []int64{id})})
 		return
 	}
 	if me.Role != "admin" {
@@ -259,11 +261,13 @@ func (s *Server) saveSite(w http.ResponseWriter, r *http.Request) {
 	for _, h := range removed {
 		s.deleteHostDNS(ctx, h)
 	}
+	// 站点停用或节点未启用 Web 转发时暂停解析
+	dnsFailed := s.reconcileSitesDNS(ctx, []int64{site.ID})
 	if old != nil && old.NodeID != site.NodeID {
 		s.mgr.Kick(old.NodeID)
 	}
 	s.mgr.Kick(site.NodeID)
-	writeJSON(w, map[string]any{"id": site.ID, "dns": results})
+	writeJSON(w, map[string]any{"id": site.ID, "dns": results, "dnsFailed": dnsFailed})
 }
 
 func (s *Server) validateSite(ctx context.Context, me, owner *store.User, old *store.Site, in *siteIn) (*store.Site, error) {
@@ -546,6 +550,9 @@ func (s *Server) syncSiteDNS(ctx context.Context, site *store.Site, ip string, f
 		return []dnsResult{{Error: err.Error()}}
 	}
 	for _, h := range site.Hosts {
+		if h.DNSPaused && h.RecordID == "" { // 已暂停且记录已删除（Cloudflare）：恢复时再创建
+			continue
+		}
 		if !force && h.RecordID != "" && h.RecordIP == ip && h.DNSError == "" {
 			continue
 		}
@@ -726,6 +733,87 @@ func (s *Server) deleteSitesDNS(sites []*store.Site) []string {
 	return failed
 }
 
+// siteDNSActive 站点的解析应生效：站点启用，且所在节点启用了 Web 转发。
+func (s *Server) siteDNSActive(st *store.Site) bool {
+	w, _, _ := s.db.NodeWeb(st.NodeID)
+	return st.Enabled && w.Enabled
+}
+
+// reconcileSitesDNS 按站点与节点 Web 转发的启用状态暂停或恢复站点的解析：
+// 支持暂停的服务商停用记录；Cloudflare 删除记录，恢复时重新创建。返回失败说明。
+func (s *Server) reconcileSitesDNS(ctx context.Context, ids []int64) []string {
+	var failed []string
+	var recreate []*store.Site
+	s.dnsMu.Lock()
+	for _, id := range ids {
+		st, err := s.db.Site(id)
+		if err != nil {
+			continue
+		}
+		active, need := s.siteDNSActive(st), false
+		for _, h := range st.Hosts {
+			if h.DNSPaused != active { // 已一致
+				continue
+			}
+			err := s.setHostPaused(ctx, h, !active)
+			if err != nil {
+				msg := fmt.Sprintf("%s解析 %s 失败：%v", map[bool]string{true: "恢复", false: "暂停"}[active], h.Host, err)
+				failed = append(failed, msg)
+				s.db.AddEvent("warn", st.UserID, st.NodeID, msg)
+				continue
+			}
+			need = need || (active && h.RecordID == "")
+		}
+		if need {
+			recreate = append(recreate, st)
+		}
+	}
+	s.dnsMu.Unlock()
+	// Cloudflare 暂停时删除了记录：恢复时重新创建
+	for _, st := range recreate {
+		n, err := s.db.Node(st.NodeID)
+		if err != nil {
+			continue
+		}
+		for _, r := range s.syncSiteDNS(ctx, st, n.Net.WANIP4, false) {
+			if store.DNSState(r.Error) == "failed" {
+				failed = append(failed, fmt.Sprintf("恢复解析 %s 失败：%s", r.Host, r.Error))
+			}
+		}
+	}
+	return failed
+}
+
+// setHostPaused 暂停或恢复一个域名的解析记录（调用方持有 dnsMu）。
+func (s *Server) setHostPaused(ctx context.Context, h *store.SiteHost, pause bool) error {
+	if h.RecordID == "" { // 没有记录：只记录状态，恢复后由同步创建
+		h.DNSPaused = pause
+		return s.db.SetHostPaused(h.ID, pause, "", "")
+	}
+	cl, d, err := s.dnsFor(h.DomainID)
+	if err != nil {
+		return err
+	}
+	cctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	if sp, ok := cl.(dnsapi.StatusProvider); ok {
+		if err := sp.SetStatus(cctx, d.Name, h.RecordID, !pause); err != nil {
+			return err
+		}
+		h.DNSPaused = pause
+		return s.db.SetHostPaused(h.ID, pause, h.RecordID, h.RecordIP)
+	}
+	if !pause {
+		h.DNSPaused = false
+		return s.db.SetHostPaused(h.ID, false, h.RecordID, h.RecordIP)
+	}
+	if err := cl.Delete(cctx, d.Name, h.RecordID); err != nil {
+		return err
+	}
+	h.DNSPaused, h.RecordID, h.RecordIP = true, "", ""
+	return s.db.SetHostPaused(h.ID, true, "", "")
+}
+
 func (s *Server) deleteSite(w http.ResponseWriter, r *http.Request) {
 	me := currentUser(r)
 	st, err := s.db.Site(pathID(r))
@@ -753,21 +841,29 @@ func (s *Server) batchSites(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	n := 0
+	var dnsFailed []string
+	var toggled []int64
 	for _, id := range req.IDs {
 		st, err := s.db.Site(id)
 		if err != nil || (me.Role != "admin" && st.UserID != me.ID) {
 			continue
 		}
 		if req.Action == "delete" {
-			s.deleteSitesDNS([]*store.Site{st})
+			dnsFailed = append(dnsFailed, s.deleteSitesDNS([]*store.Site{st})...)
 			s.db.Exec(`DELETE FROM sites WHERE id=?`, id)
 		} else {
 			s.db.Exec(`UPDATE sites SET enabled=?, error_msg='' WHERE id=?`, req.Action == "enable", id)
+			toggled = append(toggled, id)
 		}
 		s.mgr.Kick(st.NodeID)
 		n++
 	}
-	writeJSON(w, map[string]int{"count": n})
+	if len(toggled) > 0 { // 停用暂停解析，启用恢复
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
+		defer cancel()
+		dnsFailed = append(dnsFailed, s.reconcileSitesDNS(ctx, toggled)...)
+	}
+	writeJSON(w, map[string]any{"count": n, "dnsFailed": dnsFailed})
 }
 
 // siteOptions 返回站点表单的可选项：启用了 Web 转发的节点、主域名、证书、虚拟机。

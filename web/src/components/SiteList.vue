@@ -65,6 +65,7 @@
       <template #node="{ record }"><a-tag size="small" :color="record.nodeStatus === 'online' ? 'arcoblue' : 'gray'">{{ record.nodeName }}</a-tag></template>
       <template #domains="{ record }"><div class="lines">
         <div v-for="h in record.hosts" :key="h.host"><div v-for="e in entries(record)" :key="entryKey(e)"><a :href="url(e, h)" target="_blank" rel="noopener" class="site-link">{{ url(e, h) }}</a></div>
+          <a-tag v-if="h.dnsPaused" size="small" style="margin-left:4px">解析已暂停</a-tag>
           <a-tooltip v-if="h.dnsState && h.dnsState !== 'ok'" :content="dnsTip(h)"><icon-exclamation-circle :style="{ color: h.dnsState === 'failed' ? 'rgb(var(--orange-6))' : 'var(--color-text-3)', marginLeft: '4px' }" /></a-tooltip></div>
         <div v-if="record.remark" class="muted">{{ record.remark }}</div></div></template>
       <template #entry="{ record }"><a-space wrap :size="4"><a-tag v-for="e in entries(record)" :key="entryKey(e)" size="small" :color="e.https ? 'green' : 'arcoblue'">{{ e.https ? 'HTTPS' : 'HTTP' }} {{ e.port }}</a-tag></a-space></template>
@@ -170,9 +171,10 @@ const spanMethod = ({ record, columnIndex }) => {
 }
 
 async function toggle(s, v) {
-  await api.put(`/api/sites/${s.id}`, { enabled: v })
+  const r = await api.put(`/api/sites/${s.id}`, { enabled: v })
   s.enabled = v
-  Message.success(v ? '已启用' : '已停用')
+  if (r.dnsFailed?.length) Message.warning({ content: `${v ? '已启用' : '已停用'}，但${r.dnsFailed.join('；')}`, duration: 8000 })
+  else Message.success(v ? '已启用，解析已恢复' : '已停用，解析已暂停')
   load()
 }
 async function remove(s) {
@@ -183,7 +185,9 @@ async function remove(s) {
 }
 async function batch(action) {
   const r = await api.post('/api/sites/batch', { ids: selectedIds.value, action })
-  Message.success(`已${{ enable: '启用', disable: '停用', delete: '删除' }[action]} ${r.count} 个站点`)
+  const done = `已${{ enable: '启用', disable: '停用', delete: '删除' }[action]} ${r.count} 个站点`
+  if (r.dnsFailed?.length) Message.warning({ content: `${done}，但解析处理失败：${r.dnsFailed.join('；')}`, duration: 8000 })
+  else Message.success(done)
   selected.value = []
   load()
 }
