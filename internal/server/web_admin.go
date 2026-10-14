@@ -1107,9 +1107,9 @@ func (s *Server) postWeb(w http.ResponseWriter, r *http.Request) {
 	}
 	if cfg.Enabled {
 		target, err := s.mgr.WebTarget(cfg)
+		var freed []string
 		if err == nil {
 			var res *proto.WebResult
-			var freed []string
 			installCtx := nodeops.WithOutputLog(ctx, func(log string) { send(map[string]string{"log": log}) })
 			res, freed, err = s.installWeb(installCtx, n.ID, cfg, target, in.Stop)
 			if err == nil {
@@ -1131,6 +1131,11 @@ func (s *Server) postWeb(w http.ResponseWriter, r *http.Request) {
 		st.Location, st.Deployed, st.Hash, st.FailHash, st.Error = newLoc, cfg, "", "", ""
 		s.db.SetWebState(n.ID, st)
 		if err := s.mgr.ApplyWeb(ctx, n.ID); !step("下发 Web 配置", err) {
+			// 本次为空出端口而停止的容器：部署没有成功，恢复它们，避免两边都不提供服务
+			if len(freed) > 0 {
+				s.restoreFreed(n.ID, target, freed)
+				step("已恢复容器 "+strings.Join(freed, "、"), nil)
+			}
 			send(map[string]any{"error": err.Error()})
 			return
 		}

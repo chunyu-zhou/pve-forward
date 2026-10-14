@@ -226,7 +226,7 @@ or_version() { if [ "$RT" = docker ]; then docker run --rm --entrypoint openrest
 or_test() { if [ "$RT" = docker ]; then docker run --rm --network none $DV --entrypoint openresty "$IMG" -t -q -c "$1"; else "$BIN" -t -q -c "$1"; fi; }
 or_running() {
   case "$RT" in
-    docker) [ "$(docker inspect -f '{{.State.Running}}' ` + webContainer + ` 2>/dev/null)" = true ] ;;
+    docker) [ "$(docker inspect -f '{{.State.Status}}' ` + webContainer + ` 2>/dev/null)" = running ] ;;
     binary) if has_systemd; then systemctl is-active -q ` + webUnit + `; else [ -s ` + BinPrefix + `/nginx/logs/nginx.pid ] && kill -0 "$(cat ` + BinPrefix + `/nginx/logs/nginx.pid)" 2>/dev/null; fi ;;
     *) if has_systemd && systemctl cat openresty >/dev/null 2>&1; then systemctl is-active -q openresty; else return 0; fi ;;
   esac
@@ -234,9 +234,12 @@ or_running() {
 or_reload() {
   case "$RT" in
     docker)
-      if or_running; then docker exec ` + webContainer + ` openresty -c "$MAIN" -s reload
-      elif docker inspect ` + webContainer + ` >/dev/null 2>&1; then docker start ` + webContainer + ` >/dev/null
-      else docker run -d --name ` + webContainer + ` --restart unless-stopped --network host $DV --entrypoint openresty "$IMG" -g 'daemon off;' -c "$MAIN" >/dev/null; fi ;;
+      # 运行中且镜像未变时重载；否则（未运行、反复重启、镜像已更换）删除后按当前镜像与挂载重新创建
+      if or_running && [ "$(docker inspect -f '{{.Config.Image}}' ` + webContainer + ` 2>/dev/null)" = "$IMG" ]; then docker exec ` + webContainer + ` openresty -c "$MAIN" -s reload
+      else
+        docker rm -f ` + webContainer + ` >/dev/null 2>&1 || true
+        docker run -d --name ` + webContainer + ` --restart unless-stopped --network host $DV --entrypoint openresty "$IMG" -g 'daemon off;' -c "$MAIN" >/dev/null
+      fi ;;
     binary)
       if has_systemd; then systemctl enable -q ` + webUnit + ` 2>/dev/null || true; if or_running; then systemctl reload ` + webUnit + `; else systemctl restart ` + webUnit + `; fi
       elif or_running; then "$BIN" -c "$MAIN" -s reload; else "$BIN" -c "$MAIN"; fi ;;
@@ -776,7 +779,10 @@ func webFree(ctx context.Context, ex Executor, op string, names []string) error 
 		list = append(list, shq(n))
 	}
 	if op == "restore" {
-		_, err := ex.Run(ctx, "export LC_ALL=C\n"+webRestoreAdopted+"restore_adopted "+strings.Join(list, " ")+"\n")
+		// 本系统的容器未正常运行时先删除，避免其自动重启后与恢复的容器争抢端口
+		_, err := ex.Run(ctx, "export LC_ALL=C\n"+webRestoreAdopted+
+			`[ "$(docker inspect -f '{{.State.Status}}' `+webContainer+` 2>/dev/null)" = running ] || docker rm -f `+webContainer+" >/dev/null 2>&1 || true\n"+
+			"restore_adopted "+strings.Join(list, " ")+"\n")
 		return err
 	}
 	_, err := ex.Run(ctx, `set -e
@@ -856,6 +862,10 @@ if [ -n "$E" ] || [ "$RUN" = 0 ] || [ "$RELOAD" = 0 ]; then
   if [ -n "$P" ] && [ -d "` + Dir + `/$P" ]; then
     ln -sfn "$P" ` + Dir + `/web.lnk && mv -Tf ` + Dir + `/web.lnk ` + Dir + `/web
     or_reload 2>/dev/null || true
+  else
+    # 没有可恢复的旧版本：不留下指向已删除目录的链接，也不留下反复重启、争抢端口的容器
+    rm -f ` + Dir + `/web
+    [ "$RT" != docker ] || docker rm -f ` + webContainer + ` >/dev/null 2>&1 || true
   fi
   rm -rf "$D"; exit 5
 fi

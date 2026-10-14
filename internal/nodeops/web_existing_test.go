@@ -2,7 +2,9 @@ package nodeops
 
 import (
 	"context"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -205,6 +207,43 @@ func TestWebInstallScripts(t *testing.T) {
 	}
 	bashSyntax(t, webLocate+webDetectScript)
 	bashSyntax(t, webLocate+webRestoreAdopted)
+}
+
+// Docker 运行方式的重载：容器反复重启、已停止或镜像已更换时必须删除后重新创建（docker start 对重启中的容器会报错），
+// 只有运行中且镜像相同才在容器内重载。
+func TestWebDockerReload(t *testing.T) {
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("bash unavailable")
+	}
+	for _, tc := range []struct{ status, image, want string }{
+		{"restarting", "img:1", "rm -f run -d"},
+		{"exited", "img:1", "rm -f run -d"},
+		{"", "", "rm -f run -d"}, // 容器不存在
+		{"running", "img:0", "rm -f run -d"},
+		{"running", "img:1", "exec"},
+	} {
+		script := "set -e\n" + webLocate + `RT=docker; IMG=img:1
+docker() {
+  case "$1" in
+    inspect) case "$*" in *State.Status*) [ -n "` + tc.status + `" ] && echo ` + tc.status + ` ;; *Config.Image*) [ -n "` + tc.image + `" ] && echo ` + tc.image + ` ;; esac ;;
+    rm) printf 'rm %s ' "$2" >> "$CALLS" ;;
+    run) printf 'run %s ' "$2" >> "$CALLS" ;;
+    exec) printf 'exec ' >> "$CALLS" ;;
+    start) echo 'Error: is restarting' >&2; return 1 ;;
+  esac
+}
+or_reload
+cat "$CALLS"
+`
+		cmd := exec.Command(bash, "-s")
+		cmd.Env = append(os.Environ(), "CALLS="+filepath.ToSlash(filepath.Join(t.TempDir(), "calls")))
+		cmd.Stdin = strings.NewReader(script)
+		out, err := cmd.CombinedOutput()
+		if err != nil || strings.TrimSpace(string(out)) != tc.want {
+			t.Errorf("%s/%s: %q %v", tc.status, tc.image, out, err)
+		}
+	}
 }
 
 // 公共前置脚本在 set -e 下必须能执行完（没有 OpenResty、Docker 的环境也一样），否则安装、下发脚本会中途退出。
