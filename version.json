@@ -1,5 +1,5 @@
 {
-  "version": "1.0.14",
+  "version": "1.0.15",
   "date": "2026-10-14",
-  "notes": "更新内容：\n- Web 入口改为分步配置；识别已安装的 OpenResty 直接使用，Docker 支持镜像源与国内软件源"
+  "notes": "更新内容：\n- 修复 Docker 部署：残留的反复重启容器导致无法启动 OpenResty，失败时恢复被停止的容器"
 }
