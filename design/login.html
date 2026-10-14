@@ -1,0 +1,161 @@
+<!doctype html>
+<!-- 登录页样式原型：结构与 web/src/views/Login.vue 完全一致（只改样式，不改组件和表单）。
+     确认后，<style id="login-css"> 中的样式替换 web/src/style.css 中的 .login 相关样式。 -->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>登录页样式原型 - PVE Forward</title>
+<link rel="stylesheet" href="../web/node_modules/@arco-design/web-vue/dist/arco.css">
+<style>
+  /* 与应用一致的基础样式（web/src/style.css 开头部分） */
+  html, body { height: 100%; margin: 0; }
+  body { font-family: Inter, -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif; }
+  #app { height: 100%; }
+  .muted { color: var(--color-text-3); font-size: 12px; }
+  .logo-mark { width: 28px; height: 28px; border-radius: 6px; background: rgb(var(--primary-6)); color: #fff; display: grid; place-items: center; font-size: 16px; flex: none; }
+  /* 原型切换条（仅原型使用） */
+  .proto-bar { position: fixed; right: 16px; bottom: 16px; z-index: 10; display: flex; gap: 8px; }
+  .proto-bar button { border: 0; border-radius: 6px; padding: 6px 12px; background: #f2f3f5; color: #4e5969; cursor: pointer; font-size: 12px; }
+  .proto-bar button.on { background: rgb(var(--primary-6)); color: #fff; }
+</style>
+<style id="login-css">
+/* ================= 登录页（白色主题；布局参照 lumisafe 登录页：左侧插画区 + 右侧表单区） ================= */
+.login { display: flex; height: 100%; min-height: 560px; background: #fff; color: #1d2129; }
+/* 左侧：浅蓝渐变 + 插画 */
+.login .banner {
+  flex: 1 1 60%; position: relative; overflow: hidden; display: flex; align-items: center; justify-content: center;
+  background:
+    radial-gradient(ellipse 55% 50% at 46% 40%, rgba(22, 93, 255, .14) 0%, rgba(22, 93, 255, 0) 70%),
+    linear-gradient(160deg, #f4f8ff 0%, #e9f1ff 55%, #dfeaff 100%);
+}
+.login .banner-inner { position: relative; z-index: 1; width: min(520px, 80%); text-align: center; }
+.login .banner-inner::before { /* 插画：宿主机 → 转发 → 虚拟机 的等距示意（纯 CSS 背景，无需改模板） */
+  content: ''; display: block; width: 300px; height: 230px; margin: 0 auto 32px; filter: drop-shadow(0 18px 32px rgba(22, 93, 255, .22));
+  background: no-repeat center / contain url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 300 230'%3E%3Cdefs%3E%3ClinearGradient id='p' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%233c7eff'/%3E%3Cstop offset='1' stop-color='%23165dff'/%3E%3C/linearGradient%3E%3ClinearGradient id='s' x1='0' y1='0' x2='0' y2='1'%3E%3Cstop offset='0' stop-color='%23165dff'/%3E%3Cstop offset='1' stop-color='%230a2f8a'/%3E%3C/linearGradient%3E%3ClinearGradient id='t' x1='0' y1='0' x2='0' y2='1'%3E%3Cstop offset='0' stop-color='%2379a6ff'/%3E%3Cstop offset='1' stop-color='%233c7eff'/%3E%3C/linearGradient%3E%3C/defs%3E%3Cpath d='M150 120 L270 175 L150 230 L30 175Z' fill='%230a2f8a' opacity='.55'/%3E%3Cpath d='M150 108 L270 163 L150 218 L30 163Z' fill='url(%23p)' opacity='.9'/%3E%3Cpath d='M30 163 L150 218 L150 226 L30 171Z' fill='%230e3aa3'/%3E%3Cpath d='M270 163 L150 218 L150 226 L270 171Z' fill='%23092a7a'/%3E%3Cpath d='M150 124 L238 164 L150 204 L62 164Z' fill='none' stroke='%23a7c4ff' stroke-opacity='.45' stroke-dasharray='4 5'/%3E%3Cg%3E%3Cpath d='M86 92 L116 106 L116 160 L86 146Z' fill='url(%23s)'/%3E%3Cpath d='M116 106 L146 92 L146 146 L116 160Z' fill='%230a2f8a'/%3E%3Cpath d='M86 92 L116 78 L146 92 L116 106Z' fill='url(%23t)'/%3E%3Cpath d='M92 112 L110 120 M92 124 L110 132 M92 136 L110 144' stroke='%2379e3ff' stroke-width='3' stroke-linecap='round'/%3E%3C/g%3E%3Cg%3E%3Cpath d='M176 112 L198 122 L198 158 L176 148Z' fill='url(%23s)'/%3E%3Cpath d='M198 122 L220 112 L220 148 L198 158Z' fill='%230a2f8a'/%3E%3Cpath d='M176 112 L198 102 L220 112 L198 122Z' fill='url(%23t)'/%3E%3Cpath d='M216 130 L238 140 L238 168 L216 158Z' fill='url(%23s)'/%3E%3Cpath d='M238 140 L256 132 L256 160 L238 168Z' fill='%230a2f8a'/%3E%3Cpath d='M216 130 L234 122 L256 132 L238 140Z' fill='url(%23t)'/%3E%3Ccircle cx='187' cy='134' r='2.5' fill='%2300d0b6'/%3E%3Ccircle cx='227' cy='150' r='2.5' fill='%2300d0b6'/%3E%3C/g%3E%3Cpath d='M146 112 C160 100 168 100 176 110' fill='none' stroke='%2379e3ff' stroke-width='2.5' stroke-dasharray='5 4'/%3E%3Cpath d='M171 104 L177 111 L168 112' fill='none' stroke='%2379e3ff' stroke-width='2.5' stroke-linejoin='round'/%3E%3Cpath d='M58 30 L94 46 L94 64 L58 48Z' fill='%23165dff' opacity='.35'/%3E%3Cpath d='M64 40 L72 44 L72 56 L64 52Z M76 46 L84 50 L84 58 L76 54Z' fill='%2379e3ff' opacity='.8'/%3E%3Cpath d='M206 26 L246 44 L246 74 L206 56Z' fill='%23165dff' opacity='.3'/%3E%3Cpath d='M212 50 L222 40 L230 48 L240 38' fill='none' stroke='%2300d0b6' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3Ccircle cx='40' cy='100' r='9' fill='%23722ed1' opacity='.85'/%3E%3Ccircle cx='272' cy='96' r='6' fill='%233c7eff'/%3E%3Ccircle cx='258' cy='212' r='4' fill='%2379a6ff' opacity='.7'/%3E%3C/svg%3E");
+}
+.login .banner h2 { font-size: 26px; font-weight: 600; letter-spacing: .5px; margin: 0 0 10px; color: #1d2129; }
+.login .banner p { color: #4e5969; font-size: 14px; line-height: 22px; margin: 0 auto; max-width: 460px; }
+.login .flow {
+  display: inline-block; text-align: left; margin-top: 28px; padding: 14px 22px; border-radius: 10px;
+  background: rgba(255,255,255,.75); border: 1px solid rgba(22, 93, 255, .12); box-shadow: 0 8px 24px rgba(22, 93, 255, .08);
+  font-size: 13px; line-height: 2.1; color: #4e5969;
+}
+.login .flow b { display: inline-block; width: 72px; font-weight: 500; color: rgb(var(--primary-6)); }
+/* 左上角站点名 */
+.login .logo { position: fixed; top: 22px; left: 24px; z-index: 2; display: inline-flex; align-items: center; gap: 10px; color: #1d2129; font-size: 20px; font-weight: 600; }
+.login .logo-mark { width: 32px; height: 32px; border-radius: 8px; box-shadow: 0 6px 16px rgba(22, 93, 255, .3); }
+/* 右侧表单区 */
+.login .content { flex: 0 0 40%; min-width: 420px; display: flex; align-items: center; justify-content: center; background: #fff; padding: 0 32px; box-sizing: border-box; }
+.login-form-wrapper { width: 100%; max-width: 448px; }
+.login-form-title { color: #1d2129; font-weight: 700; font-size: 34px; line-height: 44px; letter-spacing: .5px; }
+.login-form-title::after { content: ' 👋🏻'; font-weight: 400; }
+.login-form-sub-title { color: #86909c; font-size: 14px; line-height: 22px; margin-top: 6px; }
+.login-form-error-msg { min-height: 28px; color: rgb(var(--red-6)); line-height: 28px; font-size: 13px; margin-top: 4px; }
+/* 表单控件：42px 高、浅灰底细边框，聚焦为主色描边 */
+.login .arco-form-item { margin-bottom: 18px; }
+.login .arco-input-wrapper { height: 42px; border-radius: 6px; background: #f7f8fa; border: 1px solid #e5e6eb; transition: border-color .2s, box-shadow .2s, background-color .2s; }
+.login .arco-input-wrapper:hover { background: #f2f3f5; border-color: #c9cdd4; }
+.login .arco-input-wrapper.arco-input-focus { background: #fff; border-color: rgb(var(--primary-6)); box-shadow: 0 0 0 3px rgba(22, 93, 255, .12); }
+.login .arco-input-wrapper .arco-input { font-size: 14px; }
+.login .arco-input-prefix, .login .arco-input-suffix { color: #86909c; }
+.login .arco-input-suffix .arco-icon-hover { cursor: pointer; }
+.login .arco-btn-primary { height: 42px; border-radius: 6px; font-size: 15px; font-weight: 600; box-shadow: 0 8px 20px rgba(22, 93, 255, .22); }
+.login .arco-btn-primary.arco-btn-disabled { box-shadow: none; }
+@media (max-width: 900px) {
+  .login .banner { display: none; }
+  .login .content { flex: 1; min-width: 0; padding: 96px 24px 24px; align-items: flex-start; }
+  .login-form-title { font-size: 28px; line-height: 38px; }
+}
+</style>
+</head>
+<body>
+<div id="app">
+  <!-- 与 Login.vue 相同的结构（Arco 组件渲染后的 DOM） -->
+  <div class="login">
+    <div class="logo"><span class="logo-mark"><svg viewBox="0 0 48 48" width="16" height="16" fill="none" stroke="currentColor" stroke-width="4"><path d="M5 17h35.586c.89 0 1.337-1.077.707-1.707L33 7M43 31H7.414c-.89 0-1.337 1.077-.707 1.707L15 41"/></svg></span>PVE Forward</div>
+    <div class="banner"><div class="banner-inner">
+      <h2>多节点 PVE 端口转发管理</h2>
+      <p>统一管理多台 PVE 节点的端口转发与 Web 转发：按用户分配端口、流量与虚拟机，规则自动下发到节点，运行状态实时监控。</p>
+      <div class="flow"><b>端口转发</b>公网端口一键映射到虚拟机，按用户分配端口与流量<br><b>Web 转发</b>用子域名直接访问虚拟机内的网站，支持 HTTPS<br><b>自动解析</b>站点启用、停用或删除时，域名解析自动同步</div>
+    </div></div>
+    <div class="content">
+      <div class="login-form-wrapper">
+        <div class="login-form-title">登录 PVE Forward</div>
+        <div class="login-form-sub-title">使用管理员分配的账号登录</div>
+        <div class="login-form-error-msg" id="err"></div>
+        <form class="arco-form arco-form-layout-vertical arco-form-size-medium" onsubmit="return false">
+          <div id="pw-step">
+            <div class="arco-row arco-row-align-start arco-row-justify-start arco-form-item arco-form-item-layout-vertical">
+              <div class="arco-col arco-form-item-wrapper-col"><div class="arco-form-item-content-wrapper"><div class="arco-form-item-content arco-form-item-content-flex">
+                <span class="arco-input-wrapper"><span class="arco-input-prefix"><svg viewBox="0 0 48 48" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="4"><path d="M7 37c0-4.97 7.163-9 16-9s16 4.03 16 9v4H7v-4ZM23 22a8 8 0 1 0 0-16 8 8 0 0 0 0 16Z"/></svg></span><input id="u" class="arco-input arco-input-size-medium" placeholder="用户名" autocomplete="username"></span>
+              </div></div></div>
+            </div>
+            <div class="arco-row arco-row-align-start arco-row-justify-start arco-form-item arco-form-item-layout-vertical">
+              <div class="arco-col arco-form-item-wrapper-col"><div class="arco-form-item-content-wrapper"><div class="arco-form-item-content arco-form-item-content-flex">
+                <span class="arco-input-wrapper arco-input-password"><span class="arco-input-prefix"><svg viewBox="0 0 48 48" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="4"><rect x="7" y="21" width="34" height="20" rx="2"/><path d="M15 21v-6a9 9 0 0 1 18 0v6M24 28v6"/></svg></span><input id="p" class="arco-input arco-input-size-medium" type="password" placeholder="密码" autocomplete="current-password"><span class="arco-input-suffix"><span id="eye" class="arco-icon-hover arco-input-icon-hover" role="button" aria-label="显示密码" title="显示密码"></span></span></span>
+              </div></div></div>
+            </div>
+          </div>
+          <div id="code-step" style="display:none">
+            <div class="muted" style="margin-bottom:8px">已启用两步验证，请输入认证应用（如 Google Authenticator）中 admin 的 6 位验证码</div>
+            <div class="arco-row arco-row-align-start arco-row-justify-start arco-form-item arco-form-item-layout-vertical">
+              <div class="arco-col arco-form-item-wrapper-col"><div class="arco-form-item-content-wrapper"><div class="arco-form-item-content arco-form-item-content-flex">
+                <span class="arco-input-wrapper"><span class="arco-input-prefix"><svg viewBox="0 0 48 48" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="4"><path d="M24 4 8 10v12c0 10 7 17 16 22 9-5 16-12 16-22V10L24 4Z"/></svg></span><input id="c" class="arco-input arco-input-size-medium" placeholder="6 位验证码" maxlength="6" inputmode="numeric"></span>
+              </div></div></div>
+            </div>
+            <a class="arco-link" style="margin-bottom:12px;display:inline-flex">返回重新输入账号</a>
+          </div>
+          <div class="arco-space arco-space-vertical arco-space-fill" style="gap:16px">
+            <div class="arco-space-item"><span class="muted">忘记密码请联系管理员</span></div>
+            <div class="arco-space-item"><button id="submit" class="arco-btn arco-btn-primary arco-btn-shape-square arco-btn-size-medium arco-btn-status-normal arco-btn-long arco-btn-disabled" type="submit" disabled><span id="btn">登录</span></button></div>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+  <div class="proto-bar">
+    <button class="on" data-v="pw">账号密码</button><button data-v="err">登录失败</button><button data-v="code">两步验证</button>
+  </div>
+</div>
+<script>
+  // 原型交互：聚焦样式与状态切换（正式页面由 Arco 组件处理）
+  document.querySelectorAll('.arco-input-wrapper input').forEach(i => {
+    i.addEventListener('focus', () => i.parentElement.classList.add('arco-input-focus'))
+    i.addEventListener('blur', () => i.parentElement.classList.remove('arco-input-focus'))
+  })
+  // 密码可见切换（与 Arco a-input-password 一致：闭眼图标=隐藏，睁眼图标=明文）
+  const eyeOff = '<svg viewBox="0 0 48 48" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="4"><path d="M14 14.5c-2.69 2-5.415 5.33-8 9.5 5.373 8.667 11.373 13 18 13 3.325 0 6.491-1.09 9.5-3.271M17.463 12.5C19 11 21.75 11 24 11c6.627 0 12.627 4.333 18 13-1.766 2.848-3.599 5.228-5.5 7.14M29 24a5 5 0 1 1-10 0 5 5 0 0 1 10 0ZM6.852 7.103l34.294 34.294"/></svg>'
+  const eyeOn = '<svg viewBox="0 0 48 48" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="4"><path d="M24 37c6.627 0 12.627-4.333 18-13-5.373-8.667-11.373-13-18-13-6.627 0-12.627 4.333-18 13 5.373 8.667 11.373 13 18 13Z"/><path d="M29 24a5 5 0 1 1-10 0 5 5 0 0 1 10 0Z"/></svg>'
+  const eye = document.getElementById('eye')
+  eye.innerHTML = eyeOff
+  eye.addEventListener('mousedown', e => e.preventDefault()) // 不让输入框失去焦点
+  eye.addEventListener('click', () => {
+    const pw = document.getElementById('p'), show = pw.type === 'password'
+    pw.type = show ? 'text' : 'password'
+    eye.innerHTML = show ? eyeOn : eyeOff
+    eye.title = show ? '隐藏密码' : '显示密码'
+    eye.setAttribute('aria-label', eye.title)
+  })
+  // 未输入用户名或密码时不能登录；两步验证时需输入 6 位验证码
+  let codeStep = false
+  const $ = id => document.getElementById(id)
+  function sync() {
+    const ok = codeStep ? $('c').value.replace(/\D/g, '').length === 6 : $('u').value.trim() && $('p').value
+    $('submit').disabled = !ok
+    $('submit').classList.toggle('arco-btn-disabled', !ok)
+  }
+  ;['u', 'p', 'c'].forEach(id => $(id).addEventListener('input', sync))
+  document.querySelectorAll('.proto-bar button').forEach(b => b.onclick = () => {
+    document.querySelectorAll('.proto-bar button').forEach(x => x.classList.toggle('on', x === b))
+    const v = b.dataset.v
+    document.getElementById('pw-step').style.display = v === 'code' ? 'none' : ''
+    document.getElementById('code-step').style.display = v === 'code' ? '' : 'none'
+    document.getElementById('btn').textContent = v === 'code' ? '验证' : '登录'
+    document.getElementById('err').textContent = v === 'err' ? '用户名或密码错误' : ''
+    codeStep = v === 'code'
+    sync()
+  })
+</script>
+</body>
+</html>
