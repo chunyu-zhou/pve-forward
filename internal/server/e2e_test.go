@@ -435,6 +435,30 @@ func TestEndToEnd(t *testing.T) {
 		t.Fatalf("DHCP 绑定 %q", fake.hosts)
 	}
 
+	// 删除规则后释放端口：节点上的转发移除，端口不再显示为已用，可以重新创建规则
+	var mine []ruleOut
+	ua.do("GET", "/api/rules", nil, 200, &mine)
+	var r20001 int64
+	for _, r := range mine {
+		if r.Port == 20001 {
+			r20001 = r.ID
+		}
+	}
+	ua.do("DELETE", fmt.Sprintf("/api/rules/%d", r20001), nil, 200, nil)
+	waitFor(t, "删除后节点移除转发", func() bool { return !strings.Contains(fake.nft(), "dport 20001") })
+	var me1 struct {
+		UsedPorts map[string][]int `json:"usedPorts"`
+	}
+	ua.do("GET", "/api/me", nil, 200, &me1)
+	for _, p := range me1.UsedPorts[fmt.Sprint(nid)] {
+		if p == 20001 {
+			t.Fatalf("删除规则后端口仍显示为已用 %v", me1.UsedPorts)
+		}
+	}
+	rule2["port"] = 20001
+	ua.do("POST", "/api/rules", rule2, 200, nil) // 释放后的端口可以再次使用
+	waitFor(t, "重新创建后下发", func() bool { return strings.Contains(fake.nft(), "dport 20001") })
+
 	var rules []ruleOut
 	ua.do("GET", "/api/rules", nil, 200, &rules)
 	if len(rules) != 2 || rules[0].Entry4 != "203.0.113.10" || rules[0].Target4 != "10.0.0.57" {
