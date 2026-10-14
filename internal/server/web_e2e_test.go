@@ -143,12 +143,12 @@ func TestDNSRemarkRetry(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM dns_remark_jobs`).Scan(&count); err != nil || count != 0 {
 		t.Fatalf("job not cleared %d %v", count, err)
 	}
-	if created != 1 || note != "latest" {
+	if created != 1 || note != "latest-alice" {
 		t.Fatalf("duplicate create or stale remark: %d %q", created, note)
 	}
 	// 同IP不能把API修改失败变成成功。
 	failUpdate = true
-	_, err = s.upsertA(context.Background(), &store.SiteHost{DomainID: 1, Sub: "dev", Host: "dev.example.com", RecordID: "1"}, "203.0.113.10", "latest")
+	_, err = s.upsertA(context.Background(), &store.SiteHost{DomainID: 1, Sub: "dev", Host: "dev.example.com", RecordID: "1"}, "203.0.113.10", "latest-alice")
 	if err == nil || !strings.Contains(err.Error(), "update denied") {
 		t.Fatalf("swallowed update error: %v", err)
 	}
@@ -551,7 +551,7 @@ func testWebForward(t *testing.T, srv *Server, mgr *manager.Manager, admin, alic
 	if len(created.DNS) != 1 || created.DNS[0].Error != "" || cf.lookup("dev.example.com") != "A 203.0.113.10" {
 		t.Fatalf("自动解析 %+v %q", created, cf.lookup("dev.example.com"))
 	}
-	if n := cf.noteOf("dev.example.com"); n != "前端开发" { // 只写入用户填写的备注
+	if n := cf.noteOf("dev.example.com"); n != "前端开发-alice" { // 格式：备注-用户名
 		t.Fatalf("解析备注 %q", n)
 	}
 	sid := created.ID

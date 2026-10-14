@@ -521,12 +521,16 @@ type dnsResult struct {
 	State string `json:"state"` // 见 store.DNSState
 }
 
-// dnsRemark 返回解析记录的备注：只使用用户填写的站点备注。
+// dnsRemark 返回解析记录的备注：站点备注-所属用户名。
 func (s *Server) dnsRemark(site *store.Site) (string, error) {
-	return site.Remark, nil
+	u, err := s.db.User(site.UserID)
+	if err != nil {
+		return "", err
+	}
+	return site.Remark + "-" + u.Username, nil
 }
 
-// syncSiteDNS 为站点的域名添加或更新 A 记录（指向节点公网 IP，备注为站点备注）。
+// syncSiteDNS 为站点的域名添加或更新 A 记录（指向节点公网 IP，备注为 站点备注-用户名）。
 // force 为 true 时即使地址未变也更新（备注变化）。
 func (s *Server) syncSiteDNS(ctx context.Context, site *store.Site, ip string, force bool) []dnsResult {
 	s.dnsMu.Lock()
@@ -648,7 +652,7 @@ func (s *Server) processDNSRemarks(ctx context.Context) {
 			return
 		}
 		var latest string
-		if err := s.db.QueryRow(`SELECT s.remark FROM site_hosts h JOIN sites s ON s.id=h.site_id WHERE h.id=? AND h.record_id=?`, j.id, j.record).Scan(&latest); err != nil {
+		if err := s.db.QueryRow(`SELECT s.remark || '-' || u.username FROM site_hosts h JOIN sites s ON s.id=h.site_id JOIN users u ON u.id=s.user_id WHERE h.id=? AND h.record_id=?`, j.id, j.record).Scan(&latest); err != nil {
 			continue
 		}
 		if latest != j.remark {
