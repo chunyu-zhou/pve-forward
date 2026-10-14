@@ -542,6 +542,10 @@ func testWebForward(t *testing.T, srv *Server, mgr *manager.Manager, admin, alic
 	if body := alice.do("POST", "/api/sites", site, 400, nil); !strings.Contains(body, "请填写备注") {
 		t.Fatalf("缺少备注 %s", body)
 	}
+	site["remark"] = "一二三四五六七八九十一" // 最多 10 个字
+	if body := alice.do("POST", "/api/sites", site, 400, nil); !strings.Contains(body, "不超过 10 个字") {
+		t.Fatalf("备注过长 %s", body)
+	}
 	site["remark"] = "前端开发"
 	var created struct {
 		ID  int64

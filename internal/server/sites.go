@@ -441,10 +441,10 @@ func (s *Server) validateSite(ctx context.Context, me, owner *store.User, old *s
 	site.Opts = o
 	site.Remark = strings.TrimSpace(in.Remark)
 	if site.Remark == "" {
-		return nil, bad("请填写备注（会写入域名解析的备注）")
+		return nil, bad("请填写备注")
 	}
-	if len([]rune(site.Remark)) > 40 {
-		return nil, bad("备注不超过 40 个字符")
+	if len([]rune(site.Remark)) > 10 {
+		return nil, bad("备注不超过 10 个字")
 	}
 	return site, nil
 }
