@@ -103,7 +103,7 @@
 <script setup>
 import { computed, reactive, ref, watch } from 'vue'
 import { Message } from '@arco-design/web-vue'
-import { api, isAdmin, session, certCovers, expColor } from '../api'
+import { api, isAdmin, session, certCovers, expColor, dnsStateText } from '../api'
 
 const props = defineProps({ site: Object, userId: Number, active: Boolean })
 const admin = computed(isAdmin)
@@ -249,9 +249,13 @@ async function save() {
     opts: { ...f.opts, authUser: auth.value ? f.opts.authUser.trim() : '', authPassword: auth.value ? f.opts.authPassword : '' },
   }
   const r = props.site?.id ? await api.put(`/api/sites/${props.site.id}`, body) : await api.post('/api/sites', body)
-  const failed = (r.dns || []).filter(x => x.error)
+  const dns = r.dns || []
+  const failed = dns.filter(x => x.state === 'failed')
+  const remarkFailed = dns.filter(x => x.state === 'remark_failed')
+  const added = dns.filter(x => x.state !== 'failed').map(x => x.host)
   if (failed.length) Message.warning({ content: `已保存，但自动解析失败：${failed.map(x => `${x.host}（${x.error}）`).join('；')}`, duration: 8000 })
-  else Message.success(r.dns?.length ? `已保存，已添加解析 ${r.dns.map(x => x.host).join('、')} → ${node.value?.wanIp4}` : '已保存')
+  else if (remarkFailed.length) Message.warning({ content: `已保存，解析已生效；${remarkFailed.map(x => `${x.host}：${dnsStateText(x.state, x.error)}`).join('；')}`, duration: 8000 })
+  else Message.success(added.length ? `已保存，已添加解析 ${added.join('、')} → ${node.value?.wanIp4}` + (dns.some(x => x.state === 'remark_pending') ? '（备注正在后台写入）' : '') : '已保存')
   return true
 }
 

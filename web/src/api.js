@@ -146,6 +146,16 @@ export function readTextFile(file, maxBytes = 64 * 1024) {
   return file.text()
 }
 
+// 站点域名的解析状态说明（state 见后端 store.DNSState）：备注待写入或写入失败时解析本身已生效
+export function dnsStateText(state, error) {
+  switch (state) {
+    case 'remark_pending': return '解析已生效，备注正在后台写入'
+    case 'remark_failed': return '解析已生效，但备注写入失败（每分钟自动重试）：' + String(error || '').replace(/^解析备注同步失败: /, '')
+    case 'failed': return '自动解析失败：' + error
+    default: return ''
+  }
+}
+
 export const protoName = { tcp: 'TCP', udp: 'UDP', both: 'TCP + UDP' }
 export const ipverName = { v4: 'IPv4', v6: 'IPv6', both: 'IPv4 + IPv6' }
 export const allocKindName = { single: '单个', multi: '多个', range: '范围' }

@@ -518,6 +518,7 @@ func (s *Server) checkHost(w http.ResponseWriter, r *http.Request) {
 type dnsResult struct {
 	Host  string `json:"host"`
 	Error string `json:"error,omitempty"`
+	State string `json:"state"` // 见 store.DNSState
 }
 
 // dnsRemark 返回解析记录的备注：站点备注(所属用户名)。
@@ -558,7 +559,7 @@ func (s *Server) syncSiteDNS(ctx context.Context, site *store.Site, ip string, f
 		var saveErr error
 		if err == nil && providerErr == nil && async {
 			saveErr = s.db.QueueDNSRemark(h.ID, recordID, ip, remark)
-			msg = "解析已创建，备注等待后台同步"
+			msg = store.DNSRemarkPending
 		} else {
 			saveErr = s.db.SetHostDNS(h.ID, recordID, ip, msg)
 		}
@@ -566,7 +567,7 @@ func (s *Server) syncSiteDNS(ctx context.Context, site *store.Site, ip string, f
 			msg = "保存解析同步状态失败: " + saveErr.Error()
 		}
 		h.RecordID, h.RecordIP, h.DNSError = recordID, ip, msg
-		res = append(res, dnsResult{Host: h.Host, Error: msg})
+		res = append(res, dnsResult{Host: h.Host, Error: msg, State: store.DNSState(msg)})
 	}
 	return res
 }
@@ -677,9 +678,9 @@ func (s *Server) processDNSRemarks(ctx context.Context) {
 		}
 		msg := ""
 		if err != nil {
-			msg = "解析备注同步失败: " + err.Error()
+			msg = store.DNSRemarkFailPrefix + err.Error()
 		}
-		_, txErr = tx.Exec(`UPDATE site_hosts SET dns_error=? WHERE id=? AND record_id=? AND (dns_error='解析已创建，备注等待后台同步' OR dns_error=?) AND EXISTS(SELECT 1 FROM dns_remark_jobs WHERE host_id=? AND record_id=? AND remark=?)`, msg, j.id, j.record, j.previousError, j.id, j.record, j.remark)
+		_, txErr = tx.Exec(`UPDATE site_hosts SET dns_error=? WHERE id=? AND record_id=? AND (dns_error=? OR dns_error=?) AND EXISTS(SELECT 1 FROM dns_remark_jobs WHERE host_id=? AND record_id=? AND remark=?)`, msg, j.id, j.record, store.DNSRemarkPending, j.previousError, j.id, j.record, j.remark)
 		if txErr == nil {
 			if err == nil {
 				_, txErr = tx.Exec(`DELETE FROM dns_remark_jobs WHERE host_id=? AND record_id=? AND remark=?`, j.id, j.record, j.remark)

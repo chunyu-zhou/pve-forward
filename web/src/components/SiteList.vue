@@ -65,7 +65,7 @@
       <template #node="{ record }"><a-tag size="small" :color="record.nodeStatus === 'online' ? 'arcoblue' : 'gray'">{{ record.nodeName }}</a-tag></template>
       <template #domains="{ record }"><div class="lines">
         <div v-for="h in record.hosts" :key="h.host"><div v-for="e in entries(record)" :key="entryKey(e)"><a :href="url(e, h)" target="_blank" rel="noopener" class="site-link">{{ url(e, h) }}</a></div>
-          <a-tooltip v-if="h.dnsError" :content="'自动解析失败：' + h.dnsError"><icon-exclamation-circle style="color:rgb(var(--orange-6));margin-left:4px" /></a-tooltip></div>
+          <a-tooltip v-if="h.dnsState && h.dnsState !== 'ok'" :content="dnsTip(h)"><icon-exclamation-circle :style="{ color: h.dnsState === 'failed' ? 'rgb(var(--orange-6))' : 'var(--color-text-3)', marginLeft: '4px' }" /></a-tooltip></div>
         <div v-if="record.remark" class="muted">{{ record.remark }}</div></div></template>
       <template #entry="{ record }"><a-space wrap :size="4"><a-tag v-for="e in entries(record)" :key="entryKey(e)" size="small" :color="e.https ? 'green' : 'arcoblue'">{{ e.https ? 'HTTPS' : 'HTTP' }} {{ e.port }}</a-tag></a-space></template>
       <template #target="{ record }"><div class="lines">
@@ -95,7 +95,9 @@
 <script setup>
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { Message } from '@arco-design/web-vue'
-import { api, isAdmin, fmtBytes, expColor } from '../api'
+import { api, isAdmin, fmtBytes, expColor, dnsStateText } from '../api'
+
+const dnsTip = h => dnsStateText(h.dnsState, h.dnsError)
 
 const emit = defineEmits(['add', 'edit', 'count'])
 const admin = computed(isAdmin)

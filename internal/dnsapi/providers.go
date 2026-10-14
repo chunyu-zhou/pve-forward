@@ -113,10 +113,7 @@ func (d *dnspod) SetRemark(ctx context.Context, zone, id, remark string) error {
 	if remark == "" {
 		return nil
 	}
-	if err := d.call(ctx, "Record.Remark", url.Values{"domain": {zone}, "record_id": {id}, "remark": {remark}}, nil); err != nil {
-		return fmt.Errorf("设置解析备注失败: %w", err)
-	}
-	return nil
+	return d.call(ctx, "Record.Remark", url.Values{"domain": {zone}, "record_id": {id}, "remark": {remark}}, nil)
 }
 
 func (d *dnspod) Update(ctx context.Context, zone, id, sub, typ, value, remark string) error {
@@ -240,7 +237,10 @@ func (a *aliyun) SetRemark(ctx context.Context, zone, id, remark string) error {
 		return nil
 	}
 	if err := a.call(ctx, "UpdateDomainRecordRemark", map[string]string{"RecordId": id, "Remark": remark}, nil); err != nil {
-		return fmt.Errorf("设置解析备注失败: %w", err)
+		if strings.Contains(err.Error(), "Forbidden") || strings.Contains(err.Error(), "NoPermission") {
+			return fmt.Errorf("%w（AccessKey 缺少 alidns:UpdateDomainRecordRemark 权限，请在 RAM 中授权）", err)
+		}
+		return err
 	}
 	return nil
 }

@@ -424,6 +424,33 @@ type SiteHost struct {
 	DNSError string `json:"dnsError"`
 }
 
+// 解析状态说明（保存在 dns_error 中）：解析已创建但备注尚未写入或写入失败时，解析本身是正常的。
+const (
+	DNSRemarkPending    = "解析已创建，备注等待后台同步"
+	DNSRemarkFailPrefix = "解析备注同步失败: "
+)
+
+// DNSState 返回解析状态：ok | remark_pending（解析已生效，备注待写入）| remark_failed（解析已生效，备注写入失败，自动重试）| failed（解析失败）。
+func DNSState(msg string) string {
+	switch {
+	case msg == "":
+		return "ok"
+	case msg == DNSRemarkPending:
+		return "remark_pending"
+	case strings.HasPrefix(msg, DNSRemarkFailPrefix):
+		return "remark_failed"
+	}
+	return "failed"
+}
+
+func (h SiteHost) MarshalJSON() ([]byte, error) {
+	type plain SiteHost
+	return json.Marshal(struct {
+		plain
+		DNSState string `json:"dnsState"`
+	}{plain(h), DNSState(h.DNSError)})
+}
+
 type Site struct {
 	ID         int64       `json:"id"`
 	UserID     int64       `json:"userId"`
@@ -655,7 +682,7 @@ func (d *DB) QueueDNSRemark(id int64, recordID, ip, remark string) error {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.Exec(`UPDATE site_hosts SET record_id=?,record_ip=?,dns_error='解析已创建，备注等待后台同步' WHERE id=?`, recordID, ip, id); err != nil {
+	if _, err := tx.Exec(`UPDATE site_hosts SET record_id=?,record_ip=?,dns_error=? WHERE id=?`, recordID, ip, DNSRemarkPending, id); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(`INSERT INTO dns_remark_jobs(host_id,record_id,remark) VALUES(?,?,?) ON CONFLICT(host_id) DO UPDATE SET record_id=excluded.record_id,remark=excluded.remark,error=''`, id, recordID, remark); err != nil {
