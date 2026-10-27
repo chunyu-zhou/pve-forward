@@ -264,17 +264,20 @@ type VMInfo struct {
 }
 
 type Report struct {
-	Time     time.Time         `json:"time"`
-	Node     NodeMetrics       `json:"node"`
-	Disks    []DiskMetrics     `json:"disks"`
-	VMs      []VMInfo          `json:"vms"`
-	Counters map[int64]Counter `json:"counters"`
-	Conns    map[int64]int     `json:"conns"`    // 规则的当前连接数（TCP 已建立 + UDP）
-	ConnsTCP map[int64]int     `json:"connsTcp"` // 其中 TCP（已建立）
-	ConnsUDP map[int64]int     `json:"connsUdp"` // 其中 UDP
-	Health   map[int64]string  `json:"health"`   // 规则 ID → 异常原因（空表示正常）
-	Listen   []int             `json:"listen"`   // 宿主机进程正在监听的端口
-	Loaded   bool              `json:"loaded"`   // 规则表是否已加载
+	Time  time.Time     `json:"time"`
+	Node  NodeMetrics   `json:"node"`
+	Disks []DiskMetrics `json:"disks"`
+	VMs   []VMInfo      `json:"vms"`
+	// VMPartial 表示虚拟机采集降级：不得把本轮缺席的虚拟机判为删除。
+	// 旧 Agent 不发送该字段时沿用完整上报的兼容行为。
+	VMPartial bool              `json:"vmPartial,omitempty"`
+	Counters  map[int64]Counter `json:"counters"`
+	Conns     map[int64]int     `json:"conns"`    // 规则的当前连接数（TCP 已建立 + UDP）
+	ConnsTCP  map[int64]int     `json:"connsTcp"` // 其中 TCP（已建立）
+	ConnsUDP  map[int64]int     `json:"connsUdp"` // 其中 UDP
+	Health    map[int64]string  `json:"health"`   // 规则 ID → 异常原因（空表示正常）
+	Listen    []int             `json:"listen"`   // 宿主机进程正在监听的端口
+	Loaded    bool              `json:"loaded"`   // 规则表是否已加载
 	// Web 转发：OpenResty 状态与站点目标是否可达（站点 ID → 异常原因）
 	Web        *WebReport       `json:"web,omitempty"`
 	SiteHealth map[int64]string `json:"siteHealth,omitempty"`

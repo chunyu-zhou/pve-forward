@@ -162,6 +162,8 @@ net0: virtio=BC:24:11:00:00:01,bridge=vmbr1
 #lxc 102
 hostname: vpn01
 net0: name=eth0,bridge=vmbr1,hwaddr=BC:24:11:00:00:02,ip=10.0.0.8/24,gw=10.0.0.1
+##confs-status
+ok
 ##cgio
 ##nft
 NFT
@@ -345,7 +347,7 @@ func TestEndToEnd(t *testing.T) {
 	vmWeb, vmVPN := vms[0].ID, vms[1].ID
 
 	// ---- 用户与端口分配 ----
-	alice := map[string]any{"username": "alice", "password": "alicepass1", "enabled": true, "quotaGb": 0, "maxRules": 2,
+	alice := map[string]any{"username": "alice", "remark": "测试客户", "password": "alicepass1", "enabled": true, "quotaGb": 0, "maxRules": 2,
 		"allocations": []map[string]any{{"nodeId": nid, "kind": "range", "spec": "20000-20009"}}, "vmIds": []int64{vmWeb}}
 	admin.do("POST", "/api/users", alice, 200, nil)
 	admin.do("POST", "/api/users", alice, 400, nil) // 用户名重复
@@ -382,7 +384,7 @@ func TestEndToEnd(t *testing.T) {
 		t.Fatalf("修改端口策略 %+v", upd.Node.Ports)
 	}
 	admin.do("GET", "/api/vms", nil, 200, &vms)
-	if vms[0].IPv4 != "10.0.0.57" || vms[0].Owner != "alice" || !strings.HasSuffix(vms[0].IPv6, "::57") {
+	if vms[0].IPv4 != "10.0.0.57" || vms[0].Owner != "alice" || vms[0].OwnerRemark != "测试客户" || vms[1].OwnerRemark != "" || !strings.HasSuffix(vms[0].IPv6, "::57") {
 		t.Fatalf("分配后应沿用原有地址 %+v", vms[0])
 	}
 	// 公共虚拟机
@@ -637,6 +639,20 @@ func testMonitorRegressions(t *testing.T, srv *Server, admin, alice, bob, anon *
 		return d.VMs
 	}
 	rrdCalls := func() int { fake.mu.Lock(); defer fake.mu.Unlock(); return fake.rrdCalls }
+	assertVMListNodeStatus := func(t *testing.T, state string, stale bool) {
+		t.Helper()
+		var vms []map[string]any
+		admin.do("GET", fmt.Sprintf("/api/vms?node=%d", nid), nil, 200, &vms)
+		if len(vms) == 0 {
+			t.Fatal("虚拟机列表不应为空")
+		}
+		for _, v := range vms {
+			if v["nodeStatus"] != state || v["nodeStale"] != stale {
+				t.Errorf("虚拟机列表应携带实时节点状态 %q、过期标记 %t: %v", state, stale, v)
+			}
+		}
+	}
+	assertVMListNodeStatus(t, "online", false)
 
 	t.Run("monitor-json-privacy", func(t *testing.T) {
 		for _, showIP := range []bool{false, true} {
@@ -783,6 +799,7 @@ func testMonitorRegressions(t *testing.T, srv *Server, admin, alice, bob, anon *
 		if st.State != "online" || !st.Stale || st.Error == "" {
 			t.Fatalf("grace period should keep node online but stale: %+v", st)
 		}
+		assertVMListNodeStatus(t, "online", true)
 		fake.mu.Lock()
 		fake.failCollect = false
 		fake.mu.Unlock()
@@ -792,6 +809,7 @@ func testMonitorRegressions(t *testing.T, srv *Server, admin, alice, bob, anon *
 		if st := srv.mgr.Status(nid); st.State != "online" || st.Stale || st.Error != "" {
 			t.Fatalf("node should recover immediately: %+v", st)
 		}
+		assertVMListNodeStatus(t, "online", false)
 	})
 
 	t.Run("offline-vm-status", func(t *testing.T) {
@@ -816,6 +834,7 @@ func testMonitorRegressions(t *testing.T, srv *Server, admin, alice, bob, anon *
 		if st.State != "offline" || st.Report == nil {
 			t.Fatalf("need offline node with cached report: %+v", st)
 		}
+		assertVMListNodeStatus(t, "offline", st.Stale)
 		c := original
 		c.ShowNodes = false
 		setPublic(c)

@@ -197,6 +197,9 @@ net0: virtio=BC:24:11:3A:01:9F,bridge=vmbr1
 net1: virtio=BC:24:11:3A:01:A0,bridge=vmbr0
 #qemu 900
 name: tpl
+template: 1
+##confs-status
+ok
 ##cgio
 #101
 259:0 rbytes=1 wbytes=1 rios=DIO wios=DIO dbytes=0 dios=0
@@ -252,6 +255,88 @@ func TestParseCollect(t *testing.T) {
 	}
 	if rep.Health[1] != "" || !strings.Contains(rep.Health[3], "端口冲突") {
 		t.Errorf("健康 %v", rep.Health)
+	}
+}
+
+func TestCollectVMNameFallback(t *testing.T) {
+	s := sections([]byte(collectOut(1000, 100, 1000)))
+	s["resources"] = strings.Replace(s["resources"], `"name":"web01"`, `"name":"  "`, 1)
+	rep, _ := parseCollect(s, nil, time.Now(), testState())
+	if len(rep.VMs) != 1 || rep.VMs[0].Name != "web01" || rep.VMs[0].Status != "running" || rep.VMPartial {
+		t.Fatalf("name fallback: %+v partial=%v", rep.VMs, rep.VMPartial)
+	}
+}
+
+func TestCollectVMFallbackNeighbourAndNormalizedState(t *testing.T) {
+	s := sections([]byte(collectOut(1000, 100, 1000)))
+	s["resources"] = strings.Replace(s["resources"], `"status":"running"`, `"status":" RUNNING "`, 1)
+	rep, _ := parseCollect(s, nil, time.Now(), testState())
+	if len(rep.VMs) != 1 || rep.VMs[0].Status != "running" || rep.VMs[0].CPU != 37 {
+		t.Fatalf("normalized status: %+v", rep.VMs)
+	}
+	s["resources"] = ""
+	s["neigh"] = `[{"dst":"172.16.0.33","lladdr":"bc:24:11:3a:01:9f","state":["REACHABLE"]}]`
+	rep, _ = parseCollect(s, nil, time.Now(), testState())
+	if len(rep.VMs) != 1 || rep.VMs[0].IP4 != "172.16.0.33" {
+		t.Fatalf("fallback neighbour address: %+v", rep.VMs)
+	}
+}
+
+func TestCollectVMResourcesDegraded(t *testing.T) {
+	for _, text := range []string{"", "broken", "null", `[{"vmid":101},`, "[]"} {
+		t.Run(text, func(t *testing.T) {
+			s := sections([]byte(collectOut(1000, 100, 1000)))
+			s["resources"] = text
+			s["confs"] += "\n#lxc 102\nhostname: container01\nnet0: name=eth0,bridge=vmbr1,hwaddr=BC:24:11:3A:01:A1,ip=172.16.0.34/24\n"
+			rep, _ := parseCollect(s, nil, time.Now(), testState())
+			if len(rep.VMs) != 2 || !rep.VMPartial {
+				t.Fatalf("fallback/template filtering: %+v partial=%v", rep.VMs, rep.VMPartial)
+			}
+			for _, v := range rep.VMs {
+				if v.Status != "unknown" || v.Name == "" || v.MAC == "" {
+					t.Fatalf("fallback state/name/mac: %+v", v)
+				}
+				if v.VMID == 102 && v.IP4 != "172.16.0.34" {
+					t.Fatalf("fallback static IP: %+v", v)
+				}
+			}
+		})
+	}
+}
+
+func TestCollectVMPartialAndMigration(t *testing.T) {
+	s := sections([]byte(collectOut(1000, 100, 1000)))
+	// 即使 JSON 完整，命令失败也不信任其中的运行状态。
+	s["resources-status"] = "124"
+	rep, _ := parseCollect(s, nil, time.Now(), testState())
+	if !rep.VMPartial || len(rep.VMs) != 1 || rep.VMs[0].Status != "unknown" {
+		t.Fatalf("failed command: %+v", rep)
+	}
+	delete(s, "resources-status")
+	s["confs"] += "\n#qemu 500\nname: migrated\n#qemu 103\nname: newvm\n"
+	rep, _ = parseCollect(s, nil, time.Now(), testState())
+	if !rep.VMPartial || len(rep.VMs) != 2 {
+		t.Fatalf("partial inventory: %+v", rep)
+	}
+	for _, v := range rep.VMs {
+		if v.VMID == 500 || v.VMID == 900 {
+			t.Fatalf("migrated VM/template reintroduced: %+v", v)
+		}
+		if v.VMID == 103 && v.Status != "unknown" {
+			t.Fatalf("missing resource guessed state: %+v", v)
+		}
+	}
+	s = sections([]byte(collectOut(1000, 100, 1000)))
+	s["resources"] = "[]"
+	s["confs"] = ""
+	rep, _ = parseCollect(s, nil, time.Now(), testState())
+	if rep.VMPartial || len(rep.VMs) != 0 {
+		t.Fatalf("valid empty inventory: %+v", rep)
+	}
+	s["confs-status"] = "failed"
+	rep, _ = parseCollect(s, nil, time.Now(), testState())
+	if !rep.VMPartial {
+		t.Fatal("unreadable configs considered complete")
 	}
 }
 

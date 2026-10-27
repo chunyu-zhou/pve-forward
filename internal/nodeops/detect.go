@@ -13,8 +13,11 @@ import (
 )
 
 // 读取 PVE 虚拟机配置（只取主配置，忽略快照段），输出 "#qemu 101" / "#lxc 102" 分隔
-const vmConfScript = `for f in /etc/pve/qemu-server/*.conf; do [ -f "$f" ] || continue; echo "#qemu $(basename "$f" .conf)"; sed -n '/^\[/q;p' "$f"; done
-for f in /etc/pve/lxc/*.conf; do [ -f "$f" ] || continue; echo "#lxc $(basename "$f" .conf)"; sed -n '/^\[/q;p' "$f"; done
+const vmConfScript = `vm_confs_ok=1
+[ -r /etc/pve/qemu-server ] && [ -x /etc/pve/qemu-server ] && [ -r /etc/pve/lxc ] && [ -x /etc/pve/lxc ] || vm_confs_ok=0
+for f in /etc/pve/qemu-server/*.conf; do [ -f "$f" ] || continue; if vm_conf=$(sed -n '/^\[/q;p' "$f"); then echo "#qemu $(basename "$f" .conf)"; printf '%s\n' "$vm_conf"; else vm_confs_ok=0; fi; done
+for f in /etc/pve/lxc/*.conf; do [ -f "$f" ] || continue; if vm_conf=$(sed -n '/^\[/q;p' "$f"); then echo "#lxc $(basename "$f" .conf)"; printf '%s\n' "$vm_conf"; else vm_confs_ok=0; fi; done
+echo '##confs-status'; [ "$vm_confs_ok" = 1 ] && echo ok || echo failed
 `
 
 const detectScript = `export LC_ALL=C
@@ -212,11 +215,12 @@ var bridgeOptRe = regexp.MustCompile(`(?:^|,)bridge=([A-Za-z0-9_.-]+)`)
 
 // vmConf 为解析后的虚拟机配置
 type vmConf struct {
-	Type  string
-	VMID  int
-	Name  string
-	Cores int
-	Nets  []vmNet
+	Type     string
+	VMID     int
+	Name     string
+	Cores    int
+	Template bool
+	Nets     []vmNet
 }
 
 type vmNet struct{ MAC, Bridge, IP4, IP6 string } // IP4 / IP6：LXC 配置中的静态地址
@@ -244,6 +248,8 @@ func parseConfs(text string) []vmConf {
 			cur.Name = strings.TrimSpace(v)
 		} else if v, ok := strings.CutPrefix(line, "hostname:"); ok && cur.Name == "" {
 			cur.Name = strings.TrimSpace(v)
+		} else if v, ok := strings.CutPrefix(line, "template:"); ok {
+			cur.Template = strings.TrimSpace(v) == "1"
 		} else if v, ok := strings.CutPrefix(line, "cores:"); ok {
 			cur.Cores, _ = strconv.Atoi(strings.TrimSpace(v))
 		} else if m := netKeyRe.FindStringSubmatch(line); m != nil {

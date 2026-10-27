@@ -719,7 +719,7 @@ func (m *Manager) process(n *store.Node, r *runtime, st *proto.DesiredState, rep
 				}
 			}
 		}
-		changed, err := m.db.SyncVMs(n.ID, rep.VMs)
+		changed, err := m.db.SyncVMs(n.ID, rep.VMs, rep.VMPartial)
 		if err != nil {
 			log.Printf("同步虚拟机失败: %v", err)
 		} else if changed {

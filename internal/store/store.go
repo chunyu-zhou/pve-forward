@@ -590,8 +590,10 @@ func (d *DB) VMs(nodeID int64) ([]*VM, error) {
 	return res, rows.Err()
 }
 
-// SyncVMs 用节点上报的虚拟机列表更新数据库，返回是否有影响期望状态的变化（MAC 变化）。
-func (d *DB) SyncVMs(nodeID int64, list []proto.VMInfo) (bool, error) {
+// SyncVMs 用节点上报的虚拟机列表更新数据库，返回是否有影响期望状态的变化。
+// partial=true 时仅更新观测到的虚拟机，缺席记录保留分配和地址、状态降为未知。
+// 省略 partial 保持旧 Agent/调用方的完整库存语义。
+func (d *DB) SyncVMs(nodeID int64, list []proto.VMInfo, partial ...bool) (bool, error) {
 	tx, err := d.Begin()
 	if err != nil {
 		return false, err
@@ -601,6 +603,11 @@ func (d *DB) SyncVMs(nodeID int64, list []proto.VMInfo) (bool, error) {
 	ts := now()
 	seen := map[int]bool{}
 	for _, v := range list {
+		v.Name = strings.TrimSpace(v.Name)
+		v.Status = strings.ToLower(strings.TrimSpace(v.Status))
+		if v.Status == "" {
+			v.Status = "unknown"
+		}
 		seen[v.VMID] = true
 		var id int64
 		var mac, ip4, ip6 string
@@ -618,7 +625,7 @@ func (d *DB) SyncVMs(nodeID int64, list []proto.VMInfo) (bool, error) {
 			if mac != v.MAC {
 				changed = true
 			}
-			if _, err := tx.Exec(`UPDATE vms SET type=?,name=?,status=?,mac=?,present=1,synced_at=? WHERE id=?`, v.Type, v.Name, v.Status, v.MAC, ts, id); err != nil {
+			if _, err := tx.Exec(`UPDATE vms SET type=?,name=CASE WHEN ?='' THEN name ELSE ? END,status=?,mac=?,present=1,synced_at=? WHERE id=?`, v.Type, v.Name, v.Name, v.Status, v.MAC, ts, id); err != nil {
 				return false, err
 			}
 		}
@@ -654,6 +661,13 @@ func (d *DB) SyncVMs(nodeID int64, list []proto.VMInfo) (bool, error) {
 	}
 	rows.Close()
 	for _, id := range gone {
+		if len(partial) > 0 && partial[0] {
+			// 采集不完整不等于删除；保留分配和地址，将缓存状态降为未知。
+			if _, err := tx.Exec(`UPDATE vms SET status='unknown' WHERE node_id=? AND vmid=? AND present=1`, nodeID, id); err != nil {
+				return false, err
+			}
+			continue
+		}
 		changed = true
 		// 已删除的虚拟机：未被引用则删除记录，否则标记为不存在（引用它的规则会被停用）
 		var refs int

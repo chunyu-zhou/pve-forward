@@ -90,6 +90,8 @@ echo '##lsblk'; timeout 5 lsblk -J -d -o NAME,MODEL,ROTA,TRAN 2>/dev/null
 echo '##netdev'; grep -E '^\s*` + wan + `:' /proc/net/dev
 echo '##storage'; timeout 15 pvesh get /nodes/$N/storage --output-format json 2>/dev/null
 echo '##resources'; timeout 15 pvesh get /cluster/resources --type vm --output-format json 2>/dev/null
+resources_rc=$?
+echo '##resources-status'; echo "$resources_rc"
 echo '##confs'
 ` + vmConfScript + `
 echo '##cgio'
@@ -276,18 +278,17 @@ func parseCollect(s map[string]string, prev *sample, now time.Time, st *proto.De
 		DiskWrite uint64  `json:"diskwrite"`
 		Uptime    int64   `json:"uptime"`
 	}
-	_ = json.Unmarshal([]byte(strings.TrimSpace(s["resources"])), &res)
-	inRes := map[int]bool{}
-	for _, r := range res {
-		c, local := confs[r.VMID]
-		if !local || r.Template == 1 || (host != "" && r.Node != host && r.Node != "") {
-			continue
-		}
-		inRes[r.VMID] = true
-		vm := proto.VMInfo{VMID: r.VMID, Type: r.Type, Name: r.Name, Status: r.Status, Cores: int(r.MaxCPU),
-			CPU: round1(r.CPU * 100), MemUsed: r.Mem, MemTotal: r.MaxMem, DiskUsed: r.Disk, DiskTotal: r.MaxDisk, Uptime: r.Uptime}
+	resourcesText := strings.TrimSpace(s["resources"])
+	resourcesOK := json.Unmarshal([]byte(resourcesText), &res) == nil && strings.HasPrefix(resourcesText, "[")
+	if code, ok := s["resources-status"]; ok && strings.TrimSpace(code) != "0" {
+		resourcesOK = false
+	}
+	if !resourcesOK {
+		res = nil // JSON 部分解析或命令失败的结果不能作为可信状态。
+	}
+	rep.VMPartial = !resourcesOK || (strings.TrimSpace(s["confs-status"]) != "ok")
+	fillAddresses := func(vm *proto.VMInfo, c vmConf) {
 		vm.MAC = pickMAC(c, bridge)
-		// 虚拟机当前实际使用的内网地址：静态配置优先，其次 DHCP 租约与邻居表
 		vm.IP4, vm.IP6 = staticAddrs(c, bridge)
 		if vm.IP4 == "" && vm.MAC != "" {
 			vm.IP4 = addrs.v4[vm.MAC]
@@ -295,8 +296,27 @@ func parseCollect(s map[string]string, prev *sample, now time.Time, st *proto.De
 		if vm.IP6 == "" && vm.MAC != "" {
 			vm.IP6 = addrs.v6[vm.MAC]
 		}
+	}
+	inRes := map[int]bool{}
+	for _, r := range res {
+		inRes[r.VMID] = true // 模板或已迁往其他节点的 VM 不再从本地配置补回。
+		c, local := confs[r.VMID]
+		if !local || c.Template || r.Template == 1 || (host != "" && r.Node != host && r.Node != "") {
+			continue
+		}
+		name := strings.TrimSpace(r.Name)
+		if name == "" {
+			name = c.Name
+		}
+		status := strings.ToLower(strings.TrimSpace(r.Status))
+		if status == "" {
+			status = "unknown"
+		}
+		vm := proto.VMInfo{VMID: r.VMID, Type: c.Type, Name: name, Status: status, Cores: int(r.MaxCPU),
+			CPU: round1(r.CPU * 100), MemUsed: r.Mem, MemTotal: r.MaxMem, DiskUsed: r.Disk, DiskTotal: r.MaxDisk, Uptime: r.Uptime}
+		fillAddresses(&vm, c)
 		vc := vmCounter{v: [4]uint64{r.NetIn, r.NetOut, r.DiskRead, r.DiskWrite}, t: now}
-		if p, ok := prevVM(prev, r.VMID); ok && r.Status == "running" {
+		if p, ok := prevVM(prev, r.VMID); ok && vm.Status == "running" {
 			if vc.v == p.v && now.Sub(p.t) < vmStale {
 				vc = p // 计数器尚未更新：保留基准，沿用上次的速率
 			} else if d := now.Sub(p.t).Seconds(); d > 0 {
@@ -308,7 +328,7 @@ func parseCollect(s map[string]string, prev *sample, now time.Time, st *proto.De
 			}
 		}
 		cur.vmNet[r.VMID] = vc
-		if r.Status == "running" {
+		if vm.Status == "running" {
 			vm.NetIn, vm.NetOut, vm.DiskR, vm.DiskW = vc.rate[0], vc.rate[1], vc.rate[2], vc.rate[3]
 		}
 		if io, ok := cg[r.VMID]; ok {
@@ -320,15 +340,18 @@ func parseCollect(s map[string]string, prev *sample, now time.Time, st *proto.De
 			}
 			vm.IOPressure = io.pressure
 		}
-		if r.Status != "running" {
+		if vm.Status != "running" {
 			vm.CPU, vm.MemUsed = 0, 0
 		}
 		rep.VMs = append(rep.VMs, vm)
 	}
-	// pvesh 不可用时，至少从配置文件得到虚拟机列表
+	// pvesh 不可用或遗漏本地配置时保留库存，但不猜测运行状态。
 	for id, c := range confs {
-		if !inRes[id] && len(res) == 0 {
-			rep.VMs = append(rep.VMs, proto.VMInfo{VMID: id, Type: c.Type, Name: c.Name, Status: "unknown", Cores: c.Cores, MAC: pickMAC(c, bridge)})
+		if !inRes[id] && !c.Template {
+			rep.VMPartial = true
+			vm := proto.VMInfo{VMID: id, Type: c.Type, Name: c.Name, Status: "unknown", Cores: c.Cores}
+			fillAddresses(&vm, c)
+			rep.VMs = append(rep.VMs, vm)
 		}
 	}
 

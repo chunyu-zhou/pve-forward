@@ -7,7 +7,7 @@
           <a-input-search v-model="q.kw" placeholder="VMID / 名称 / IP / MAC" style="width:220px" allow-clear />
           <a-select v-model="q.owner" placeholder="全部归属" allow-clear style="width:140px">
             <a-option value="__free">未分配</a-option><a-option value="__public">公共</a-option>
-            <a-option v-for="u in users" :key="u.id" :value="u.id">{{ u.username }}</a-option></a-select>
+            <a-option v-for="u in users" :key="u.id" :value="u.id">{{ userLabel(u.username, u.remark) }}</a-option></a-select>
           <a-radio-group v-model="q.type" type="button"><a-radio value="">全部</a-radio><a-radio value="qemu">VM</a-radio><a-radio value="lxc">CT</a-radio></a-radio-group>
         </a-space></a-col>
         <a-col :span="6" style="display:flex;align-items:center;justify-content:end;gap:12px">
@@ -19,13 +19,14 @@
         <template #columns>
           <a-table-column title="节点" :width="100"><template #cell="{ record }"><a-tag size="small" color="arcoblue">{{ record.nodeName }}</a-tag></template></a-table-column>
           <a-table-column title="VMID" :width="80"><template #cell="{ record }"><span class="mono">{{ record.vmid }}</span></template></a-table-column>
-          <a-table-column title="名称" data-index="name" :width="140" :ellipsis="true" :tooltip="true" />
+          <a-table-column title="名称" :width="140" :ellipsis="true" :tooltip="true"><template #cell="{ record }">{{ vmName(record) }}</template></a-table-column>
           <a-table-column title="类型" :width="70"><template #cell="{ record }"><a-tag size="small" :color="record.type === 'qemu' ? 'arcoblue' : 'cyan'">{{ record.type === 'qemu' ? 'VM' : 'CT' }}</a-tag></template></a-table-column>
-          <a-table-column title="状态" :width="90"><template #cell="{ record }">
-            <template v-if="!record.present"><span class="circle err"></span>已删除</template>
-            <template v-else><span class="circle" :class="{ pass: record.status === 'running' }"></span>{{ record.status === 'running' ? '运行中' : '已停止' }}</template></template></a-table-column>
-          <a-table-column title="归属" :width="110"><template #cell="{ record }">
-            <a-tag v-if="record.shared" color="arcoblue" size="small">公共</a-tag><a-space v-else-if="record.owner" :size="6"><icon-user />{{ record.owner }}</a-space><span v-else class="muted">未分配</span></template></a-table-column>
+          <a-table-column title="状态" :width="100"><template #cell="{ record }">
+            <a-tooltip :content="vmState(record).tooltip" :disabled="!vmState(record).tooltip">
+              <span><span class="circle" :class="vmState(record).className"></span>{{ vmState(record).label }}</span>
+            </a-tooltip></template></a-table-column>
+          <a-table-column title="归属" :width="180"><template #cell="{ record }">
+            <a-tag v-if="record.shared" color="arcoblue" size="small">公共</a-tag><a-space v-else-if="record.owner" :size="6"><icon-user />{{ userLabel(record.owner, record.ownerRemark) }}</a-space><span v-else class="muted">未分配</span></template></a-table-column>
           <a-table-column title="MAC（内网网桥）" :width="160"><template #cell="{ record }"><span v-if="record.mac" class="mono">{{ record.mac }}</span><span v-else class="muted">未接入</span></template></a-table-column>
           <a-table-column title="IPv4" :width="120"><template #cell="{ record }"><span class="mono">{{ record.ipv4 || '-' }}</span></template></a-table-column>
           <a-table-column title="IPv6" :width="150"><template #cell="{ record }"><span class="mono">{{ record.ipv6 || '-' }}</span></template></a-table-column>
@@ -33,7 +34,7 @@
           <a-table-column title="操作" :width="230"><template #cell="{ record }"><a-space :size="0">
             <a-dropdown @select="uid => act(record, 'assign', uid)">
               <a-button type="text" size="small" :disabled="!record.mac || !record.present">分配给 <icon-down /></a-button>
-              <template #content><a-doption v-for="u in users" :key="u.id" :value="u.id" :disabled="u.id === record.userId">{{ u.username }}</a-doption></template>
+              <template #content><a-doption v-for="u in users" :key="u.id" :value="u.id" :disabled="u.id === record.userId">{{ userLabel(u.username, u.remark) }}</a-doption></template>
             </a-dropdown>
             <a-button type="text" size="small" :disabled="!record.mac || !record.present" @click="act(record, record.shared ? 'unshare' : 'share')">{{ record.shared ? '取消公共' : '设为公共' }}</a-button>
             <a-popconfirm v-if="record.userId || record.shared" content="收回后 IP 保留，引用它的规则会停止生效，确定收回？" type="warning" @ok="act(record, 'reclaim')">
@@ -48,6 +49,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { Message } from '@arco-design/web-vue'
 import { api } from '../api'
+import { vmName, vmState, userLabel } from '../vm-display.js'
 
 const vms = ref([])
 const nodes = ref([])

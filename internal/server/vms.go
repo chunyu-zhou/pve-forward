@@ -15,9 +15,12 @@ import (
 
 type vmOut struct {
 	*store.VM
-	Owner    string `json:"owner"`
-	NodeName string `json:"nodeName"`
-	Rules    int    `json:"rules"`
+	Owner       string `json:"owner"`
+	OwnerRemark string `json:"ownerRemark"`
+	NodeName    string `json:"nodeName"`
+	Rules       int    `json:"rules"`
+	NodeStatus  string `json:"nodeStatus"`
+	NodeStale   bool   `json:"nodeStale"`
 }
 
 func (s *Server) listVMs(w http.ResponseWriter, r *http.Request) {
@@ -26,10 +29,10 @@ func (s *Server) listVMs(w http.ResponseWriter, r *http.Request) {
 		fail(w, err)
 		return
 	}
-	users := map[int64]string{}
+	users := map[int64]*store.User{}
 	if us, err := s.db.Users(); err == nil {
 		for _, u := range us {
-			users[u.ID] = u.Username
+			users[u.ID] = u
 		}
 	}
 	nodes := map[int64]*store.Node{}
@@ -53,11 +56,15 @@ func (s *Server) listVMs(w http.ResponseWriter, r *http.Request) {
 	for _, v := range vms {
 		o := &vmOut{VM: v, Rules: refs[v.ID]}
 		if v.UserID != nil {
-			o.Owner = users[*v.UserID]
+			if u := users[*v.UserID]; u != nil {
+				o.Owner, o.OwnerRemark = u.Username, u.Remark
+			}
 		}
 		if n := nodes[v.NodeID]; n != nil {
 			o.NodeName = n.Name
 		}
+		status := s.mgr.Status(v.NodeID)
+		o.NodeStatus, o.NodeStale = status.State, status.Stale
 		res = append(res, o)
 	}
 	writeJSON(w, res)
