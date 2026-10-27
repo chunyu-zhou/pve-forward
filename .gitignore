@@ -3,6 +3,7 @@
 /.apifox/
 /.vscode/
 /.idea/
+/.workbuddy/
 .DS_Store
 Thumbs.db
 

@@ -25,7 +25,7 @@
               <a-col :span="8"><a-form-item label="IP 版本">
                 <a-select v-model="q.ipVer" placeholder="全部" allow-clear :options="[{ label: 'IPv4', value: 'v4' }, { label: 'IPv6', value: 'v6' }, { label: 'IPv4 + IPv6', value: 'both' }]" /></a-form-item></a-col>
               <a-col :span="8"><a-form-item label="状态">
-                <a-select v-model="q.status" placeholder="全部" allow-clear :options="[{ label: '正常', value: 'on' }, { label: '异常', value: 'err' }, { label: '已停用', value: 'off' }]" /></a-form-item></a-col>
+                <a-select v-model="q.status" placeholder="全部" allow-clear :options="[{ label: '正常', value: 'on' }, { label: '异常', value: 'err' }, { label: '待确认', value: 'unk' }, { label: '已停用', value: 'off' }]" /></a-form-item></a-col>
             </a-row>
           </a-form>
         </a-col>
@@ -66,7 +66,9 @@
                :scroll="{ x: 1300 }">
         <template #status="{ record }">
           <template v-if="!record.group">
-            <a-tooltip v-if="record.enabled && record.error" :content="record.error">
+            <a-tooltip v-if="record.enabled && record.unknown" :content="record.error">
+              <span style="color:rgb(var(--orange-6));cursor:help"><span class="circle warn"></span>待确认 <icon-question-circle /></span></a-tooltip>
+            <a-tooltip v-else-if="record.enabled && record.error" :content="record.error">
               <span style="color:rgb(var(--red-6));cursor:help"><span class="circle err"></span>异常 <icon-question-circle /></span></a-tooltip>
             <template v-else><span class="circle" :class="{ pass: record.enabled }"></span>{{ record.enabled ? '正常' : '已停用' }}</template>
           </template>
@@ -74,14 +76,16 @@
             <a-avatar :size="24" :style="{ backgroundColor: '#86909c' }"><icon-public /></a-avatar>
             <span class="nm">公共</span>
             <a-tag size="small">{{ record.children.length }} 条</a-tag>
-            <a-tag v-if="record.children.some(r => r.enabled && r.error)" size="small" color="red">异常 {{ record.children.filter(r => r.enabled && r.error).length }}</a-tag>
+            <a-tag v-if="record.children.some(r => isErr(r))" size="small" color="red">异常 {{ record.children.filter(r => isErr(r)).length }}</a-tag>
+            <a-tag v-if="record.children.some(r => r.enabled && r.unknown)" size="small" color="orange">待确认 {{ record.children.filter(r => r.enabled && r.unknown).length }}</a-tag>
             <div class="info"><span>由管理员维护，普通用户不可见</span></div>
           </div>
           <div v-else class="grp">
             <a-avatar :size="24" :style="{ backgroundColor: color(record.user.username) }">{{ record.user.username[0].toUpperCase() }}</a-avatar>
             <span class="nm">{{ record.user.username }}</span>
             <a-tag size="small">{{ record.children.length }} 条</a-tag>
-            <a-tag v-if="record.children.some(r => r.enabled && r.error)" size="small" color="red">异常 {{ record.children.filter(r => r.enabled && r.error).length }}</a-tag>
+            <a-tag v-if="record.children.some(r => isErr(r))" size="small" color="red">异常 {{ record.children.filter(r => isErr(r)).length }}</a-tag>
+            <a-tag v-if="record.children.some(r => r.enabled && r.unknown)" size="small" color="orange">待确认 {{ record.children.filter(r => r.enabled && r.unknown).length }}</a-tag>
             <a-badge :status="userBadge(record.user).badge" :text="userBadge(record.user).text" />
             <div class="info">
               <span v-for="g in allocGroups(record.user)" :key="g.node">{{ g.name }} <b class="mono">{{ g.specs }}</b></span>
@@ -172,12 +176,14 @@ onUnmounted(() => clearInterval(timer))
 
 function reset() { for (const k of Object.keys(q)) delete q[k] }
 
-const state = r => (!r.enabled ? 'off' : r.error ? 'err' : 'on')
+// unknown 表示节点离线、无法确认，不等同于已确认的异常
+const isErr = r => !!r.enabled && !!r.error && !r.unknown
+const state = r => (!r.enabled ? 'off' : r.unknown ? 'unk' : r.error ? 'err' : 'on')
 const filtered = computed(() => rules.value.filter(r =>
   (!q.node || r.nodeId === q.node) && (!q.owner || r.owner === q.owner) && (!q.proto || r.proto === q.proto) &&
   (!q.ipVer || r.ipVer === q.ipVer) && (!q.status || state(r) === q.status) &&
   (!q.kw || [r.port, r.remark, r.target4, r.target6, r.vmName, r.vmVmid, r.entry4].join(' ').toLowerCase().includes(q.kw.toLowerCase()))))
-const errRules = computed(() => rules.value.filter(r => r.enabled && r.error))
+const errRules = computed(() => rules.value.filter(isErr))
 const nodeOptions = computed(() => [...new Map(rules.value.map(r => [r.nodeId, { label: r.nodeName, value: r.nodeId }])).values()])
 const ownerOptions = computed(() => (admin.value ? [{ label: '公共', value: '公共' }, ...users.value.map(u => ({ label: u.username, value: u.username }))] : []))
 

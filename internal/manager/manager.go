@@ -31,6 +31,7 @@ func timeoutFor(method string) time.Duration {
 type Status struct {
 	State  string        `json:"state"` // waiting | pending | online | offline
 	Error  string        `json:"error,omitempty"`
+	Stale  bool          `json:"stale,omitempty"` // 在线但最近一次采集失败，数据非最新
 	Report *proto.Report `json:"report,omitempty"`
 	Detect *proto.Detect `json:"detect,omitempty"`
 	Since  time.Time     `json:"since"`
@@ -45,6 +46,8 @@ type runtime struct {
 	everOK  bool
 	lastErr string
 	since   time.Time
+	lastOK  time.Time // 最近一次成功采集
+	streak  int       // 连续采集失败次数
 	report  *proto.Report
 	detect  *proto.Detect
 	last    map[int64]proto.Counter // 上次读到的计数器
@@ -67,8 +70,9 @@ type Manager struct {
 	nodes     map[int64]*runtime
 	overQuota map[int64]bool
 
-	Interval func() time.Duration
-	root     context.Context
+	Interval     func() time.Duration
+	OfflineAfter func() time.Duration // 采集连续失败多久后判定离线
+	root         context.Context
 
 	liveMu sync.Mutex
 	live   map[time.Duration]time.Time // 监控页请求的采集间隔 → 有效期
@@ -107,7 +111,8 @@ func (m *Manager) notify() {
 
 func New(db *store.DB, box *secret.Box) *Manager {
 	return &Manager{db: db, box: box, nodes: map[int64]*runtime{}, overQuota: map[int64]bool{}, live: map[time.Duration]time.Time{},
-		Interval: func() time.Duration { return 60 * time.Second }}
+		Interval:     func() time.Duration { return 60 * time.Second },
+		OfflineAfter: func() time.Duration { return 180 * time.Second }}
 }
 
 // Start 为所有节点启动后台循环。
@@ -167,6 +172,16 @@ func (m *Manager) AddNode(id int64) {
 		defer m.wg.Done()
 		m.loop(cctx, r)
 	}()
+}
+
+// EnsureNode 保证节点循环在运行：已存在时只触发一轮采集，不重建连接。
+// 用于「测试连接」等只是想确认可用性的场景，避免把已在线节点重置为离线。
+func (m *Manager) EnsureNode(id int64) {
+	if m.rt(id) == nil {
+		m.AddNode(id)
+		return
+	}
+	m.Kick(id)
 }
 
 // Wait 在 Start 的上下文取消后等待所有节点循环退出（最多 timeout），
@@ -349,7 +364,8 @@ func (m *Manager) Status(id int64) Status {
 	n, err := m.db.Node(id)
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	s := Status{Error: r.lastErr, Report: r.report, Detect: r.detect, Since: r.since}
+	s := Status{Error: r.lastErr, Report: r.report, Detect: r.detect, Since: r.since,
+		Stale: r.online && r.lastErr != ""}
 	switch {
 	case err == nil && !n.Initialized && r.drv != nil && r.everOK:
 		s.State = "pending"
@@ -444,20 +460,60 @@ func (m *Manager) loop(ctx context.Context, r *runtime) {
 	}
 }
 
-func (m *Manager) setErr(r *runtime, err error) {
+// markOK 记录一次成功的采集：恢复在线并刷新数据新鲜度。
+func (m *Manager) markOK(r *runtime) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if !r.online {
+		r.since = time.Now()
+	}
+	r.online, r.everOK, r.lastErr = true, true, ""
+	r.lastOK, r.streak = time.Now(), 0
+}
+
+// markDown 记录连接层失败（凭据、主机指纹、驱动缺失）：这类错误不会自愈，立即离线。
+func (m *Manager) markDown(r *runtime, err error) {
 	if err == nil {
-		if !r.online {
-			r.since = time.Now()
-		}
-		r.online, r.everOK, r.lastErr = true, true, ""
 		return
 	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if r.online {
 		r.since = time.Now()
 	}
 	r.online, r.lastErr = false, err.Error()
+	r.streak++
+}
+
+// markProbe 记录一次采集失败。采集超时、pvesh 慢等属于瞬时故障：
+// 在离线宽限期（OfflineAfter）内保持在线，仅标记数据过期；超过宽限期才判定离线。
+func (m *Manager) markProbe(r *runtime, err error) {
+	if err == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.streak++
+	r.lastErr = err.Error()
+	if !r.online {
+		return
+	}
+	// 连续失败 3 次或距上次成功超过宽限期才判定离线（默认间隔下约 3 分钟）
+	if !r.lastOK.IsZero() && r.streak < 3 && time.Since(r.lastOK) < m.offlineAfter() {
+		return
+	}
+	r.online, r.since = false, time.Now()
+}
+
+// offlineAfter 返回判定离线所需的连续失败时长。
+func (m *Manager) offlineAfter() time.Duration {
+	if m.OfflineAfter == nil {
+		return 180 * time.Second
+	}
+	if d := m.OfflineAfter(); d > 0 {
+		return d
+	}
+	return 180 * time.Second
 }
 
 // tick 执行一轮：确保连接 → 必要时下发 → 采集。
@@ -469,7 +525,8 @@ func (m *Manager) tick(ctx context.Context, r *runtime) error {
 	wasOnline := m.isOnline(r)
 
 	if err := m.ensureSSH(r, n); err != nil {
-		m.setErr(r, err)
+		m.markDown(r, err)
+		m.transition(n, wasOnline, false, err)
 		return err
 	}
 	r.mu.Lock()
@@ -480,7 +537,7 @@ func (m *Manager) tick(ctx context.Context, r *runtime) error {
 		if n.Mode == "agent" && n.LastSeen > 0 {
 			err = errors.New("Agent 未连接")
 		}
-		m.setErr(r, err)
+		m.markDown(r, err)
 		m.transition(n, wasOnline, false, err)
 		return err
 	}
@@ -492,10 +549,12 @@ func (m *Manager) tick(ctx context.Context, r *runtime) error {
 	if n.Initialized {
 		st, err = m.BuildState(n)
 		if err != nil {
-			m.setErr(r, err)
-			return err
+			// 控制端自身生成期望状态失败（多为数据库异常）：既不是节点故障，
+			// 也不能下发空状态覆盖节点上已有的规则，只记日志并跳过本轮下发。
+			log.Printf("节点 %s 生成期望状态失败: %v", n.Name, err)
+			st = nil
 		}
-		if n.AppliedVersion < n.StateVersion || !m.isOnline(r) {
+		if st != nil && (n.AppliedVersion < n.StateVersion || !m.isOnline(r)) {
 			if err := m.apply(ctx, r, drv, n, st); err != nil {
 				log.Printf("节点 %s 下发失败: %v", n.Name, err)
 			}
@@ -509,15 +568,14 @@ func (m *Manager) tick(ctx context.Context, r *runtime) error {
 	rep, err := drv.Collect(cctx, st)
 	cancel()
 	if err != nil {
-		m.setErr(r, err)
+		m.markProbe(r, err)
 		m.resetDriverOnError(r, n, err)
-		m.transition(n, wasOnline, false, err)
-		if wasOnline {
-			m.notify()
-		}
+		now := m.isOnline(r)
+		m.transition(n, wasOnline, now, err)
+		m.notify()
 		return err
 	}
-	m.setErr(r, nil)
+	m.markOK(r)
 	m.db.Exec(`UPDATE nodes SET last_seen=? WHERE id=?`, time.Now().Unix(), n.ID)
 	m.transition(n, wasOnline, true, nil)
 	m.process(n, r, st, rep)

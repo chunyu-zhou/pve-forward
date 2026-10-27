@@ -24,6 +24,7 @@ type nodeOut struct {
 	*store.Node
 	Status   string             `json:"status"`
 	Error    string             `json:"error,omitempty"`
+	Stale    bool               `json:"stale,omitempty"` // 在线但本轮采集失败，指标为上次结果
 	Since    time.Time          `json:"since"`
 	Metrics  *proto.NodeMetrics `json:"metrics,omitempty"`
 	VMs      int                `json:"vms"`
@@ -33,7 +34,7 @@ type nodeOut struct {
 
 func (s *Server) nodeOut(n *store.Node) *nodeOut {
 	st := s.mgr.Status(n.ID)
-	o := &nodeOut{Node: n, Status: st.State, Error: st.Error, Since: st.Since}
+	o := &nodeOut{Node: n, Status: st.State, Error: st.Error, Stale: st.Stale, Since: st.Since}
 	if st.Report != nil {
 		m := st.Report.Node
 		o.Metrics = &m
@@ -374,7 +375,8 @@ func (s *Server) nodeSSHTest(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	res := sshx.Test(ctx, cfg)
 	if res.OK {
-		s.mgr.AddNode(n.ID)
+		// 只保证循环在运行；已在线时重建 runtime 会把节点状态重置为离线
+		s.mgr.EnsureNode(n.ID)
 	}
 	writeJSON(w, res)
 }

@@ -26,6 +26,7 @@ type siteOut struct {
 	HasHTTPS   bool        `json:"hasHttps"`
 	Owner      string      `json:"owner"`
 	Public     bool        `json:"public"`
+	Unknown    bool        `json:"unknown"` // 节点离线导致无法确认，属于未知而非故障
 	NodeName   string      `json:"nodeName"`
 	NodeStatus string      `json:"nodeStatus"`
 	HTTPS      bool        `json:"https"`
@@ -119,7 +120,7 @@ func (s *Server) siteRows(uid int64) ([]*siteOut, error) {
 			}
 		}
 		if st.Enabled {
-			o.Error = s.siteError(st, o, nw)
+			o.Error, o.Unknown = s.siteError(st, o, nw)
 		}
 		res = append(res, o)
 	}
@@ -135,33 +136,34 @@ type siteNode struct {
 }
 
 // siteError 返回站点当前的异常原因（按影响范围从大到小）。
-func (s *Server) siteError(st *store.Site, o *siteOut, nw *siteNode) string {
+// unknown 为 true 时表示节点离线、无法确认，而不是已确认的故障。
+func (s *Server) siteError(st *store.Site, o *siteOut, nw *siteNode) (msg string, unknown bool) {
 	switch {
 	case nw == nil || !nw.w.Enabled:
-		return "节点未启用 Web 转发"
+		return "节点未启用 Web 转发", false
 	case st.Error != "":
-		return st.Error
+		return st.Error, false
 	case nw.st.Location == "":
-		return "节点的 Web 入口尚未部署"
+		return "节点的 Web 入口尚未部署", false
 	case nw.st.Error != "":
-		return "Web 配置下发失败：" + nw.st.Error
+		return "Web 配置下发失败：" + nw.st.Error, false
 	case o.NodeStatus == "offline":
-		return "节点 " + o.NodeName + " 离线，状态未知"
+		return "节点 " + o.NodeName + " 离线，无法确认站点状态", true
 	case nw.up != "":
-		return nw.up
+		return nw.up, false
 	}
 	if e := s.mgr.SiteError(st.NodeID, st.ID); e != "" {
-		return e
+		return e, false
 	}
 	for _, h := range st.Hosts {
 		if h.DNSError != "" {
-			return "自动解析 " + h.Host + " 失败：" + h.DNSError
+			return "自动解析 " + h.Host + " 失败：" + h.DNSError, false
 		}
 	}
 	if o.HasHTTPS && o.CertDays < 0 {
-		return "证书 " + o.CertName + " 已过期"
+		return "证书 " + o.CertName + " 已过期", false
 	}
-	return ""
+	return "", false
 }
 
 func (s *Server) listSites(w http.ResponseWriter, r *http.Request) {

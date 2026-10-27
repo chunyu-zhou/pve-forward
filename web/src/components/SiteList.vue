@@ -10,7 +10,7 @@
               <a-select v-model="q.owner" :disabled="!admin" placeholder="全部" allow-clear :options="ownerOptions" /></a-form-item></a-col>
             <a-col :span="8"><a-form-item label="入口"><a-select v-model="q.port" placeholder="全部" allow-clear :options="portOptions" /></a-form-item></a-col>
             <a-col :span="8"><a-form-item label="状态">
-              <a-select v-model="q.status" placeholder="全部" allow-clear :options="[{ label: '正常', value: 'on' }, { label: '异常', value: 'err' }, { label: '已停用', value: 'off' }]" /></a-form-item></a-col>
+              <a-select v-model="q.status" placeholder="全部" allow-clear :options="[{ label: '正常', value: 'on' }, { label: '异常', value: 'err' }, { label: '待确认', value: 'unk' }, { label: '已停用', value: 'off' }]" /></a-form-item></a-col>
           </a-row>
         </a-form>
       </a-col>
@@ -50,7 +50,9 @@
              v-model:expanded-keys="expanded" :indent-size="0" :span-method="spanMethod" :row-class="r => (r.group ? 'grp-row' : '')" :scroll="{ x: 1300 }">
       <template #status="{ record }">
         <template v-if="!record.group">
-          <a-tooltip v-if="record.enabled && record.error" :content="record.error">
+          <a-tooltip v-if="record.enabled && record.unknown" :content="record.error">
+            <span style="color:rgb(var(--orange-6));cursor:help"><span class="circle warn"></span>待确认 <icon-question-circle /></span></a-tooltip>
+          <a-tooltip v-else-if="record.enabled && record.error" :content="record.error">
             <span style="color:rgb(var(--red-6));cursor:help"><span class="circle err"></span>异常 <icon-question-circle /></span></a-tooltip>
           <template v-else><span class="circle" :class="{ pass: record.enabled }"></span>{{ record.enabled ? '正常' : '已停用' }}</template>
         </template>
@@ -58,7 +60,8 @@
           <a-avatar :size="24" :style="{ backgroundColor: record.public ? '#86909c' : color(record.owner) }"><icon-public v-if="record.public" /><template v-else>{{ record.owner[0].toUpperCase() }}</template></a-avatar>
           <span class="nm">{{ record.owner }}</span>
           <a-tag size="small">{{ record.children.length }} 个</a-tag>
-          <a-tag v-if="record.children.some(s => s.enabled && s.error)" size="small" color="red">异常 {{ record.children.filter(s => s.enabled && s.error).length }}</a-tag>
+          <a-tag v-if="record.children.some(s => isErr(s))" size="small" color="red">异常 {{ record.children.filter(s => isErr(s)).length }}</a-tag>
+          <a-tag v-if="record.children.some(s => s.enabled && s.unknown)" size="small" color="orange">待确认 {{ record.children.filter(s => s.enabled && s.unknown).length }}</a-tag>
           <div class="info"><span v-if="record.public">由管理员维护，普通用户不可见</span></div>
         </div>
       </template>
@@ -133,11 +136,13 @@ const entries = s => s.entries || (s.port ? [{ port: s.port, https: s.https }] :
 const entryKey = e => `${e.https ? 'https' : 'http'}:${e.port}`
 const url = (e, h) => `${e.https ? 'https' : 'http'}://${h.host}${e.port === (e.https ? 443 : 80) ? '' : ':' + e.port}`
 const firstHost = s => s.hosts[0]?.host || `站点 ${s.id}`
-const state = s => (!s.enabled ? 'off' : s.error ? 'err' : 'on')
+// unknown 表示节点离线、无法确认，不等同于已确认的异常
+const isErr = s => !!s.enabled && !!s.error && !s.unknown
+const state = s => (!s.enabled ? 'off' : s.unknown ? 'unk' : s.error ? 'err' : 'on')
 const filtered = computed(() => sites.value.filter(s =>
   (!q.node || s.nodeId === q.node) && (!q.owner || s.owner === q.owner) && (!q.port || entries(s).some(e => entryKey(e) === q.port)) && (!q.status || state(s) === q.status) &&
   (!q.kw || [s.hosts.map(h => h.host).join(' '), s.remark, s.target4, s.vmName, s.vmVmid].join(' ').toLowerCase().includes(q.kw.toLowerCase()))))
-const errSites = computed(() => sites.value.filter(s => s.enabled && s.error))
+const errSites = computed(() => sites.value.filter(isErr))
 const nodeOptions = computed(() => [...new Map(sites.value.map(s => [s.nodeId, { label: s.nodeName, value: s.nodeId }])).values()])
 const ownerOptions = computed(() => (admin.value ? [{ label: '公共', value: '公共' }, ...users.value.filter(u => u.role !== 'admin').map(u => ({ label: u.username, value: u.username }))] : []))
 const portOptions = computed(() => [...new Map(sites.value.flatMap(s => entries(s)).map(e => [entryKey(e), { label: `${e.https ? 'HTTPS' : 'HTTP'} ${e.port}`, value: entryKey(e), port: e.port }])).values()].sort((a, b) => a.port - b.port))

@@ -20,7 +20,7 @@
               <div class="muted">{{ record.sshAuth === 'cred' ? '凭证 · ' + (record.credName || '-') : record.sshAuth === 'key' ? '密钥 · ' + record.sshUser : '密码 · ' + record.sshUser }}</div></template>
             <template v-else><a-tag size="small" color="green">Agent</a-tag> <span class="muted">WSS</span><div class="muted">v{{ record.agentVersion || '-' }}</div></template></template></a-table-column>
           <a-table-column title="状态" :width="150"><template #cell="{ record }">
-            <a-tooltip v-if="record.error && record.status !== 'online'" :content="record.error"><a-badge :status="nodeBadge[record.status].badge" :text="nodeBadge[record.status].text" /></a-tooltip>
+            <a-tooltip v-if="record.error" :content="record.error"><a-badge :status="nodeBadge[record.status].badge" :text="record.stale ? `${nodeBadge[record.status].text}（采集异常）` : nodeBadge[record.status].text" /></a-tooltip>
             <a-badge v-else :status="nodeBadge[record.status].badge" :text="nodeBadge[record.status].text" />
             <div class="muted">心跳 {{ fmtAgo(record.lastSeen) }}</div>
             <div v-if="record.applyError" class="muted" style="color:rgb(var(--red-6))">下发失败</div></template></a-table-column>

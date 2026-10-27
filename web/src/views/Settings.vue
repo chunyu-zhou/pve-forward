@@ -18,9 +18,10 @@
           </a-card>
           <a-card class="general-card"><template #title>节点与统计</template>
             <a-row :gutter="80">
-              <a-col :xs="24" :md="8"><a-form-item label="采集间隔" extra="流量统计、虚拟机同步、健康检查"><a-input-number v-model="st.interval" :min="10" :max="3600"><template #append>秒</template></a-input-number></a-form-item></a-col>
-              <a-col :xs="24" :md="8"><a-form-item label="新节点默认可分配端口" extra="添加节点时的默认值，可在每个节点中单独修改"><a-input v-model="st.defaultPortRange" placeholder="10000-60000" /></a-form-item></a-col>
-              <a-col :xs="24" :md="8"><a-form-item label="新节点默认保留端口" extra="支持单个与范围，如 22,8006,3000-3100"><a-input v-model="st.defaultReservedPorts" placeholder="22,8006" allow-clear /></a-form-item></a-col>
+              <a-col :xs="24" :md="6"><a-form-item label="采集间隔" extra="流量统计、虚拟机同步、健康检查"><a-input-number v-model="st.interval" :min="10" :max="3600"><template #append>秒</template></a-input-number></a-form-item></a-col>
+              <a-col :xs="24" :md="6"><a-form-item label="离线判定阈值" extra="采集连续失败超过该时长才显示离线，避免瞬时超时误判"><a-input-number v-model="st.offlineAfter" :min="30" :max="3600"><template #append>秒</template></a-input-number></a-form-item></a-col>
+              <a-col :xs="24" :md="6"><a-form-item label="新节点默认可分配端口" extra="添加节点时的默认值，可在每个节点中单独修改"><a-input v-model="st.defaultPortRange" placeholder="10000-60000" /></a-form-item></a-col>
+              <a-col :xs="24" :md="6"><a-form-item label="新节点默认保留端口" extra="支持单个与范围，如 22,8006,3000-3100"><a-input v-model="st.defaultReservedPorts" placeholder="22,8006" allow-clear /></a-form-item></a-col>
             </a-row>
             <a-row :gutter="80">
               <a-col :xs="12" :md="6"><a-form-item label="磁盘繁忙 %util"><a-input-number v-model="st.diskBusyUtil" :min="1" :max="100"><template #append>%</template></a-input-number></a-form-item></a-col>

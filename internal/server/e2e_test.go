@@ -771,6 +771,29 @@ func testMonitorRegressions(t *testing.T, srv *Server, admin, alice, bob, anon *
 		}
 	})
 
+	t.Run("collect-failure-grace", func(t *testing.T) {
+		// 单次采集失败属于瞬时故障：宽限期内保持在线，只把数据标记为过期
+		fake.mu.Lock()
+		fake.failCollect = true
+		fake.mu.Unlock()
+		if err := srv.mgr.RunOnce(context.Background(), nid); err == nil {
+			t.Fatal("expected collection failure")
+		}
+		st := srv.mgr.Status(nid)
+		if st.State != "online" || !st.Stale || st.Error == "" {
+			t.Fatalf("grace period should keep node online but stale: %+v", st)
+		}
+		fake.mu.Lock()
+		fake.failCollect = false
+		fake.mu.Unlock()
+		if err := srv.mgr.RunOnce(context.Background(), nid); err != nil {
+			t.Fatal(err)
+		}
+		if st := srv.mgr.Status(nid); st.State != "online" || st.Stale || st.Error != "" {
+			t.Fatalf("node should recover immediately: %+v", st)
+		}
+	})
+
 	t.Run("offline-vm-status", func(t *testing.T) {
 		fake.mu.Lock()
 		fake.failCollect = true
@@ -783,8 +806,11 @@ func testMonitorRegressions(t *testing.T, srv *Server, admin, alice, bob, anon *
 				t.Error(err)
 			}
 		}()
-		if err := srv.mgr.RunOnce(context.Background(), nid); err == nil {
-			t.Fatal("expected collection failure")
+		// 连续失败达到阈值后判定离线
+		for i := 0; i < 3; i++ {
+			if err := srv.mgr.RunOnce(context.Background(), nid); err == nil {
+				t.Fatal("expected collection failure")
+			}
 		}
 		st := srv.mgr.Status(nid)
 		if st.State != "offline" || st.Report == nil {

@@ -18,7 +18,8 @@ type ruleOut struct {
 	NodeStatus string `json:"nodeStatus"`
 	Entry4     string `json:"entry4"`
 	Entry6     string `json:"entry6"`
-	Public     bool   `json:"public"` // 管理员创建的公共规则
+	Public     bool   `json:"public"`  // 管理员创建的公共规则
+	Unknown    bool   `json:"unknown"` // 节点离线导致无法确认，属于未知而非故障
 	VMName     string `json:"vmName"`
 	VMVMID     int    `json:"vmVmid"`
 	VMShared   bool   `json:"vmShared"`
@@ -94,7 +95,8 @@ func (s *Server) ruleRows(uid int64) ([]*ruleOut, error) {
 			o.Error = s.mgr.RuleError(rl.NodeID, rl.ID)
 		}
 		if rl.Enabled && o.Error == "" && o.NodeStatus == "offline" {
-			o.Error = "节点 " + o.NodeName + " 离线，规则状态未知"
+			o.Unknown = true
+			o.Error = "节点 " + o.NodeName + " 离线，无法确认规则状态"
 		}
 		res = append(res, o)
 	}

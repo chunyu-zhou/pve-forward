@@ -86,17 +86,17 @@ echo '##mem'; grep -E '^(MemTotal|MemAvailable):' /proc/meminfo
 echo '##load'; cat /proc/loadavg
 echo '##uptime'; cat /proc/uptime
 echo '##diskstats'; cat /proc/diskstats
-echo '##lsblk'; lsblk -J -d -o NAME,MODEL,ROTA,TRAN 2>/dev/null
+echo '##lsblk'; timeout 5 lsblk -J -d -o NAME,MODEL,ROTA,TRAN 2>/dev/null
 echo '##netdev'; grep -E '^\s*` + wan + `:' /proc/net/dev
-echo '##storage'; pvesh get /nodes/$N/storage --output-format json 2>/dev/null
-echo '##resources'; pvesh get /cluster/resources --type vm --output-format json 2>/dev/null
+echo '##storage'; timeout 15 pvesh get /nodes/$N/storage --output-format json 2>/dev/null
+echo '##resources'; timeout 15 pvesh get /cluster/resources --type vm --output-format json 2>/dev/null
 echo '##confs'
 ` + vmConfScript + `
 echo '##cgio'
 for d in /sys/fs/cgroup/qemu.slice/*.scope /sys/fs/cgroup/lxc/*; do [ -f "$d/io.stat" ] || continue; echo "#$(basename "$d" .scope)"; cat "$d/io.stat"; grep '^some' "$d/io.pressure" 2>/dev/null; done
-echo '##nft'; nft -j list table inet ` + TableName + ` 2>/dev/null
-echo '##listen'; ss -Hlntu 2>/dev/null | awk '{print $5}'
-echo '##conntrack'; conntrack -L -g 2>/dev/null | awk '$1=="tcp" && $4!="ESTABLISHED"{next} $1!="tcp" && $1!="udp"{next} {d="";for(i=1;i<=NF;i++){if($i~/^dport=/){d=substr($i,7);break}} if(d!="")c[$1" "d]++} END{for(k in c)print k,c[k]}'
+echo '##nft'; timeout 10 nft -j list table inet ` + TableName + ` 2>/dev/null
+echo '##listen'; timeout 10 ss -Hlntu 2>/dev/null | awk '{print $5}'
+echo '##conntrack'; timeout 10 conntrack -L -g 2>/dev/null | awk '$1=="tcp" && $4!="ESTABLISHED"{next} $1!="tcp" && $1!="udp"{next} {d="";for(i=1;i<=NF;i++){if($i~/^dport=/){d=substr($i,7);break}} if(d!="")c[$1" "d]++} END{for(k in c)print k,c[k]}'
 ` + vmip + web + `echo '##health'
 ` + health.String() + `wait
 `

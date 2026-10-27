@@ -115,6 +115,13 @@ func (s *Server) Run(ctx context.Context) error {
 		}
 		return time.Duration(iv) * time.Second
 	}
+	s.mgr.OfflineAfter = func() time.Duration {
+		iv := s.settings().OfflineAfter
+		if iv < 30 {
+			iv = 30
+		}
+		return time.Duration(iv) * time.Second
+	}
 	go s.updateLoop(ctx)
 	go s.confirmUpdate(ctx)
 	go s.certNotify(ctx)
